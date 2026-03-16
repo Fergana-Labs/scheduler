@@ -15,7 +15,7 @@ class Config:
     )
     google_redirect_uri: str = field(
         default_factory=lambda: os.environ.get(
-            "GOOGLE_REDIRECT_URI", "http://localhost:8080/callback"
+            "GOOGLE_REDIRECT_URI", "http://localhost:8080/integrations/google/callback"
         )
     )
     stash_calendar_name: str = field(

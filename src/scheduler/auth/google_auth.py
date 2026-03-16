@@ -62,7 +62,24 @@ def run_oauth_flow() -> Credentials:
         }
     }
     flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-    creds = flow.run_local_server(port=8080)
+
+    # Derive the local server settings from the configured redirect URI so that
+    # custom paths like /integrations/google/callback work correctly.
+    # InstalledAppFlow will start a local HTTP server that listens on this
+    # port and path to receive the OAuth callback.
+    redirect_uri = config.google_redirect_uri
+    port = 8080
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(redirect_uri)
+        if parsed.port:
+            port = parsed.port
+    except Exception:
+        # Fall back to the default port if parsing fails.
+        port = 8080
+
+    creds = flow.run_local_server(port=port, redirect_uri_trailing_slash=False)
     return creds
 
 
