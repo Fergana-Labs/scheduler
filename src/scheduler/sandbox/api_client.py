@@ -51,3 +51,6 @@ class ControlPlaneClient:
 
     def write_guide(self, name: str, content: str) -> dict:
         return self._post("/guides/write", {"name": name, "content": content})
+
+    def read_guide(self, name: str) -> dict:
+        return self._post("/guides/read", {"name": name})

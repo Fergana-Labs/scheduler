@@ -226,12 +226,25 @@ def calendar_add(req: AddEventRequest, session: dict = Depends(get_session)):
 # --- Guide routes ---
 
 
+class ReadGuideRequest(BaseModel):
+    name: str
+
+
 @app.post("/api/v1/guides/write")
 def guides_write(req: WriteGuideRequest, session: dict = Depends(get_session)):
-    import os
+    from scheduler.db import upsert_guide
 
-    os.makedirs(config.guides_dir, exist_ok=True)
-    path = os.path.join(config.guides_dir, f"{req.name}.md")
-    with open(path, "w") as f:
-        f.write(req.content)
-    return {"status": "written", "path": path}
+    user_id = session["user_id"]
+    guide = upsert_guide(user_id=user_id, name=req.name, content=req.content)
+    return {"status": "written", "guide_id": str(guide.id)}
+
+
+@app.post("/api/v1/guides/read")
+def guides_read(req: ReadGuideRequest, session: dict = Depends(get_session)):
+    from scheduler.db import get_guide
+
+    user_id = session["user_id"]
+    guide = get_guide(user_id=user_id, name=req.name)
+    if not guide:
+        raise HTTPException(status_code=404, detail=f"Guide '{req.name}' not found")
+    return {"name": guide.name, "content": guide.content, "updated_at": guide.updated_at.isoformat()}

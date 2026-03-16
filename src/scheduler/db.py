@@ -101,3 +101,61 @@ def update_stash_calendar_id(user_id: str, stash_calendar_id: str) -> None:
             (stash_calendar_id, user_id),
         )
         conn.commit()
+
+
+# --- Guides ---
+
+
+@dataclass
+class GuideRow:
+    id: str
+    user_id: str
+    name: str
+    content: str
+    created_at: datetime
+    updated_at: datetime
+
+
+def upsert_guide(user_id: str, name: str, content: str) -> GuideRow:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO guides (user_id, name, content)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id, name) DO UPDATE SET
+                content = EXCLUDED.content,
+                updated_at = now()
+            RETURNING *
+            """,
+            (user_id, name, content),
+        )
+        row = cur.fetchone()
+        cols = [desc[0] for desc in cur.description]
+        conn.commit()
+        return GuideRow(**dict(zip(cols, row)))
+
+
+def get_guide(user_id: str, name: str) -> GuideRow | None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM guides WHERE user_id = %s AND name = %s",
+            (user_id, name),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in cur.description]
+        return GuideRow(**dict(zip(cols, row)))
+
+
+def get_guides_for_user(user_id: str) -> list[GuideRow]:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM guides WHERE user_id = %s ORDER BY name",
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return []
+        cols = [desc[0] for desc in cur.description]
+        return [GuideRow(**dict(zip(cols, row))) for row in rows]
