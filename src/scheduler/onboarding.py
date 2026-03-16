@@ -175,13 +175,8 @@ the major commitments, stop.
 """
 
 
-async def _run_onboarding_async():
-    """Async implementation of the onboarding agent."""
-    creds = get_credentials()
-    gmail = GmailClient(creds)
-    calendar = CalendarClient(creds, config.stash_calendar_name)
-    calendar.get_or_create_stash_calendar()
-
+async def _run_backfill(gmail: GmailClient, calendar: CalendarClient) -> None:
+    """Run the backfill agent to populate the stash calendar from Gmail history."""
     today = datetime.now()
     window_start = today - timedelta(days=config.onboarding_lookback_days)
 
@@ -215,20 +210,34 @@ async def _run_onboarding_async():
                     if isinstance(block, TextBlock):
                         print(block.text)
             elif isinstance(message, ResultMessage):
-                print(f"\nOnboarding complete. {events_added['count']} events added.")
+                print(f"\nBackfill complete. {events_added['count']} events added.")
                 if message.result:
                     print(f"Agent summary: {message.result}")
 
 
-def run_onboarding():
-    """Run the onboarding agent to backfill the stash calendar.
+async def _run_onboarding_async():
+    """Async implementation — runs backfill + both guide writers in parallel."""
+    from scheduler.guides.preferences import run_preferences_agent
+    from scheduler.guides.style import run_style_agent
 
-    Launches a Claude agent with Gmail and Calendar tools. The agent will:
-    1. Search Gmail with various queries to find scheduling-related emails
-    2. Read threads to understand the full context of each conversation
-    3. Determine which emails represent real commitments the user agreed to
-    4. Cross-reference with existing calendar events to avoid duplicates
-    5. Add missing commitments to the stash calendar
+    creds = get_credentials()
+    gmail = GmailClient(creds)
+    calendar = CalendarClient(creds, config.stash_calendar_name)
+    calendar.get_or_create_stash_calendar()
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(_run_backfill, gmail, calendar)
+        tg.start_soon(run_preferences_agent, gmail, calendar)
+        tg.start_soon(run_style_agent, gmail)
+
+
+def run_onboarding():
+    """Run onboarding: backfill stash calendar + generate guide files.
+
+    Launches three agents in parallel:
+    1. Backfill agent — searches Gmail and adds commitments to the stash calendar
+    2. Preferences agent — analyzes scheduling patterns and writes a guide
+    3. Style agent — analyzes email writing style and writes a guide
     """
     anyio.run(_run_onboarding_async)
 

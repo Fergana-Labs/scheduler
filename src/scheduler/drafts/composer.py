@@ -18,6 +18,7 @@ from scheduler.calendar.client import CalendarClient
 from scheduler.classifier.intent import ClassificationResult
 from scheduler.config import config
 from scheduler.gmail.client import Email, GmailClient
+from scheduler.guides import load_guide
 
 
 # Tools the draft composer agent has access to
@@ -74,6 +75,33 @@ class DraftComposer:
         self._gmail = gmail_client
         self._calendar = calendar_client
 
+    @staticmethod
+    def _build_system_prompt() -> str:
+        """Build the system prompt, injecting guide files if they exist."""
+        parts = [
+            "You are a draft composer agent for a scheduling assistant. "
+            "Your job is to read the email thread, check the user's calendar "
+            "for availability, and compose a natural-sounding draft reply."
+        ]
+
+        scheduling_prefs = load_guide("scheduling_preferences")
+        if scheduling_prefs:
+            parts.append(
+                "\n\n## Scheduling Preferences\n"
+                "Use these observed patterns when proposing times:\n\n"
+                + scheduling_prefs
+            )
+
+        email_style = load_guide("email_style")
+        if email_style:
+            parts.append(
+                "\n\n## Email Style Guide\n"
+                "Match this writing style in the draft:\n\n"
+                + email_style
+            )
+
+        return "\n".join(parts)
+
     def compose_and_create_draft(self, email: Email, classification: ClassificationResult) -> str:
         """Run the draft composer agent.
 
@@ -93,7 +121,7 @@ class DraftComposer:
             The ID of the created Gmail draft.
         """
         # TODO: Implement agentic loop
-        # 1. Build the system prompt with user preferences and context
+        # 1. Build the system prompt: self._build_system_prompt()
         # 2. Start the agent with the email + classification as the initial message
         # 3. Run the agentic loop:
         #    - Agent calls get_calendar_events → we call CalendarClient.get_all_events()

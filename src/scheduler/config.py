@@ -38,6 +38,15 @@ class Config:
     control_plane_port: int = field(
         default_factory=lambda: int(os.environ.get("CONTROL_PLANE_PORT", "8000"))
     )
+    guides_dir: str = field(
+        default_factory=lambda: os.environ.get(
+            "SCHEDULER_GUIDES_DIR",
+            os.path.join(
+                os.path.dirname(os.environ.get("TOKEN_PATH", "token.json")) or ".",
+                "guides",
+            ),
+        )
+    )
 
 
 config = Config()
