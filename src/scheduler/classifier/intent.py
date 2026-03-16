@@ -10,8 +10,10 @@ and if so, extracts relevant details (proposed times, urgency, etc.).
 
 from dataclasses import dataclass
 from enum import Enum
+import json
+from typing import Any, TypedDict, Literal
 
-import anthropic
+from anthropic import Anthropic
 
 from scheduler.config import config
 
@@ -37,6 +39,39 @@ class ClassificationResult:
     duration_minutes: int | None  # Estimated meeting duration if mentioned
 
 
+class _EmailClassificationJSON(TypedDict, total=False):
+    intent: Literal[
+        "not_scheduling",
+        "requesting_meeting",
+        "proposing_times",
+        "confirming_time",
+    ]
+    confidence: float
+    summary: str
+    proposed_times: list[str]
+    participants: list[str]
+    duration_minutes: int | None
+
+
+class _EventJSON(TypedDict, total=False):
+    summary: str
+    start_iso: str
+    duration_minutes: int
+    participants: list[str]
+
+
+def _get_anthropic_client() -> Anthropic:
+    """Create an Anthropic client using the configured API key.
+
+    Even though we conceptually talk about \"GPT\" in the design,
+    this project already depends on Anthropic and the Claude Agent SDK,
+    so we reuse Anthropic here for simple single-call classifiers.
+    """
+    if not config.anthropic_api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+    return Anthropic(api_key=config.anthropic_api_key)
+
+
 def classify_email(subject: str, body: str, sender: str) -> ClassificationResult:
     """Classify whether an email is about scheduling a meeting.
 
@@ -51,12 +86,85 @@ def classify_email(subject: str, body: str, sender: str) -> ClassificationResult
     Returns:
         ClassificationResult with the intent and extracted details.
     """
-    # TODO: Implement as a single LLM completion (not an agent)
-    # 1. Build a prompt that asks Claude to classify the email
-    # 2. Use a single anthropic.messages.create() call
-    # 3. Parse the structured response (consider using tool_use for structured output)
-    # 4. Return a ClassificationResult
-    raise NotImplementedError
+    client = _get_anthropic_client()
+
+    system_prompt = (
+        "You are a classifier for scheduling-related emails. "
+        "Given an email subject, body, and sender, you must determine whether "
+        "the email is about scheduling a meeting, and if so, extract structured details.\n\n"
+        "Valid intents:\n"
+        "- not_scheduling: Email is not about scheduling at all.\n"
+        "- requesting_meeting: Someone wants to meet with the user.\n"
+        "- proposing_times: Someone proposes one or more specific times.\n"
+        "- confirming_time: Someone confirms a previously discussed time.\n\n"
+        "You MUST respond with a single JSON object only, no prose, matching this schema:\n"
+        "{\n"
+        '  \"intent\": \"not_scheduling\" | \"requesting_meeting\" | \"proposing_times\" | \"confirming_time\",\n'
+        "  \"confidence\": number between 0 and 1,\n"
+        "  \"summary\": string,\n"
+        "  \"proposed_times\": list of strings,\n"
+        "  \"participants\": list of strings,\n"
+        "  \"duration_minutes\": integer minutes or null\n"
+        "}\n"
+        "If the email is not about scheduling, set intent to \"not_scheduling\" and leave\n"
+        "the other fields as your best-effort defaults."
+    )
+
+    user_content = (
+        "Classify the following email for scheduling intent.\n\n"
+        f"Sender: {sender}\n"
+        f"Subject: {subject}\n\n"
+        f"Body:\n{body}\n"
+    )
+
+    try:
+        resp = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=512,
+            temperature=0,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        # We expect a single text block with JSON.
+        text = ""
+        for block in resp.content:
+            if getattr(block, "type", None) == "text":
+                text += block.text
+
+        data: _EmailClassificationJSON = json.loads(text)
+    except Exception:
+        # On any failure, fall back to NOT_SCHEDULING with minimal info.
+        return ClassificationResult(
+            intent=SchedulingIntent.NOT_SCHEDULING,
+            confidence=0.0,
+            summary="",
+            proposed_times=[],
+            participants=[],
+            duration_minutes=None,
+        )
+
+    intent_str = data.get("intent", "not_scheduling")
+    intent = SchedulingIntent(intent_str) if intent_str in SchedulingIntent._value2member_map_ else SchedulingIntent.NOT_SCHEDULING
+
+    confidence = float(data.get("confidence", 0.0))
+    summary = data.get("summary") or ""
+    proposed_times = list(data.get("proposed_times") or [])
+    participants = list(data.get("participants") or [])
+    duration_raw = data.get("duration_minutes", None)
+    duration_minutes: int | None
+    try:
+        duration_minutes = int(duration_raw) if duration_raw is not None else None
+    except (TypeError, ValueError):
+        duration_minutes = None
+
+    return ClassificationResult(
+        intent=intent,
+        confidence=confidence,
+        summary=summary,
+        proposed_times=proposed_times,
+        participants=participants,
+        duration_minutes=duration_minutes,
+    )
 
 
 def classify_message_for_event(message: str, sender: str) -> dict | None:
@@ -72,8 +180,65 @@ def classify_message_for_event(message: str, sender: str) -> dict | None:
         Dict with event details (summary, datetime, duration) if a new event
         was detected, None otherwise.
     """
-    # TODO: Implement as a single LLM completion (not an agent)
-    # This is the hook classifier — it determines if a new message
-    # represents a scheduling commitment that should go on the stash calendar
-    # Single anthropic.messages.create() call with structured output
-    raise NotImplementedError
+    client = _get_anthropic_client()
+
+    system_prompt = (
+        "You are a classifier that decides whether a single message represents a concrete "
+        "scheduling commitment that should be added to a calendar.\n\n"
+        "If the message does NOT clearly specify a time window for a real-world commitment "
+        "(meeting, call, dinner, etc.), you must respond with the literal JSON value null.\n\n"
+        "If it DOES represent a concrete commitment, respond with a single JSON object only, "
+        "matching this schema:\n"
+        "{\n"
+        "  \"summary\": string,              // what the event is about\n"
+        "  \"start_iso\": string,           // ISO 8601 start datetime\n"
+        "  \"duration_minutes\": integer,   // duration in minutes\n"
+        "  \"participants\": [string]       // optional names/emails/handles\n"
+        "}\n"
+        "Do not include any other fields. Do not include any explanation."
+    )
+
+    user_content = (
+        "Decide whether the following message represents a concrete scheduling commitment.\n\n"
+        f"Sender: {sender}\n"
+        f"Message:\n{message}\n"
+    )
+
+    try:
+        resp = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=512,
+            temperature=0,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        text = ""
+        for block in resp.content:
+            if getattr(block, "type", None) == "text":
+                text += block.text
+
+        text_stripped = text.strip()
+        if text_stripped == "null":
+            return None
+
+        data: _EventJSON = json.loads(text_stripped)
+
+        summary = data.get("summary")
+        start_iso = data.get("start_iso")
+        duration_minutes = data.get("duration_minutes")
+        if not isinstance(summary, str) or not isinstance(start_iso, str) or not isinstance(
+            duration_minutes, int
+        ):
+            return None
+
+        participants = data.get("participants") or []
+        participants = [str(p) for p in participants]
+
+        return {
+            "summary": summary,
+            "start_iso": start_iso,
+            "duration_minutes": duration_minutes,
+            "participants": participants,
+        }
+    except Exception:
+        return None

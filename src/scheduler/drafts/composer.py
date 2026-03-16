@@ -12,13 +12,30 @@ process benefits from the agent reading through evidence, checking multiple
 date ranges, and iterating on the reply quality.
 """
 
-import anthropic
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
+
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    ResultMessage,
+    TextBlock,
+    create_sdk_mcp_server,
+    tool,
+)
 
 from scheduler.calendar.client import CalendarClient
 from scheduler.classifier.intent import ClassificationResult
 from scheduler.config import config
 from scheduler.gmail.client import Email, GmailClient
 from scheduler.guides import load_guide
+
+if TYPE_CHECKING:
+    from claude_agent_sdk import MCPServer
 
 
 # Tools the draft composer agent has access to
@@ -102,6 +119,74 @@ class DraftComposer:
 
         return "\n".join(parts)
 
+    def _build_tools(self) -> tuple[list, dict]:
+        """Build Agent SDK tools for the draft composer agent."""
+
+        draft_result: dict = {"draft_id": None}
+
+        @tool(
+            "get_calendar_events",
+            "Get all events from the user's calendars (primary + stash) in a date range. "
+            "Use this to see what the user already has scheduled and figure out when they're free.",
+            {"start_date": str, "end_date": str},
+        )
+        async def get_calendar_events(args):
+            start = datetime.fromisoformat(args["start_date"])
+            end = datetime.fromisoformat(args["end_date"])
+            events = self._calendar.get_all_events(start, end, include_primary=True)
+            # Convert events to a JSON-serializable form.
+            payload = [
+                {
+                    "id": e.id,
+                    "summary": e.summary,
+                    "start": e.start.isoformat(),
+                    "end": e.end.isoformat(),
+                    "description": e.description,
+                    "source": e.source,
+                }
+                for e in events
+            ]
+            return {"content": [{"type": "text", "text": json.dumps(payload)}]}
+
+        @tool(
+            "read_thread",
+            "Read the full email thread for context on what's being scheduled.",
+            {"thread_id": str},
+        )
+        async def read_thread(args):
+            thread = self._gmail.get_thread(args["thread_id"])
+            payload = [
+                {
+                    "id": m.id,
+                    "thread_id": m.thread_id,
+                    "sender": m.sender,
+                    "recipient": m.recipient,
+                    "subject": m.subject,
+                    "body": m.body,
+                    "date": m.date.isoformat(),
+                    "snippet": m.snippet,
+                }
+                for m in thread
+            ]
+            return {"content": [{"type": "text", "text": json.dumps(payload)}]}
+
+        @tool(
+            "create_draft",
+            "Create a draft reply in Gmail with the composed response.",
+            {"thread_id": str, "to": str, "subject": str, "body": str},
+        )
+        async def create_draft(args):
+            draft_id = self._gmail.create_draft(
+                thread_id=args["thread_id"],
+                to=args["to"],
+                subject=args["subject"],
+                body=args["body"],
+            )
+            draft_result["draft_id"] = draft_id
+            return {"content": [{"type": "text", "text": json.dumps({"draft_id": draft_id})}]}
+
+        return [get_calendar_events, read_thread, create_draft], draft_result
+
     def compose_and_create_draft(self, email: Email, classification: ClassificationResult) -> str:
         """Run the draft composer agent.
 
@@ -120,20 +205,60 @@ class DraftComposer:
         Returns:
             The ID of the created Gmail draft.
         """
-        # TODO: Implement agentic loop
-        # 1. Build the system prompt: self._build_system_prompt()
-        # 2. Start the agent with the email + classification as the initial message
-        # 3. Run the agentic loop:
-        #    - Agent calls get_calendar_events → we call CalendarClient.get_all_events()
-        #    - Agent calls read_thread → we call GmailClient.get_thread()
-        #    - Agent calls create_draft → we call GmailClient.create_draft()
-        # 4. Return the draft ID from the create_draft tool call
-        raise NotImplementedError
+        system_prompt = self._build_system_prompt()
+        tools, draft_result = self._build_tools()
+        server = create_sdk_mcp_server("draft-tools", tools=tools)
 
-    def _handle_tool_call(self, tool_name: str, tool_input: dict):
-        """Route agent tool calls to the appropriate service."""
-        # TODO: Implement tool call routing
-        # - "get_calendar_events" → self._calendar.get_all_events(...)
-        # - "read_thread" → self._gmail.get_thread(...)
-        # - "create_draft" → self._gmail.create_draft(...)
-        raise NotImplementedError
+        # Initial instructions to the agent.
+        classification_dict = {
+            "intent": classification.intent.value,
+            "confidence": classification.confidence,
+            "summary": classification.summary,
+            "proposed_times": classification.proposed_times,
+            "participants": classification.participants,
+            "duration_minutes": classification.duration_minutes,
+        }
+
+        prompt = (
+            "You are a scheduling draft composer.\n\n"
+            "You are given an incoming email and a structured classification of that email. "
+            "Your job is to:\n"
+            "1. Read the full email thread using read_thread.\n"
+            "2. Inspect the user's availability using get_calendar_events over a reasonable window "
+            "(for example, the next 14 days).\n"
+            "3. Propose concrete meeting times that respect the user's existing commitments and "
+            "the extracted details from the classification.\n"
+            "4. Create a natural-sounding draft reply using create_draft. "
+            "When you are satisfied with the draft, call create_draft exactly once.\n\n"
+            "Email summary (for quick reference):\n"
+            f"Sender: {email.sender}\n"
+            f"Recipient: {email.recipient}\n"
+            f"Subject: {email.subject}\n"
+            f"Snippet: {email.snippet}\n\n"
+            "Classification JSON:\n"
+            f"{json.dumps(classification_dict, indent=2)}\n"
+        )
+
+        options = ClaudeAgentOptions(
+            mcp_servers={"draft": server},
+            system_prompt=system_prompt,
+            permission_mode="bypassPermissions",
+            model="claude-opus-4-6",
+        )
+
+        # Run the agent synchronously; it will call tools via the MCP server.
+        with ClaudeSDKClient(options=options) as client:
+            client.query_sync(prompt)
+            for message in client.receive_response_sync():
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            print(block.text)
+                elif isinstance(message, ResultMessage):
+                    if message.result:
+                        print(f"Draft composer agent result: {message.result}")
+
+        if not draft_result.get("draft_id"):
+            raise RuntimeError("Draft composer agent did not create a draft")
+
+        return draft_result["draft_id"]
