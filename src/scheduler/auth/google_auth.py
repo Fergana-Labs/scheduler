@@ -89,6 +89,38 @@ def _save_credentials(creds: Credentials) -> None:
         f.write(creds.to_json())
 
 
+def load_credentials(user_id: str):
+    """Load Google credentials from database or fall back to token.json.
+
+    If DATABASE_URL is configured and the user exists, builds credentials
+    from stored tokens (refreshing if expired). Otherwise falls back to
+    the local token.json OAuth flow for development.
+    """
+    if config.database_url:
+        from scheduler.db import get_user_by_id, update_user_tokens
+
+        user = get_user_by_id(user_id)
+        if user:
+            creds = Credentials(
+                token=user.google_access_token,
+                refresh_token=user.google_refresh_token,
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=config.google_client_id,
+                client_secret=config.google_client_secret,
+            )
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                update_user_tokens(
+                    user_id=str(user.id),
+                    google_access_token=creds.token,
+                    access_token_expires_at=creds.expiry,
+                )
+            return creds
+
+    # Fallback: local token.json for development
+    return get_credentials()
+
+
 if __name__ == "__main__":
     creds = get_credentials()
     print("Authentication successful!")

@@ -38,6 +38,9 @@ class Config:
     control_plane_port: int = field(
         default_factory=lambda: int(os.environ.get("CONTROL_PLANE_PORT", "8000"))
     )
+    gmail_pubsub_topic: str = field(
+        default_factory=lambda: os.environ.get("GMAIL_PUBSUB_TOPIC", "")
+    )
     guides_dir: str = field(
         default_factory=lambda: os.environ.get(
             "SCHEDULER_GUIDES_DIR",

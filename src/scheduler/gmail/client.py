@@ -233,6 +233,69 @@ class GmailClient:
         )
         return draft["id"]
 
+    def watch(self, topic_name: str) -> dict:
+        """Start receiving push notifications for new emails.
+
+        Calls Gmail users.watch() to register for push notifications via
+        Google Cloud Pub/Sub. Must be renewed before expiration (~ 7 days).
+
+        Args:
+            topic_name: Full Pub/Sub topic name, e.g.
+                        "projects/my-project/topics/gmail-notifications".
+
+        Returns:
+            Dict with 'historyId' (str) and 'expiration' (epoch ms str).
+        """
+        service = self._get_service()
+        result = (
+            service.users()
+            .watch(
+                userId="me",
+                body={
+                    "topicName": topic_name,
+                    "labelIds": ["INBOX"],
+                },
+            )
+            .execute()
+        )
+        return {"historyId": result["historyId"], "expiration": result["expiration"]}
+
+    def get_history(self, start_history_id: str) -> list[str]:
+        """Get message IDs added to the inbox since a given history ID.
+
+        Args:
+            start_history_id: The history ID to start from (from watch() or
+                              a previous push notification).
+
+        Returns:
+            List of new message IDs.
+        """
+        service = self._get_service()
+        message_ids = []
+        page_token = None
+
+        while True:
+            kwargs = {
+                "userId": "me",
+                "startHistoryId": start_history_id,
+                "historyTypes": ["messageAdded"],
+                "labelId": "INBOX",
+            }
+            if page_token:
+                kwargs["pageToken"] = page_token
+
+            result = service.users().history().list(**kwargs).execute()
+
+            for record in result.get("history", []):
+                for msg_added in record.get("messagesAdded", []):
+                    message_ids.append(msg_added["message"]["id"])
+
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
+
+        return message_ids
+
     def search(self, query: str, max_results: int = 100) -> list[Email]:
         """Search emails using Gmail search syntax.
 

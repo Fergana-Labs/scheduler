@@ -19,6 +19,7 @@ class UserRow:
     google_access_token: str | None
     access_token_expires_at: datetime | None
     stash_calendar_id: str | None
+    gmail_history_id: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -92,6 +93,21 @@ def update_user_tokens(
             (google_access_token, access_token_expires_at, user_id),
         )
         conn.commit()
+
+
+def update_gmail_history_id(user_id: str, history_id: str) -> None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET gmail_history_id = %s, updated_at = now() WHERE id = %s",
+            (history_id, user_id),
+        )
+        conn.commit()
+
+
+def get_all_user_ids() -> list[str]:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM users")
+        return [str(row[0]) for row in cur.fetchall()]
 
 
 def update_stash_calendar_id(user_id: str, stash_calendar_id: str) -> None:
