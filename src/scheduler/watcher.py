@@ -8,7 +8,6 @@ proposed meeting times.
 import time
 
 from scheduler.auth.google_auth import get_credentials
-from scheduler.availability.checker import AvailabilityChecker
 from scheduler.calendar.client import CalendarClient
 from scheduler.classifier.intent import SchedulingIntent, classify_email
 from scheduler.config import config
@@ -30,8 +29,7 @@ def run_watcher():
     # creds = get_credentials()
     # gmail = GmailClient(creds)
     # calendar = CalendarClient(creds, config.stash_calendar_name)
-    # availability = AvailabilityChecker(calendar)
-    # composer = DraftComposer(gmail, availability)
+    # composer = DraftComposer(gmail, calendar)
     #
     # last_check = now
     # while True:

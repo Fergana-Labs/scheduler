@@ -8,8 +8,7 @@ src/scheduler/
 ├── gmail/client.py        — Gmail API: read emails, create drafts
 ├── calendar/client.py     — Google Calendar API: stash calendar CRUD
 ├── classifier/intent.py   — LLM classifier: is this email about scheduling?
-├── availability/checker.py — Find open time slots across all calendars
-├── drafts/composer.py     — Compose draft replies with proposed times
+├── drafts/composer.py     — Agent: reads calendar, composes draft replies with proposed times
 ├── onboarding.py          — Backfill stash calendar from Gmail history
 ├── hook.py                — Process new messages, update stash calendar
 ├── watcher.py             — Main loop: poll Gmail, classify, draft
@@ -37,5 +36,5 @@ Two agents, one LLM completion:
 | Component | Type | Why |
 |---|---|---|
 | `classifier/intent.py` | **LLM completion** | Simple classification — single API call with structured output, no tools needed |
-| `drafts/composer.py` | **Agent** | Needs to read threads, check availability across date ranges, iterate on draft quality |
+| `drafts/composer.py` | **Agent** | Reads the calendar directly, reasons about real availability (buffers, meal times, etc.), composes the draft |
 | `onboarding.py` | **Agent** | Needs to iteratively search Gmail with different queries, read threads, cross-reference calendar, decide when done |

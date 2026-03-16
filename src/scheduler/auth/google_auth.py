@@ -9,7 +9,12 @@ Scopes needed:
 - calendar: Read/write to the stash calendar and user's primary calendar
 """
 
+import json
+import os
+
+from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
 
 from scheduler.config import config
 
@@ -26,14 +31,19 @@ def get_credentials() -> Credentials:
     Returns valid Google OAuth2 credentials. If no stored credentials exist
     or they've expired, launches the browser-based OAuth flow.
     """
-    # TODO: Implement
-    # 1. Check if token.json exists and load credentials
-    # 2. If credentials are expired but have a refresh token, refresh them
-    # 3. If no valid credentials, run the OAuth flow:
-    #    - Create OAuth flow from client config
-    #    - Launch local server to handle redirect
-    #    - Save resulting credentials to token.json
-    raise NotImplementedError
+    creds = None
+
+    if os.path.exists(config.token_path):
+        creds = Credentials.from_authorized_user_file(config.token_path, SCOPES)
+
+    if creds and creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        _save_credentials(creds)
+    elif not creds or not creds.valid:
+        creds = run_oauth_flow()
+        _save_credentials(creds)
+
+    return creds
 
 
 def run_oauth_flow() -> Credentials:
@@ -42,8 +52,24 @@ def run_oauth_flow() -> Credentials:
     Opens the user's browser to Google's consent screen, starts a local
     server to receive the callback, and returns the resulting credentials.
     """
-    # TODO: Implement using google_auth_oauthlib.flow.InstalledAppFlow
-    raise NotImplementedError
+    client_config = {
+        "installed": {
+            "client_id": config.google_client_id,
+            "client_secret": config.google_client_secret,
+            "redirect_uris": [config.google_redirect_uri],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    }
+    flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+    creds = flow.run_local_server(port=8080)
+    return creds
+
+
+def _save_credentials(creds: Credentials) -> None:
+    """Save credentials to token.json for reuse."""
+    with open(config.token_path, "w") as f:
+        f.write(creds.to_json())
 
 
 if __name__ == "__main__":

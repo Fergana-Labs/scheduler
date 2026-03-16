@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from datetime import datetime
 
+from googleapiclient.discovery import build
+
 
 @dataclass
 class Event:
@@ -14,6 +16,30 @@ class Event:
     end: datetime
     description: str = ""
     source: str = ""  # Where this commitment was found (gmail, text, slack, etc.)
+
+
+def _parse_event_datetime(event_data: dict, field: str) -> datetime:
+    """Parse a datetime from a Google Calendar event's start/end field.
+
+    Google Calendar events can have either 'dateTime' (timed events)
+    or 'date' (all-day events).
+    """
+    dt_str = event_data[field].get("dateTime")
+    if dt_str:
+        return datetime.fromisoformat(dt_str)
+    # All-day event — just a date string like "2026-03-17"
+    return datetime.fromisoformat(event_data[field]["date"])
+
+
+def _event_from_api(event_data: dict) -> Event:
+    """Convert a Google Calendar API event dict to our Event dataclass."""
+    return Event(
+        id=event_data.get("id"),
+        summary=event_data.get("summary", "(no title)"),
+        start=_parse_event_datetime(event_data, "start"),
+        end=_parse_event_datetime(event_data, "end"),
+        description=event_data.get("description", ""),
+    )
 
 
 class CalendarClient:
@@ -32,8 +58,9 @@ class CalendarClient:
 
     def _get_service(self):
         """Build and cache the Calendar API service."""
-        # TODO: Build using googleapiclient.discovery.build("calendar", "v3", credentials=...)
-        raise NotImplementedError
+        if self._service is None:
+            self._service = build("calendar", "v3", credentials=self._credentials)
+        return self._service
 
     def get_or_create_stash_calendar(self) -> str:
         """Get the stash calendar ID, creating it if it doesn't exist.
@@ -41,12 +68,51 @@ class CalendarClient:
         Returns:
             The calendar ID of the stash calendar.
         """
-        # TODO: Implement
-        # 1. List all calendars
-        # 2. Find one matching self._stash_calendar_name
-        # 3. If not found, create it
-        # 4. Cache and return the calendar ID
-        raise NotImplementedError
+        if self._stash_calendar_id:
+            return self._stash_calendar_id
+
+        service = self._get_service()
+        calendar_list = service.calendarList().list().execute()
+
+        for cal in calendar_list.get("items", []):
+            if cal.get("summary") == self._stash_calendar_name:
+                self._stash_calendar_id = cal["id"]
+                return self._stash_calendar_id
+
+        # Not found — create it
+        new_cal = service.calendars().insert(body={
+            "summary": self._stash_calendar_name,
+            "description": "Stash Scheduler Calendar",
+        }).execute()
+        self._stash_calendar_id = new_cal["id"]
+        return self._stash_calendar_id
+
+    def _list_events(
+        self, calendar_id: str, time_min: datetime, time_max: datetime
+    ) -> list[Event]:
+        """List events from a single calendar in a time range."""
+        service = self._get_service()
+        events = []
+        page_token = None
+
+        while True:
+            result = service.events().list(
+                calendarId=calendar_id,
+                timeMin=time_min.isoformat() + "Z" if not time_min.tzinfo else time_min.isoformat(),
+                timeMax=time_max.isoformat() + "Z" if not time_max.tzinfo else time_max.isoformat(),
+                singleEvents=True,
+                orderBy="startTime",
+                pageToken=page_token,
+            ).execute()
+
+            for item in result.get("items", []):
+                events.append(_event_from_api(item))
+
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
+
+        return events
 
     def get_all_events(
         self, time_min: datetime, time_max: datetime, include_primary: bool = True
@@ -62,13 +128,17 @@ class CalendarClient:
             include_primary: Whether to also check the user's primary calendar.
 
         Returns:
-            All events in the time range, from both calendars.
+            All events in the time range, from both calendars, sorted by start time.
         """
-        # TODO: Implement
-        # 1. Query stash calendar for events in range
-        # 2. If include_primary, also query "primary" calendar
-        # 3. Merge and return
-        raise NotImplementedError
+        stash_id = self.get_or_create_stash_calendar()
+        events = self._list_events(stash_id, time_min, time_max)
+
+        if include_primary:
+            primary_events = self._list_events("primary", time_min, time_max)
+            events.extend(primary_events)
+
+        events.sort(key=lambda e: e.start)
+        return events
 
     def add_event(self, event: Event) -> str:
         """Add an event to the stash calendar.
@@ -79,18 +149,46 @@ class CalendarClient:
         Returns:
             The ID of the created event.
         """
-        # TODO: Implement using Calendar API events.insert
-        raise NotImplementedError
+        service = self._get_service()
+        stash_id = self.get_or_create_stash_calendar()
+
+        body = {
+            "summary": event.summary,
+            "start": {"dateTime": event.start.isoformat()},
+            "end": {"dateTime": event.end.isoformat()},
+            "description": event.description,
+        }
+        if event.source:
+            body["description"] = f"[source: {event.source}]\n{event.description}"
+
+        result = service.events().insert(calendarId=stash_id, body=body).execute()
+        return result["id"]
 
     def update_event(self, event_id: str, event: Event) -> None:
         """Update an existing event on the stash calendar."""
-        # TODO: Implement
-        raise NotImplementedError
+        service = self._get_service()
+        stash_id = self.get_or_create_stash_calendar()
+
+        body = {
+            "summary": event.summary,
+            "start": {"dateTime": event.start.isoformat()},
+            "end": {"dateTime": event.end.isoformat()},
+            "description": event.description,
+        }
+        service.events().update(
+            calendarId=stash_id, eventId=event_id, body=body
+        ).execute()
 
     def find_event(self, summary: str, time_min: datetime, time_max: datetime) -> Event | None:
         """Find an event by summary text within a time range.
 
         Useful for deduplication — checking if we already have this commitment.
         """
-        # TODO: Implement
-        raise NotImplementedError
+        stash_id = self.get_or_create_stash_calendar()
+        events = self._list_events(stash_id, time_min, time_max)
+
+        summary_lower = summary.lower()
+        for event in events:
+            if summary_lower in event.summary.lower():
+                return event
+        return None
