@@ -20,6 +20,7 @@ class UserRow:
     access_token_expires_at: datetime | None
     stash_calendar_id: str | None
     gmail_history_id: str | None
+    stash_branding_enabled: bool
     created_at: datetime
     updated_at: datetime
 
@@ -108,6 +109,15 @@ def get_all_user_ids() -> list[str]:
     with _conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT id FROM users")
         return [str(row[0]) for row in cur.fetchall()]
+
+
+def update_stash_branding(user_id: str, enabled: bool) -> None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET stash_branding_enabled = %s, updated_at = now() WHERE id = %s",
+            (enabled, user_id),
+        )
+        conn.commit()
 
 
 def update_stash_calendar_id(user_id: str, stash_calendar_id: str) -> None:

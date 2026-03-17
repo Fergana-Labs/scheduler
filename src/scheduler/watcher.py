@@ -29,7 +29,7 @@ def run_watcher():
     # creds = get_credentials()
     # gmail = GmailClient(creds)
     # calendar = CalendarClient(creds, config.stash_calendar_name)
-    # composer = DraftComposer(gmail, calendar)
+    # composer = DraftComposer(gmail, calendar, user_id=user_id)
     #
     # last_check = now
     # while True:

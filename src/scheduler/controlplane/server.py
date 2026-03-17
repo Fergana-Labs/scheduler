@@ -127,6 +127,10 @@ class AddEventRequest(BaseModel):
     description: str = ""
 
 
+class UpdateBrandingRequest(BaseModel):
+    enabled: bool
+
+
 class WriteGuideRequest(BaseModel):
     name: str
     content: str
@@ -198,6 +202,30 @@ def calendar_add(req: AddEventRequest, session: dict = Depends(get_session)):
     )
     event_id = calendar.add_event(event)
     return {"event_id": event_id, "status": "created"}
+
+
+# --- Settings routes ---
+
+
+@app.get("/api/v1/settings/branding")
+def settings_branding_get(session: dict = Depends(get_session)):
+    from scheduler.db import get_user_by_id
+
+    user = get_user_by_id(session["user_id"])
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"stash_branding_enabled": user.stash_branding_enabled}
+
+
+@app.put("/api/v1/settings/branding")
+def settings_branding_put(req: UpdateBrandingRequest, session: dict = Depends(get_session)):
+    from scheduler.db import get_user_by_id, update_stash_branding
+
+    user = get_user_by_id(session["user_id"])
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    update_stash_branding(session["user_id"], req.enabled)
+    return {"stash_branding_enabled": req.enabled}
 
 
 # --- Guide routes ---

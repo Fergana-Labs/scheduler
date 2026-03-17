@@ -182,7 +182,7 @@ class GmailClient:
         )
         return [self._parse_message(m) for m in thread_data.get("messages", [])]
 
-    def create_draft(self, thread_id: str, to: str, subject: str, body: str) -> str:
+    def create_draft(self, thread_id: str, to: str, subject: str, body: str, content_type: str = "plain") -> str:
         """Create a draft reply in a thread.
 
         Args:
@@ -213,7 +213,7 @@ class GmailClient:
                     break
 
         # Build MIME message
-        mime_msg = MIMEText(body)
+        mime_msg = MIMEText(body, content_type)
         mime_msg["To"] = to
         mime_msg["Subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
         if message_id_header:

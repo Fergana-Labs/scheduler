@@ -14,6 +14,7 @@ date ranges, and iterating on the reply quality.
 
 from __future__ import annotations
 
+import html
 import json
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
@@ -88,12 +89,12 @@ class DraftComposer:
     before creating it.
     """
 
-    def __init__(self, gmail_client: GmailClient, calendar_client: CalendarClient):
+    def __init__(self, gmail_client: GmailClient, calendar_client: CalendarClient, user_id: str):
         self._gmail = gmail_client
         self._calendar = calendar_client
+        self._user_id = user_id
 
-    @staticmethod
-    def _build_system_prompt() -> str:
+    def _build_system_prompt(self) -> str:
         """Build the system prompt, injecting guide files if they exist."""
         parts = [
             "You are a draft composer agent for a scheduling assistant. "
@@ -176,11 +177,26 @@ class DraftComposer:
             {"thread_id": str, "to": str, "subject": str, "body": str},
         )
         async def create_draft(args):
+            body = args["body"]
+            content_type = "plain"
+
+            # Check if branding is enabled for this user
+            from scheduler.db import get_user_by_id
+
+            user = get_user_by_id(self._user_id)
+            if user and user.stash_branding_enabled:
+                # Convert plain text to HTML and append branding
+                html_body = html.escape(body).replace("\n", "<br>")
+                html_body += '<br><br>sent by <a href="https://stash.ac">Stash</a>'
+                body = html_body
+                content_type = "html"
+
             draft_id = self._gmail.create_draft(
                 thread_id=args["thread_id"],
                 to=args["to"],
                 subject=args["subject"],
-                body=args["body"],
+                body=body,
+                content_type=content_type,
             )
             draft_result["draft_id"] = draft_id
             return {"content": [{"type": "text", "text": json.dumps({"draft_id": draft_id})}]}
