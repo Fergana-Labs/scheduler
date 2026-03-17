@@ -13,11 +13,9 @@ import {
 } from 'lucide-react';
 
 const rotatingItems = [
-  { text: 'Meeting Requests', icon: Mail },
-  { text: 'Calendar Conflicts', icon: Calendar },
-  { text: 'Time Proposals', icon: Clock },
+  { text: 'Conflicts', icon: Calendar },
+  { text: 'Invites', icon: Clock },
   { text: 'Follow-ups', icon: MessageSquare },
-  { text: 'Group Scheduling', icon: Users },
   { text: 'Confirmations', icon: CalendarCheck },
 ];
 
@@ -58,13 +56,15 @@ export default function Hero() {
             <h1 className="font-[family-name:var(--font-space-grotesk)] text-5xl leading-tight font-bold tracking-tight text-gray-900 sm:text-6xl lg:text-7xl">
               Automate
               <br />
-              <span
-                className={`inline-flex items-center gap-3 bg-gradient-to-r from-[#43614a] to-[#527559] bg-clip-text text-transparent transition-opacity duration-300 ${
-                  isVisible ? 'opacity-100' : 'opacity-0'
-                }`}
-              >
-                <CurrentIcon className="h-12 w-12 text-[#43614a] sm:h-14 sm:w-14 lg:h-16 lg:w-16" />
-                {rotatingItems[currentIndex].text}
+              <span className="inline-flex h-[3.5rem] sm:h-[4rem] lg:h-[4.5rem] items-center overflow-hidden">
+                <span
+                  className={`inline-flex items-center gap-3 whitespace-nowrap bg-gradient-to-r from-[#43614a] to-[#527559] bg-clip-text text-transparent transition-opacity duration-300 ${
+                    isVisible ? 'opacity-100' : 'opacity-0'
+                  }`}
+                >
+                  <CurrentIcon className="h-12 w-12 text-[#43614a] sm:h-14 sm:w-14 lg:h-16 lg:w-16" />
+                  {rotatingItems[currentIndex].text}
+                </span>
               </span>
             </h1>
 

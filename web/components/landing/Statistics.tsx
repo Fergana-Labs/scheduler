@@ -1,6 +1,6 @@
 'use client';
 
-import { Mail, Clock, Calendar, Brain, Check } from 'lucide-react';
+import { Mail, Shield, Calendar, Brain, Check } from 'lucide-react';
 
 const stats = [
   {
@@ -11,11 +11,11 @@ const stats = [
     icon: Mail,
   },
   {
-    label: 'Time Saved',
-    value: '5+',
-    suffix: 'hrs/week',
-    description: 'No more back-and-forth scheduling',
-    icon: Clock,
+    label: 'Data Stored',
+    value: '0',
+    suffix: 'copies',
+    description: 'We don’t store your email or calendar content — it stays in Gmail',
+    icon: Shield,
   },
   {
     label: 'Calendar Sources',
@@ -75,7 +75,7 @@ export default function Statistics() {
             Scheduler by the Numbers
           </h2>
           <p className="mx-auto mt-5 max-w-2xl text-lg text-gray-500">
-            Measurable impact on your scheduling workflow
+            Measurable impact on your scheduling workflow without compromising privacy.
           </p>
         </div>
 

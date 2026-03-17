@@ -28,7 +28,7 @@ export default function Footer() {
               AI-powered scheduling agent that handles your email scheduling automatically.
             </p>
             <p className="mt-4 text-xs text-gray-400">
-              &copy; 2025 Fergana Labs. All rights reserved.
+              &copy; 2026 Fergana Labs. All rights reserved.
             </p>
           </div>
 
@@ -79,6 +79,12 @@ export default function Footer() {
               >
                 Contact
               </a>
+              <a
+                href="/blog"
+                className="transition-colors hover:text-gray-900"
+              >
+                Blog
+              </a>
             </div>
           </div>
 
@@ -89,13 +95,13 @@ export default function Footer() {
             </h3>
             <div className="flex flex-col gap-3 text-sm text-gray-500">
               <a
-                href="#"
+                href="/privacy"
                 className="transition-colors hover:text-gray-900"
               >
                 Privacy Policy
               </a>
               <a
-                href="#"
+                href="/terms"
                 className="transition-colors hover:text-gray-900"
               >
                 Terms of Service
