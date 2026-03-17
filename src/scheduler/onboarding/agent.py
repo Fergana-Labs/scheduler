@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -18,8 +19,13 @@ from claude_agent_sdk import (
     tool,
 )
 
+from scheduler.claude_runtime import is_api_error_result, nested_claude_session
+
 if TYPE_CHECKING:
     from scheduler.onboarding.backends import OnboardingBackend
+
+
+logger = logging.getLogger(__name__)
 
 
 ONBOARDING_SYSTEM_PROMPT = """\
@@ -157,17 +163,21 @@ async def _run_onboarding_async(backend: OnboardingBackend, lookback_days: int):
         model="claude-opus-4-6",
     )
 
-    async with ClaudeSDKClient(options=options) as client:
-        await client.query(prompt)
-        async for message in client.receive_response():
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        print(block.text)
-            elif isinstance(message, ResultMessage):
-                print(f"\nBackfill complete. {events_added['count']} events added.")
-                if message.result:
-                    print(f"Agent summary: {message.result}")
+    with nested_claude_session():
+        async with ClaudeSDKClient(options=options) as client:
+            await client.query(prompt)
+            async for message in client.receive_response():
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            print(block.text)
+                elif isinstance(message, ResultMessage):
+                    if is_api_error_result(message.result):
+                        logger.error("onboarding backfill agent failed: %s", message.result)
+                        raise RuntimeError(message.result)
+                    print(f"\nBackfill complete. {events_added['count']} events added.")
+                    if message.result:
+                        print(f"Agent summary: {message.result}")
 
 
 def run_onboarding_agent(backend: OnboardingBackend, lookback_days: int):

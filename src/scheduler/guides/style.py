@@ -9,6 +9,7 @@ Uses the Claude Agent SDK with custom tools (via an SDK MCP server).
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING
 
 from claude_agent_sdk import (
@@ -21,8 +22,13 @@ from claude_agent_sdk import (
     tool,
 )
 
+from scheduler.claude_runtime import is_api_error_result, nested_claude_session
+
 if TYPE_CHECKING:
     from scheduler.guides.backends import GuideBackend
+
+
+logger = logging.getLogger(__name__)
 
 
 def _build_tools(backend: GuideBackend):
@@ -119,12 +125,16 @@ async def run_style_agent(backend: GuideBackend) -> None:
     )
 
     print("Starting email style analysis...")
-    async with ClaudeSDKClient(options=options) as client:
-        await client.query(prompt)
-        async for message in client.receive_response():
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        print(block.text)
-            elif isinstance(message, ResultMessage):
-                print("\nEmail style guide written.")
+    with nested_claude_session():
+        async with ClaudeSDKClient(options=options) as client:
+            await client.query(prompt)
+            async for message in client.receive_response():
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            print(block.text)
+                elif isinstance(message, ResultMessage):
+                    if is_api_error_result(message.result):
+                        logger.error("style guide agent failed: %s", message.result)
+                        raise RuntimeError(message.result)
+                    print("\nEmail style guide written.")
