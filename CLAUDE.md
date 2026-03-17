@@ -35,7 +35,64 @@ Expected response: `{"renewed": 1, "failed": []}`. If it fails, check that `GMAI
 
 ### 4. Send a Test Email
 
-To test the e2e flow, send a scheduling email from a different account to the user's Gmail. Then:
+To test the e2e flow, send a scheduling email from a second Gmail account to henry@ferganalabs.com.
+
+**Step 1: Get test sender credentials** (one-time, or if `/tmp/test_sender_token.json` is missing/expired)
+
+```bash
+lsof -ti:8080 | xargs kill 2>/dev/null; sleep 1
+
+python3 -c "
+import sys; sys.path.insert(0, 'src')
+from scheduler.config import config
+from google_auth_oauthlib.flow import InstalledAppFlow
+
+client_config = {
+    'installed': {
+        'client_id': config.google_client_id,
+        'client_secret': config.google_client_secret,
+        'redirect_uris': ['http://localhost:8080'],
+        'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
+        'token_uri': 'https://oauth2.googleapis.com/token',
+    }
+}
+
+flow = InstalledAppFlow.from_client_config(client_config, ['https://www.googleapis.com/auth/gmail.send'])
+creds = flow.run_local_server(port=8080, redirect_uri_trailing_slash=False)
+
+with open('/tmp/test_sender_token.json', 'w') as f:
+    f.write(creds.to_json())
+print('OAuth complete! Token saved.')
+"
+```
+
+The user will need to log in with a **different** Google account (not henry@ferganalabs.com) in the browser popup.
+
+**Step 2: Send test email**
+
+```bash
+python3 -c "
+import json, base64
+from email.mime.text import MIMEText
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+
+with open('/tmp/test_sender_token.json') as f:
+    creds = Credentials.from_authorized_user_info(json.load(f))
+
+service = build('gmail', 'v1', credentials=creds)
+
+msg = MIMEText('Hey, are you free for a call on Thursday? Would love to catch up!')
+msg['to'] = 'henry@ferganalabs.com'
+msg['subject'] = 'Call Thursday?'
+
+raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+result = service.users().messages().send(userId='me', body={'raw': raw}).execute()
+print(f'Sent message ID: {result[\"id\"]}')
+"
+```
+
+**Step 3: Verify**
 
 - Watch Render logs for `gmail_webhook:` entries
 - Confirm the classifier runs, draft composer fires, and draft appears in Gmail

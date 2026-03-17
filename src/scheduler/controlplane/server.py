@@ -612,6 +612,7 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
                                 start=invite.event_start,
                                 end=invite.event_end,
                                 attendee_email=invite.attendee_email,
+                                add_google_meet=invite.add_google_meet,
                             )
                             delete_pending_invite(str(invite.id))
                             logger.info("gmail_webhook: created invite event %s for thread %s", event_id, email.thread_id)

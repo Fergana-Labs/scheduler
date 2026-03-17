@@ -79,6 +79,7 @@ DRAFT_AGENT_TOOLS = [
                 "invite_event_summary": {"type": "string", "description": "Event title (required if send_invite is true)"},
                 "invite_event_start": {"type": "string", "description": "Event start time ISO format (required if send_invite is true)"},
                 "invite_event_end": {"type": "string", "description": "Event end time ISO format (required if send_invite is true)"},
+                "invite_add_google_meet": {"type": "boolean", "description": "If true, attach a Google Meet link to the calendar invite. Only relevant when send_invite is true.", "default": False},
             },
             "required": ["thread_id", "to", "subject", "body"],
         },
@@ -182,7 +183,7 @@ class DraftComposer:
             "Create a draft reply in Gmail with the composed response. "
             "Set send_invite=true to automatically create a calendar invite when the user sends this draft. "
             "When send_invite is true, you must also provide invite_attendee_email, invite_event_summary, "
-            "invite_event_start, and invite_event_end.",
+            "invite_event_start, and invite_event_end. Set invite_add_google_meet=true to attach a Google Meet link.",
             {
                 "thread_id": str,
                 "to": str,
@@ -230,6 +231,7 @@ class DraftComposer:
                     event_summary=args["invite_event_summary"],
                     event_start=datetime.fromisoformat(args["invite_event_start"]),
                     event_end=datetime.fromisoformat(args["invite_event_end"]),
+                    add_google_meet=args.get("invite_add_google_meet", False),
                 )
 
             return {"content": [{"type": "text", "text": json.dumps({"draft_id": draft_id})}]}
@@ -358,7 +360,9 @@ class DraftComposer:
                 "fill in the invite fields (invite_attendee_email, invite_event_summary, "
                 "invite_event_start, invite_event_end). This will automatically send a calendar invite when "
                 "the user sends the draft. When you set send_invite=true, mention in the email body that you're "
-                "sending a calendar invite (e.g. 'I've sent over a calendar invite as well.').\n\n"
+                "sending a calendar invite (e.g. 'I've sent over a calendar invite as well.'). "
+                "If the meeting is virtual or no physical location is specified, set invite_add_google_meet=true "
+                "to attach a Google Meet link to the invite and mention the Meet link in your reply.\n\n"
                 "IMPORTANT: If the thread is already fully resolved (step 2), do NOT create a draft or send an email. "
                 "Simply stop.\n\n"
                 if self._autopilot
@@ -370,11 +374,13 @@ class DraftComposer:
                 "invite_event_start, invite_event_end). This will automatically send a calendar invite "
                 "when the user sends the draft. Only do this when a concrete time is being proposed. "
                 "When you set send_invite=true, mention in the email body that you're sending a calendar invite "
-                "(e.g. 'I've sent over a calendar invite as well.').\n\n"
+                "(e.g. 'I've sent over a calendar invite as well.'). "
+                "If the meeting is virtual or no physical location is specified, set invite_add_google_meet=true "
+                "to attach a Google Meet link to the invite and mention the Meet link in your reply.\n\n"
                 "IMPORTANT: If the thread is already fully resolved (step 2), do NOT call create_draft. "
                 "Simply stop without creating a draft.\n\n"
             )
-            "Email summary (for quick reference):\n"
+            + "Email summary (for quick reference):\n"
             f"Message ID: {email.id}\n"
             f"Thread ID: {email.thread_id}\n"
             f"Sender: {email.sender}\n"

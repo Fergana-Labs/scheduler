@@ -210,6 +210,7 @@ class PendingInviteRow:
     event_start: datetime
     event_end: datetime
     created_at: datetime
+    add_google_meet: bool = False
 
 
 def create_pending_invite(
@@ -219,21 +220,24 @@ def create_pending_invite(
     event_summary: str,
     event_start: datetime,
     event_end: datetime,
+    add_google_meet: bool = False,
 ) -> PendingInviteRow:
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO pending_invites (user_id, thread_id, attendee_email,
-                                         event_summary, event_start, event_end)
-            VALUES (%s, %s, %s, %s, %s, %s)
+                                         event_summary, event_start, event_end,
+                                         add_google_meet)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (user_id, thread_id) DO UPDATE SET
                 attendee_email = EXCLUDED.attendee_email,
                 event_summary = EXCLUDED.event_summary,
                 event_start = EXCLUDED.event_start,
-                event_end = EXCLUDED.event_end
+                event_end = EXCLUDED.event_end,
+                add_google_meet = EXCLUDED.add_google_meet
             RETURNING *
             """,
-            (user_id, thread_id, attendee_email, event_summary, event_start, event_end),
+            (user_id, thread_id, attendee_email, event_summary, event_start, event_end, add_google_meet),
         )
         row = cur.fetchone()
         cols = [desc[0] for desc in cur.description]

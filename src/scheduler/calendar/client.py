@@ -201,10 +201,12 @@ class CalendarClient:
         end: datetime,
         attendee_email: str,
         description: str = "",
+        add_google_meet: bool = False,
     ) -> str:
         """Create an event on the PRIMARY calendar with an attendee.
 
         Google Calendar automatically sends an invite email to the attendee.
+        If add_google_meet is True, a Google Meet link is attached to the event.
         """
         service = self._get_service()
 
@@ -216,9 +218,18 @@ class CalendarClient:
             "attendees": [{"email": attendee_email}],
         }
 
+        if add_google_meet:
+            body["conferenceData"] = {
+                "createRequest": {
+                    "requestId": f"meet-{start.isoformat()}-{attendee_email}",
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                },
+            }
+
         result = service.events().insert(
             calendarId="primary",
             body=body,
             sendUpdates="all",
+            conferenceDataVersion=1 if add_google_meet else 0,
         ).execute()
         return result["id"]

@@ -1,0 +1,1 @@
+ALTER TABLE pending_invites ADD COLUMN IF NOT EXISTS add_google_meet BOOLEAN NOT NULL DEFAULT false;
