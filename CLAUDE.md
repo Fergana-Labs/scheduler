@@ -4,6 +4,7 @@ If you are about to ask the user to do something for you, think about whether yo
 
 - **Never ask the user to check logs.** Check them yourself — via Render MCP, ngrok inspector (`localhost:4040`), or by running the server with captured output.
 - **Never ask permission to kill/restart local processes.** If you need to restart uvicorn, ngrok, or any dev server to make progress, just do it.
+- **Never speculate about env vars, API keys, or config.** If you need to know whether something is set, check it yourself (e.g. `env | grep`, read `.env`, etc.). Do not guess or assume.
 
 ### 1. Check Render Deployment
 
