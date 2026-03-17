@@ -30,6 +30,7 @@ from scheduler.calendar.client import CalendarClient, Event
 from scheduler.config import config
 from scheduler.gmail.client import GmailClient
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Scheduler Control Plane")
@@ -478,6 +479,12 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
     for message_id in new_message_ids:
         try:
             email = gmail.get_email(message_id)
+
+            # Skip messages sent by the user themselves (including draft replies we created)
+            if email.sender and email_address in email.sender:
+                logger.info("gmail_webhook: message %s is from the user, skipping", message_id)
+                continue
+
             classification = classify_email(email.subject, email.body, email.sender)
 
             if classification.intent == SchedulingIntent.NOT_SCHEDULING:

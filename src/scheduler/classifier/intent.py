@@ -119,7 +119,7 @@ def classify_email(subject: str, body: str, sender: str) -> ClassificationResult
 
     try:
         resp = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-sonnet-4-6",
             max_tokens=512,
             temperature=0,
             system=system_prompt,
@@ -130,6 +130,14 @@ def classify_email(subject: str, body: str, sender: str) -> ClassificationResult
         for block in resp.content:
             if getattr(block, "type", None) == "text":
                 text += block.text
+
+        # Strip markdown code fences if present
+        text = text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1]  # remove opening ```json
+        if text.endswith("```"):
+            text = text.rsplit("```", 1)[0]
+        text = text.strip()
 
         data: _EmailClassificationJSON = json.loads(text)
     except Exception:
@@ -206,7 +214,7 @@ def classify_message_for_event(message: str, sender: str) -> dict | None:
 
     try:
         resp = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-sonnet-4-6",
             max_tokens=512,
             temperature=0,
             system=system_prompt,
@@ -218,6 +226,12 @@ def classify_message_for_event(message: str, sender: str) -> dict | None:
                 text += block.text
 
         text_stripped = text.strip()
+        if text_stripped.startswith("```"):
+            text_stripped = text_stripped.split("\n", 1)[1]
+        if text_stripped.endswith("```"):
+            text_stripped = text_stripped.rsplit("```", 1)[0]
+        text_stripped = text_stripped.strip()
+
         if text_stripped == "null":
             return None
 

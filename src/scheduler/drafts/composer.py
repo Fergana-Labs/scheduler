@@ -247,6 +247,8 @@ class DraftComposer:
             "4. Create a natural-sounding draft reply using create_draft. "
             "When you are satisfied with the draft, call create_draft exactly once.\n\n"
             "Email summary (for quick reference):\n"
+            f"Message ID: {email.id}\n"
+            f"Thread ID: {email.thread_id}\n"
             f"Sender: {email.sender}\n"
             f"Recipient: {email.recipient}\n"
             f"Subject: {email.subject}\n"
@@ -262,17 +264,34 @@ class DraftComposer:
             model="claude-opus-4-6",
         )
 
-        # Run the agent synchronously; it will call tools via the MCP server.
-        with ClaudeSDKClient(options=options) as client:
-            client.query_sync(prompt)
-            for message in client.receive_response_sync():
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            print(block.text)
-                elif isinstance(message, ResultMessage):
-                    if message.result:
-                        print(f"Draft composer agent result: {message.result}")
+        # Run the agent; it will call tools via the MCP server.
+        import asyncio
+        import os
+
+        # Allow nested Claude Code sessions (e.g. when server is launched from Claude Code)
+        os.environ.pop("CLAUDECODE", None)
+
+        async def _run_agent():
+            import logging
+            logger = logging.getLogger(__name__)
+
+            client = ClaudeSDKClient(options=options)
+            await client.connect()
+            try:
+                await client.query(prompt)
+                async for message in client.receive_response():
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                logger.info("draft_composer: %s", block.text)
+                    elif isinstance(message, ResultMessage):
+                        logger.info("draft_composer result: %s", message.result)
+                    else:
+                        logger.info("draft_composer message: %s", type(message).__name__)
+            finally:
+                await client.disconnect()
+
+        asyncio.run(_run_agent())
 
         if not draft_result.get("draft_id"):
             raise RuntimeError("Draft composer agent did not create a draft")
