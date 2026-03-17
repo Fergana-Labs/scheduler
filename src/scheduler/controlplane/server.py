@@ -175,10 +175,15 @@ def auth_google_callback(code: str | None = None, state: str | None = None, erro
         access_token_expires_at=expires_at,
     )
 
+    # Kick off onboarding agents in the background
+    from starlette.background import BackgroundTask
+    logger.info("onboarding: starting all agents for user=%s after OAuth", user.id)
+    background = BackgroundTask(_run_onboarding_all, str(user.id))
+
     # Create signed session and redirect to web app
     session_token = _sign_session(str(user.id), email)
     redirect_url = f"{config.web_app_url}/onboarding"
-    response = RedirectResponse(redirect_url)
+    response = RedirectResponse(redirect_url, background=background)
     response.set_cookie(
         key="session",
         value=session_token,
@@ -462,26 +467,38 @@ def guides_read(req: ReadGuideRequest, session: dict = Depends(get_session)):
 # --- Onboarding ---
 
 
-def _run_onboarding_guides(user_id: str) -> None:
-    """Background task: run both guide-writer agents for a user."""
+def _run_onboarding_all(user_id: str) -> None:
+    """Background task: run backfill + both guide-writer agents for a user, then set up Gmail watch."""
     import anyio
+    from scheduler.gmail.watch import setup_gmail_watch
     from scheduler.guides.backends import LocalGuideBackend
     from scheduler.guides.preferences import run_preferences_agent
     from scheduler.guides.style import run_style_agent
+    from scheduler.onboarding.agent import _run_onboarding_async as _run_backfill
+    from scheduler.onboarding.backends import LocalBackend
 
     creds = load_credentials(user_id)
     gmail = GmailClient(creds)
     calendar = CalendarClient(creds, config.stash_calendar_name)
     calendar.get_or_create_stash_calendar()
 
-    backend = LocalGuideBackend(gmail, calendar, user_id=user_id)
+    guide_backend = LocalGuideBackend(gmail, calendar, user_id=user_id)
+    onboarding_backend = LocalBackend(gmail, calendar)
 
     async def _run():
         async with anyio.create_task_group() as tg:
-            tg.start_soon(run_preferences_agent, backend)
-            tg.start_soon(run_style_agent, backend)
+            tg.start_soon(_run_backfill, onboarding_backend, config.onboarding_lookback_days)
+            tg.start_soon(run_preferences_agent, guide_backend)
+            tg.start_soon(run_style_agent, guide_backend)
 
     anyio.run(_run)
+
+    # Set up Gmail watch so incoming emails are processed
+    try:
+        setup_gmail_watch(user_id)
+        logger.info("onboarding: gmail watch set up for user=%s", user_id)
+    except Exception:
+        logger.exception("onboarding: failed to set up gmail watch for user=%s", user_id)
 
 
 @app.post("/api/v1/onboarding/run")
@@ -489,8 +506,8 @@ def onboarding_run(request: Request, background_tasks: BackgroundTasks):
     """Kick off the style + preferences guide agents for this user."""
     session = get_web_session(request)
     user_id = session["user_id"]
-    logger.info("onboarding: starting guide agents for user=%s", user_id)
-    background_tasks.add_task(_run_onboarding_guides, user_id)
+    logger.info("onboarding: starting all agents for user=%s", user_id)
+    background_tasks.add_task(_run_onboarding_all, user_id)
     return {"status": "started"}
 
 

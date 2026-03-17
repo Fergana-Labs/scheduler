@@ -8,7 +8,7 @@ build/
 token.json
 credentials.json
 .DS_store
-guides/
+local_dev_guide_artifacts/
 web/.next/
 uv.lock
 node_modules/

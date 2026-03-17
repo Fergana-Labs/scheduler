@@ -58,7 +58,7 @@ class Config:
             "SCHEDULER_GUIDES_DIR",
             os.path.join(
                 os.path.dirname(os.environ.get("TOKEN_PATH", "token.json")) or ".",
-                "guides",
+                "local_dev_guide_artifacts",
             ),
         )
     )
