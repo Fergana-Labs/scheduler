@@ -20,6 +20,7 @@ class UserRow:
     access_token_expires_at: datetime | None
     stash_calendar_id: str | None
     gmail_history_id: str | None
+    system_enabled: bool
     stash_branding_enabled: bool
     autopilot_enabled: bool
     created_at: datetime
@@ -116,6 +117,15 @@ def update_stash_branding(user_id: str, enabled: bool) -> None:
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE users SET stash_branding_enabled = %s, updated_at = now() WHERE id = %s",
+            (enabled, user_id),
+        )
+        conn.commit()
+
+
+def update_system_enabled(user_id: str, enabled: bool) -> None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET system_enabled = %s, updated_at = now() WHERE id = %s",
             (enabled, user_id),
         )
         conn.commit()

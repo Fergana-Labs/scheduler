@@ -319,6 +319,10 @@ class UpdateAutopilotRequest(BaseModel):
     enabled: bool
 
 
+class UpdateSystemEnabledRequest(BaseModel):
+    enabled: bool
+
+
 class WriteGuideRequest(BaseModel):
     name: str
     content: str
@@ -437,6 +441,27 @@ def settings_autopilot_put(req: UpdateAutopilotRequest, session: dict = Depends(
     return {"autopilot_enabled": req.enabled}
 
 
+@app.get("/api/v1/settings/system")
+def settings_system_get(session: dict = Depends(get_session)):
+    from scheduler.db import get_user_by_id
+
+    user = get_user_by_id(session["user_id"])
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"system_enabled": user.system_enabled}
+
+
+@app.put("/api/v1/settings/system")
+def settings_system_put(req: UpdateSystemEnabledRequest, session: dict = Depends(get_session)):
+    from scheduler.db import get_user_by_id, update_system_enabled
+
+    user = get_user_by_id(session["user_id"])
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    update_system_enabled(session["user_id"], req.enabled)
+    return {"system_enabled": req.enabled}
+
+
 # --- Guide routes ---
 
 
@@ -541,7 +566,12 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
     from scheduler.db import get_user_by_id, update_gmail_history_id
 
     user = get_user_by_id(user_id)
-    if not user or not user.gmail_history_id:
+    if not user:
+        return
+    if not user.system_enabled:
+        logger.info("gmail_webhook: system disabled for user=%s, skipping", email_address)
+        return
+    if not user.gmail_history_id:
         # First notification — just store the history ID baseline
         update_gmail_history_id(user_id, history_id)
         logger.info("gmail_webhook: stored initial history_id=%s for user=%s", history_id, email_address)
@@ -722,6 +752,7 @@ def web_settings_get(user: dict = Depends(get_web_user)):
     guides = get_guides_for_user(user["user_id"])
 
     return {
+        "system_enabled": db_user.system_enabled,
         "autopilot_enabled": db_user.autopilot_enabled,
         "stash_branding_enabled": db_user.stash_branding_enabled,
         "stash_calendar_id": db_user.stash_calendar_id,
@@ -730,6 +761,18 @@ def web_settings_get(user: dict = Depends(get_web_user)):
             for g in guides
         ],
     }
+
+
+class WebUpdateSystemEnabledRequest(BaseModel):
+    enabled: bool
+
+
+@app.put("/web/api/v1/settings/system")
+def web_settings_system(req: WebUpdateSystemEnabledRequest, user: dict = Depends(get_web_user)):
+    from scheduler.db import update_system_enabled
+
+    update_system_enabled(user["user_id"], req.enabled)
+    return {"system_enabled": req.enabled}
 
 
 class WebUpdateAutopilotRequest(BaseModel):

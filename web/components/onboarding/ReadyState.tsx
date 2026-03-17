@@ -1,5 +1,6 @@
 'use client';
 
+import SystemToggle from './SystemToggle';
 import AutopilotToggle from './AutopilotToggle';
 import GuideEditor from './GuideEditor';
 import CalendarLink from './CalendarLink';
@@ -13,6 +14,7 @@ interface Guide {
 }
 
 interface ReadyStateProps {
+  systemEnabled: boolean;
   autopilotEnabled: boolean;
   brandingEnabled: boolean;
   calendarId: string | null;
@@ -20,6 +22,7 @@ interface ReadyStateProps {
 }
 
 export default function ReadyState({
+  systemEnabled,
   autopilotEnabled,
   brandingEnabled,
   calendarId,
@@ -30,6 +33,7 @@ export default function ReadyState({
 
   return (
     <div className="space-y-3">
+      <SystemToggle initialEnabled={systemEnabled} />
       <AutopilotToggle initialEnabled={autopilotEnabled} />
 
       {schedulingGuide && (

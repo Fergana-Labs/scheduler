@@ -13,6 +13,7 @@ interface UserInfo {
 }
 
 interface Settings {
+  system_enabled: boolean;
   autopilot_enabled: boolean;
   stash_branding_enabled: boolean;
   stash_calendar_id: string | null;
@@ -127,6 +128,7 @@ export default function OnboardingPage() {
           {/* Pending or Ready state */}
           {ready && settings ? (
             <ReadyState
+              systemEnabled={settings.system_enabled}
               autopilotEnabled={settings.autopilot_enabled}
               brandingEnabled={settings.stash_branding_enabled}
               calendarId={settings.stash_calendar_id}

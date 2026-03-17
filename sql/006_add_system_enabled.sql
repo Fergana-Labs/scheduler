@@ -1,0 +1,1 @@
+ALTER TABLE users ADD COLUMN system_enabled BOOLEAN DEFAULT TRUE;
