@@ -194,6 +194,7 @@ class DraftComposer:
                 "invite_event_summary": str,
                 "invite_event_start": str,
                 "invite_event_end": str,
+                "invite_add_google_meet": bool,
             },
         )
         async def create_draft(args):
