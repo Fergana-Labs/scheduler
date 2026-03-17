@@ -23,6 +23,7 @@ class UserRow:
     system_enabled: bool
     stash_branding_enabled: bool
     autopilot_enabled: bool
+    process_sales_emails: bool
     created_at: datetime
     updated_at: datetime
 
@@ -135,6 +136,15 @@ def update_autopilot(user_id: str, enabled: bool) -> None:
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE users SET autopilot_enabled = %s, updated_at = now() WHERE id = %s",
+            (enabled, user_id),
+        )
+        conn.commit()
+
+
+def update_process_sales_emails(user_id: str, enabled: bool) -> None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET process_sales_emails = %s, updated_at = now() WHERE id = %s",
             (enabled, user_id),
         )
         conn.commit()

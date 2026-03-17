@@ -1,0 +1,1 @@
+ALTER TABLE users ADD COLUMN process_sales_emails BOOLEAN DEFAULT FALSE;

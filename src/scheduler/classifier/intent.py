@@ -38,6 +38,7 @@ class ClassificationResult:
     proposed_times: list[str]  # Any specific times mentioned in the email
     participants: list[str]  # People involved in the meeting
     duration_minutes: int | None  # Estimated meeting duration if mentioned
+    is_sales_email: bool = False  # Whether the email is sales-oriented
 
 
 class _EmailClassificationJSON(TypedDict, total=False):
@@ -53,6 +54,7 @@ class _EmailClassificationJSON(TypedDict, total=False):
     proposed_times: list[str]
     participants: list[str]
     duration_minutes: int | None
+    is_sales_email: bool
 
 
 class _EventJSON(TypedDict, total=False):
@@ -107,8 +109,12 @@ def classify_email(subject: str, body: str, sender: str) -> ClassificationResult
         "  \"summary\": string,\n"
         "  \"proposed_times\": list of strings,\n"
         "  \"participants\": list of strings,\n"
-        "  \"duration_minutes\": integer minutes or null\n"
+        "  \"duration_minutes\": integer minutes or null,\n"
+        "  \"is_sales_email\": boolean\n"
         "}\n"
+        "\"is_sales_email\": true if this is a sales-oriented email — cold outreach, product/service "
+        "pitches, partnership proposals, recruiter messages, demo requests, or any email where the "
+        "sender is trying to sell something or get a sales meeting. If in doubt, set false.\n\n"
         "If the email is not about scheduling, set intent to \"not_scheduling\" and leave\n"
         "the other fields as your best-effort defaults."
     )
@@ -152,6 +158,7 @@ def classify_email(subject: str, body: str, sender: str) -> ClassificationResult
             proposed_times=[],
             participants=[],
             duration_minutes=None,
+            is_sales_email=False,
         )
 
     intent_str = data.get("intent", "not_scheduling")
@@ -168,6 +175,8 @@ def classify_email(subject: str, body: str, sender: str) -> ClassificationResult
     except (TypeError, ValueError):
         duration_minutes = None
 
+    is_sales_email = bool(data.get("is_sales_email", False))
+
     return ClassificationResult(
         intent=intent,
         confidence=confidence,
@@ -175,6 +184,7 @@ def classify_email(subject: str, body: str, sender: str) -> ClassificationResult
         proposed_times=proposed_times,
         participants=participants,
         duration_minutes=duration_minutes,
+        is_sales_email=is_sales_email,
     )
 
 

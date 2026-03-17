@@ -1,7 +1,7 @@
 """Gmail API client for reading emails and creating drafts."""
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.utils import parsedate_to_datetime
@@ -21,6 +21,7 @@ class Email:
     body: str
     date: datetime
     snippet: str
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 class GmailClient:
@@ -97,6 +98,7 @@ class GmailClient:
             body=self._extract_body(payload),
             date=date,
             snippet=msg_data.get("snippet", ""),
+            headers=headers,
         )
 
     def _list_message_stubs(self, query: str | None, max_results: int) -> list[dict]:

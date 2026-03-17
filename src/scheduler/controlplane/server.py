@@ -468,6 +468,31 @@ def settings_autopilot_put(req: UpdateAutopilotRequest, session: dict = Depends(
     return {"autopilot_enabled": req.enabled}
 
 
+class UpdateSalesEmailRequest(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/v1/settings/sales-emails")
+def settings_sales_emails_get(session: dict = Depends(get_session)):
+    from scheduler.db import get_user_by_id
+
+    user = get_user_by_id(session["user_id"])
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"process_sales_emails": user.process_sales_emails}
+
+
+@app.put("/api/v1/settings/sales-emails")
+def settings_sales_emails_put(req: UpdateSalesEmailRequest, session: dict = Depends(get_session)):
+    from scheduler.db import get_user_by_id, update_process_sales_emails
+
+    user = get_user_by_id(session["user_id"])
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    update_process_sales_emails(session["user_id"], req.enabled)
+    return {"process_sales_emails": req.enabled}
+
+
 @app.get("/api/v1/settings/system")
 def settings_system_get(session: dict = Depends(get_session)):
     from scheduler.db import get_user_by_id
@@ -639,6 +664,7 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
     )
 
     from scheduler.classifier.intent import SchedulingIntent, classify_email
+    from scheduler.classifier.newsletter import is_mass_email
     from scheduler.drafts.composer import DraftComposer
 
     calendar = CalendarClient(creds, config.stash_calendar_name)
@@ -690,10 +716,20 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
                     logger.info("gmail_webhook: message %s is from the user, skipping", message_id)
                 continue
 
+            # Skip newsletters / mass emails (before classifier, saves API cost)
+            if is_mass_email(email.headers, email.sender):
+                logger.info("gmail_webhook: message %s is a mass email/newsletter, skipping", message_id)
+                continue
+
             classification = classify_email(email.subject, email.body, email.sender)
 
             if classification.intent == SchedulingIntent.NOT_SCHEDULING:
                 logger.info("gmail_webhook: message %s is not scheduling-related, skipping", message_id)
+                continue
+
+            # Skip sales emails unless user opted in
+            if classification.is_sales_email and not user.process_sales_emails:
+                logger.info("gmail_webhook: message %s is a sales email, skipping", message_id)
                 continue
 
             logger.info(
@@ -799,6 +835,7 @@ def web_settings_get(user: dict = Depends(get_web_user)):
     return {
         "system_enabled": db_user.system_enabled,
         "autopilot_enabled": db_user.autopilot_enabled,
+        "process_sales_emails": db_user.process_sales_emails,
         "stash_branding_enabled": db_user.stash_branding_enabled,
         "stash_calendar_id": db_user.stash_calendar_id,
         "guides": [
@@ -830,6 +867,18 @@ def web_settings_autopilot(req: WebUpdateAutopilotRequest, user: dict = Depends(
 
     update_autopilot(user["user_id"], req.enabled)
     return {"autopilot_enabled": req.enabled}
+
+
+class WebUpdateSalesEmailRequest(BaseModel):
+    enabled: bool
+
+
+@app.put("/web/api/v1/settings/sales-emails")
+def web_settings_sales_emails(req: WebUpdateSalesEmailRequest, user: dict = Depends(get_web_user)):
+    from scheduler.db import update_process_sales_emails
+
+    update_process_sales_emails(user["user_id"], req.enabled)
+    return {"process_sales_emails": req.enabled}
 
 
 class WebUpdateBrandingRequest(BaseModel):

@@ -16,6 +16,7 @@ interface UserInfo {
 interface Settings {
   system_enabled: boolean;
   autopilot_enabled: boolean;
+  process_sales_emails: boolean;
   stash_branding_enabled: boolean;
   stash_calendar_id: string | null;
   guides: { name: string; content: string; updated_at: string }[];
@@ -108,6 +109,7 @@ export default function SettingsPage() {
             <ReadyState
               systemEnabled={readySettings.system_enabled}
               autopilotEnabled={readySettings.autopilot_enabled}
+              processSalesEmails={readySettings.process_sales_emails}
               brandingEnabled={readySettings.stash_branding_enabled}
               calendarId={readySettings.stash_calendar_id}
               guides={readySettings.guides}

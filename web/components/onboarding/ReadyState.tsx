@@ -2,6 +2,7 @@
 
 import SystemToggle from './SystemToggle';
 import AutopilotToggle from './AutopilotToggle';
+import SalesEmailToggle from './SalesEmailToggle';
 import GuideEditor from './GuideEditor';
 import CalendarLink from './CalendarLink';
 import BrandingToggle from './BrandingToggle';
@@ -16,6 +17,7 @@ interface Guide {
 interface ReadyStateProps {
   systemEnabled: boolean;
   autopilotEnabled: boolean;
+  processSalesEmails: boolean;
   brandingEnabled: boolean;
   calendarId: string | null;
   guides: Guide[];
@@ -25,6 +27,7 @@ interface ReadyStateProps {
 export default function ReadyState({
   systemEnabled,
   autopilotEnabled,
+  processSalesEmails,
   brandingEnabled,
   calendarId,
   guides,
@@ -37,6 +40,7 @@ export default function ReadyState({
     <div className="space-y-3">
       <SystemToggle initialEnabled={systemEnabled} />
       <AutopilotToggle initialEnabled={autopilotEnabled} />
+      <SalesEmailToggle initialEnabled={processSalesEmails} />
 
       {schedulingGuide && (
         <GuideEditor
