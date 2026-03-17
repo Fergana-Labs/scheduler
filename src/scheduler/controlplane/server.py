@@ -74,10 +74,15 @@ _oauth_states: dict[str, float] = {}
 
 
 @app.get("/auth/google")
-def auth_google_redirect():
-    """Redirect the user to Google's OAuth consent screen."""
-    state = secrets.token_urlsafe(32)
-    _oauth_states[state] = time.time()
+def auth_google_redirect(signin: str | None = None):
+    """Redirect the user to Google's OAuth consent screen.
+
+    If signin=1, uses prompt=select_account (returning users just pick their account).
+    Otherwise, uses prompt=consent (new users grant full permissions).
+    """
+    is_signin = signin == "1"
+    state_data = f"{secrets.token_urlsafe(32)}|signin={1 if is_signin else 0}"
+    _oauth_states[state_data] = time.time()
 
     params = {
         "client_id": config.google_client_id,
@@ -85,8 +90,8 @@ def auth_google_redirect():
         "response_type": "code",
         "scope": " ".join(SCOPES),
         "access_type": "offline",
-        "prompt": "consent",
-        "state": state,
+        "prompt": "select_account" if is_signin else "consent",
+        "state": state_data,
     }
     url = f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
     return RedirectResponse(url)
@@ -108,6 +113,10 @@ def auth_google_callback(code: str | None = None, state: str | None = None, erro
 
     Exchanges the authorization code for tokens, upserts the user in the
     database, and redirects to the web app with a signed session cookie.
+
+    Supports two modes based on state:
+    - Sign-up (default): expects refresh_token, upserts user, runs full onboarding
+    - Sign-in (state contains signin=1): no refresh_token needed, looks up existing user
     """
     if error:
         return RedirectResponse(f"{config.web_app_url}?error={error}")
@@ -119,6 +128,8 @@ def auth_google_callback(code: str | None = None, state: str | None = None, erro
     issued_at = _oauth_states.pop(state, None)
     if not issued_at or (time.time() - issued_at > 600):
         return RedirectResponse(f"{config.web_app_url}?error=invalid_state")
+
+    is_signin = state.endswith("|signin=1")
 
     # Exchange authorization code for tokens
     import httpx
@@ -142,9 +153,6 @@ def auth_google_callback(code: str | None = None, state: str | None = None, erro
     access_token = tokens["access_token"]
     refresh_token = tokens.get("refresh_token")
 
-    if not refresh_token:
-        return RedirectResponse(f"{config.web_app_url}?error=no_refresh_token")
-
     # Get user's email from Google
     userinfo_response = httpx.get(
         "https://www.googleapis.com/oauth2/v2/userinfo",
@@ -159,30 +167,49 @@ def auth_google_callback(code: str | None = None, state: str | None = None, erro
     if not email:
         return RedirectResponse(f"{config.web_app_url}?error=no_email")
 
-    # Upsert user in database
-    from scheduler.db import upsert_user
+    from scheduler.db import get_guides_for_user, get_user_by_email, upsert_user
 
-    expires_in = tokens.get("expires_in")
-    expires_at = None
-    if expires_in:
-        from datetime import timedelta
-        expires_at = datetime.now() + timedelta(seconds=expires_in)
+    if refresh_token:
+        # Sign-up flow (or sign-in that happened to return a refresh token)
+        expires_in = tokens.get("expires_in")
+        expires_at = None
+        if expires_in:
+            from datetime import timedelta
+            expires_at = datetime.now() + timedelta(seconds=expires_in)
 
-    user = upsert_user(
-        email=email,
-        google_refresh_token=refresh_token,
-        google_access_token=access_token,
-        access_token_expires_at=expires_at,
-    )
+        user = upsert_user(
+            email=email,
+            google_refresh_token=refresh_token,
+            google_access_token=access_token,
+            access_token_expires_at=expires_at,
+        )
+    else:
+        # Sign-in flow: no refresh token, look up existing user
+        user = get_user_by_email(email)
+        if not user:
+            logger.warning("sign-in attempt for unknown user: %s", email)
+            return RedirectResponse(f"{config.web_app_url}?error=account_not_found")
 
-    # Kick off onboarding agents in the background
+    # Determine if user is already onboarded
+    guides = get_guides_for_user(str(user.id))
+    guide_names = {g.name for g in guides}
+    is_onboarded = "scheduling_preferences" in guide_names and "email_style" in guide_names
+
     from starlette.background import BackgroundTask
-    logger.info("onboarding: starting all agents for user=%s after OAuth", user.id)
-    background = BackgroundTask(_run_onboarding_all, str(user.id))
+
+    if is_onboarded:
+        # Returning user: just renew Gmail watch, redirect to settings
+        logger.info("sign-in: returning user=%s, renewing gmail watch", user.id)
+        background = BackgroundTask(_renew_gmail_watch, str(user.id))
+        redirect_url = f"{config.web_app_url}/settings"
+    else:
+        # New user: run full onboarding, redirect to onboarding
+        logger.info("onboarding: starting all agents for user=%s after OAuth", user.id)
+        background = BackgroundTask(_run_onboarding_all, str(user.id))
+        redirect_url = f"{config.web_app_url}/onboarding"
 
     # Create signed session and redirect to web app
     session_token = _sign_session(str(user.id), email)
-    redirect_url = f"{config.web_app_url}/onboarding"
     response = RedirectResponse(redirect_url, background=background)
     response.set_cookie(
         key="session",
@@ -190,7 +217,7 @@ def auth_google_callback(code: str | None = None, state: str | None = None, erro
         httponly=True,
         secure=config.web_app_url.startswith("https"),
         samesite="lax",
-        max_age=60 * 60 * 24 * 30,  # 30 days
+        max_age=60 * 60 * 24 * 365 * 10,  # 10 years
         path="/",
     )
     return response
@@ -492,6 +519,17 @@ def guides_read(req: ReadGuideRequest, session: dict = Depends(get_session)):
 # --- Onboarding ---
 
 
+def _renew_gmail_watch(user_id: str) -> None:
+    """Background task: renew Gmail watch for a returning user."""
+    from scheduler.gmail.watch import setup_gmail_watch
+
+    try:
+        setup_gmail_watch(user_id)
+        logger.info("sign-in: gmail watch renewed for user=%s", user_id)
+    except Exception:
+        logger.exception("sign-in: failed to renew gmail watch for user=%s", user_id)
+
+
 def _run_onboarding_all(user_id: str) -> None:
     """Background task: run backfill + both guide-writer agents for a user, then set up Gmail watch."""
     import anyio
@@ -733,12 +771,19 @@ def get_web_user(request: Request) -> dict:
 
 @app.get("/web/api/v1/onboarding/status")
 def web_onboarding_status(user: dict = Depends(get_web_user)):
-    from scheduler.db import get_guides_for_user
+    from scheduler.db import get_guides_for_user, get_user_by_id
 
-    guides = get_guides_for_user(user["user_id"])
-    guide_names = {g.name for g in guides}
-    ready = "scheduling_preferences" in guide_names and "email_style" in guide_names
-    return {"ready": ready}
+    db_user = get_user_by_id(user["user_id"])
+    connected = db_user is not None and db_user.google_refresh_token is not None
+
+    if connected:
+        guides = get_guides_for_user(user["user_id"])
+        guide_names = {g.name for g in guides}
+        ready = "scheduling_preferences" in guide_names and "email_style" in guide_names
+    else:
+        ready = False
+
+    return {"ready": ready, "connected": connected}
 
 
 @app.get("/web/api/v1/settings")
@@ -847,7 +892,7 @@ def _run_guide_regeneration(user_id: str, guide_name: str) -> None:
 
 @app.post("/web/api/v1/account/disconnect")
 def web_account_disconnect(request: Request, user: dict = Depends(get_web_user)):
-    from scheduler.db import delete_user, get_user_by_id
+    from scheduler.db import disconnect_user, get_user_by_id
 
     db_user = get_user_by_id(user["user_id"])
     if db_user and db_user.google_refresh_token:
@@ -862,16 +907,9 @@ def web_account_disconnect(request: Request, user: dict = Depends(get_web_user))
         except Exception:
             logger.warning("Failed to revoke Google token for user=%s", user["user_id"])
 
-    delete_user(user["user_id"])
+    disconnect_user(user["user_id"])
 
-    response = JSONResponse({"status": "disconnected"})
-    response.delete_cookie(
-        key="session",
-        path="/",
-        secure=config.web_app_url.startswith("https"),
-        samesite="lax",
-    )
-    return response
+    return JSONResponse({"status": "disconnected"})
 
 
 @app.post("/api/v1/gmail/watch/renew")

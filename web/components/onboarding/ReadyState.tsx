@@ -19,6 +19,7 @@ interface ReadyStateProps {
   brandingEnabled: boolean;
   calendarId: string | null;
   guides: Guide[];
+  onDisconnected: () => void;
 }
 
 export default function ReadyState({
@@ -27,6 +28,7 @@ export default function ReadyState({
   brandingEnabled,
   calendarId,
   guides,
+  onDisconnected,
 }: ReadyStateProps) {
   const schedulingGuide = guides.find((g) => g.name === 'scheduling_preferences');
   const emailGuide = guides.find((g) => g.name === 'email_style');
@@ -59,7 +61,7 @@ export default function ReadyState({
       <BrandingToggle initialEnabled={brandingEnabled} />
 
       <div className="pt-4">
-        <DisconnectButton />
+        <DisconnectButton onDisconnected={onDisconnected} />
       </div>
     </div>
   );

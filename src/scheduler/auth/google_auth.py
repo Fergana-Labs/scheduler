@@ -86,6 +86,9 @@ def load_credentials(user_id: str):
 
         user = get_user_by_id(user_id)
         if user:
+            if not user.google_refresh_token:
+                raise ValueError(f"User {user_id} has no Google refresh token")
+
             creds = Credentials(
                 token=user.google_access_token,
                 refresh_token=user.google_refresh_token,

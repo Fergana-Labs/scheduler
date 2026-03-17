@@ -72,6 +72,11 @@ def renew_all_watches() -> dict:
     failed = []
 
     for user_id in user_ids:
+        user = get_user_by_id(user_id)
+        if not user or not user.google_refresh_token:
+            logger.info("gmail_watch: skipping disconnected user=%s", user_id)
+            continue
+
         try:
             setup_gmail_watch(user_id)
             renewed += 1

@@ -3,7 +3,11 @@
 import { useState } from 'react';
 import { api } from '@/lib/api';
 
-export default function DisconnectButton() {
+interface DisconnectButtonProps {
+  onDisconnected: () => void;
+}
+
+export default function DisconnectButton({ onDisconnected }: DisconnectButtonProps) {
   const [confirming, setConfirming] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
 
@@ -11,7 +15,8 @@ export default function DisconnectButton() {
     setDisconnecting(true);
     try {
       await api('/web/api/v1/account/disconnect', { method: 'POST' });
-      window.location.href = '/';
+      setConfirming(false);
+      onDisconnected();
     } catch {
       setDisconnecting(false);
       setConfirming(false);
@@ -34,8 +39,8 @@ export default function DisconnectButton() {
               Disconnect your account?
             </h3>
             <p className="mt-2 text-sm text-gray-500">
-              This will revoke Stash&apos;s access to your Google account and
-              delete all your data. This action cannot be undone.
+              This will revoke Stash&apos;s access to your Google account. You
+              can reconnect at any time.
             </p>
             <div className="mt-6 flex justify-end gap-3">
               <button

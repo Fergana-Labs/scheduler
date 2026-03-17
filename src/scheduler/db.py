@@ -15,7 +15,7 @@ psycopg2.extras.register_uuid()
 class UserRow:
     id: str
     email: str
-    google_refresh_token: str
+    google_refresh_token: str | None
     google_access_token: str | None
     access_token_expires_at: datetime | None
     stash_calendar_id: str | None
@@ -278,4 +278,23 @@ def delete_user(user_id: str) -> None:
     with _conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM guides WHERE user_id = %s", (user_id,))
         cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+        conn.commit()
+
+
+def disconnect_user(user_id: str) -> None:
+    """Revoke Google tokens and delete guides, but keep the user row."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM guides WHERE user_id = %s", (user_id,))
+        cur.execute(
+            """
+            UPDATE users SET
+                google_refresh_token = NULL,
+                google_access_token = NULL,
+                access_token_expires_at = NULL,
+                gmail_history_id = NULL,
+                updated_at = now()
+            WHERE id = %s
+            """,
+            (user_id,),
+        )
         conn.commit()
