@@ -51,7 +51,7 @@ export default function Hero() {
           direction="left"
           duration={30}
           yPosition="14%"
-          opacity={0.07}
+          opacity={0.15}
           rotation={-3}
         />
         <ScrollingIconStrip
@@ -59,7 +59,7 @@ export default function Hero() {
           direction="right"
           duration={35}
           yPosition="78%"
-          opacity={0.06}
+          opacity={0.13}
           rotation={2}
         />
       </div>
