@@ -243,12 +243,11 @@ def _prepare_sandbox(sandbox: Sandbox, files: list[dict]) -> bool:
 
 def _launch_single_onboarding_agent(
     agent_name: str,
-    user_id: str,
+    session_token: str,
     control_plane_url: str,
     lookback_days: int,
 ) -> None:
     """Spin up one e2b sandbox for a single onboarding agent."""
-    session_token = _register_sandbox_session(user_id)
     sandbox = _create_sandbox(
         control_plane_url=control_plane_url,
         session_token=session_token,
@@ -276,12 +275,12 @@ def _launch_single_onboarding_agent(
                     f"e2b {agent_name} sandbox exited with code {result.exit_code}: {result.stderr[:500] if result.stderr else 'no stderr'}"
                 )
         except TimeoutError:
-            logger.error("e2b %s sandbox timed out after %ds for user=%s", agent_name, _SANDBOX_CMD_TIMEOUT, user_id)
+            logger.error("e2b %s sandbox timed out after %ds", agent_name, _SANDBOX_CMD_TIMEOUT)
             raise RuntimeError(f"{agent_name} sandbox timed out after {_SANDBOX_CMD_TIMEOUT}s")
         except RuntimeError:
             raise
         except Exception as e:
-            logger.error("e2b %s sandbox failed for user=%s: %s", agent_name, user_id, e)
+            logger.error("e2b %s sandbox failed: %s", agent_name, e)
             raise RuntimeError(f"{agent_name} sandbox failed: {e}") from e
     finally:
         try:
@@ -295,6 +294,7 @@ def launch_onboarding_in_sandbox(user_id: str, control_plane_url: str, lookback_
     """Spin up three e2b sandboxes (one per agent) and run them in parallel."""
     import concurrent.futures
 
+    session_token = _register_sandbox_session(user_id)
     effective_lookback = lookback_days or config.onboarding_lookback_days
     agents = ["backfill", "preferences", "style"]
     errors: list[str] = []
@@ -304,7 +304,7 @@ def launch_onboarding_in_sandbox(user_id: str, control_plane_url: str, lookback_
             pool.submit(
                 _launch_single_onboarding_agent,
                 agent_name,
-                user_id,
+                session_token,
                 control_plane_url,
                 effective_lookback,
             ): agent_name
