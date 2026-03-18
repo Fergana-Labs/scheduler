@@ -241,48 +241,86 @@ def _prepare_sandbox(sandbox: Sandbox, files: list[dict]) -> bool:
     return True
 
 
-def launch_onboarding_in_sandbox(user_id: str, control_plane_url: str, lookback_days: int | None = None):
-    """Spin up an e2b sandbox and run the onboarding agent inside it."""
+def _launch_single_onboarding_agent(
+    agent_name: str,
+    user_id: str,
+    control_plane_url: str,
+    lookback_days: int,
+) -> None:
+    """Spin up one e2b sandbox for a single onboarding agent."""
     session_token = _register_sandbox_session(user_id)
     sandbox = _create_sandbox(
         control_plane_url=control_plane_url,
         session_token=session_token,
-        extra_envs={"ONBOARDING_LOOKBACK_DAYS": str(lookback_days or config.onboarding_lookback_days)},
+        extra_envs={
+            "ONBOARDING_LOOKBACK_DAYS": str(lookback_days),
+            "ONBOARDING_AGENT": agent_name,
+        },
     )
 
     try:
         files = _collect_onboarding_sandbox_files()
         if not _prepare_sandbox(sandbox, files):
-            return
+            raise RuntimeError(f"Failed to prepare sandbox for {agent_name}")
 
-        # Run the sandbox onboarding agent, streaming output to logs
-        print("Running onboarding agent...\n")
+        print(f"Running onboarding agent: {agent_name}...\n")
         try:
             result = sandbox.commands.run(
                 "cd /home/user/scheduler && python3 -m scheduler.sandbox.onboarding",
                 timeout=_SANDBOX_CMD_TIMEOUT,
-                on_stdout=lambda msg: logger.info("e2b[onboarding]: %s", msg),
-                on_stderr=lambda msg: logger.warning("e2b[onboarding]: %s", msg),
+                on_stdout=lambda msg: logger.info("e2b[%s]: %s", agent_name, msg),
+                on_stderr=lambda msg: logger.warning("e2b[%s]: %s", agent_name, msg),
             )
             if result.exit_code != 0:
                 raise RuntimeError(
-                    f"e2b onboarding sandbox exited with code {result.exit_code}: {result.stderr[:500] if result.stderr else 'no stderr'}"
+                    f"e2b {agent_name} sandbox exited with code {result.exit_code}: {result.stderr[:500] if result.stderr else 'no stderr'}"
                 )
         except TimeoutError:
-            logger.error("e2b onboarding sandbox timed out after %ds for user=%s", _SANDBOX_CMD_TIMEOUT, user_id)
-            raise RuntimeError(f"Onboarding sandbox timed out after {_SANDBOX_CMD_TIMEOUT}s")
+            logger.error("e2b %s sandbox timed out after %ds for user=%s", agent_name, _SANDBOX_CMD_TIMEOUT, user_id)
+            raise RuntimeError(f"{agent_name} sandbox timed out after {_SANDBOX_CMD_TIMEOUT}s")
         except RuntimeError:
             raise
         except Exception as e:
-            logger.error("e2b onboarding sandbox failed for user=%s: %s", user_id, e)
-            raise RuntimeError(f"Onboarding sandbox failed: {e}") from e
-
+            logger.error("e2b %s sandbox failed for user=%s: %s", agent_name, user_id, e)
+            raise RuntimeError(f"{agent_name} sandbox failed: {e}") from e
     finally:
         try:
             sandbox.kill()
         except Exception:
-            pass  # sandbox may have already expired
-        print("\nSandbox terminated.")
+            pass
+        print(f"\nSandbox for {agent_name} terminated.")
+
+
+def launch_onboarding_in_sandbox(user_id: str, control_plane_url: str, lookback_days: int | None = None):
+    """Spin up three e2b sandboxes (one per agent) and run them in parallel."""
+    import concurrent.futures
+
+    effective_lookback = lookback_days or config.onboarding_lookback_days
+    agents = ["backfill", "preferences", "style"]
+    errors: list[str] = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {
+            pool.submit(
+                _launch_single_onboarding_agent,
+                agent_name,
+                user_id,
+                control_plane_url,
+                effective_lookback,
+            ): agent_name
+            for agent_name in agents
+        }
+        for future in concurrent.futures.as_completed(futures):
+            agent_name = futures[future]
+            try:
+                future.result()
+                logger.info("Onboarding agent %s completed successfully", agent_name)
+            except Exception as e:
+                logger.error("Onboarding agent %s failed: %s", agent_name, e)
+                errors.append(f"{agent_name}: {e}")
+
+    if errors:
+        raise RuntimeError(f"Onboarding failed for: {'; '.join(errors)}")
 
 
 def launch_draft_composer_in_sandbox(

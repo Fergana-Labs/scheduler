@@ -1,12 +1,13 @@
-"""Sandbox onboarding — runs all three onboarding agents inside e2b.
+"""Sandbox onboarding — runs a single onboarding agent inside e2b.
 
-Launches the backfill agent, preferences agent, and style agent in
-parallel. All three call the control plane over HTTP — no auth tokens
-ever enter the sandbox.
+Each agent (backfill, preferences, style) runs in its own sandbox.
+The host launches three sandboxes in parallel. This module is the
+entry point for each sandbox, selected via the ONBOARDING_AGENT env var.
 """
 
 import logging
 import os
+import sys
 from collections.abc import Awaitable, Callable
 
 import anyio
@@ -41,22 +42,30 @@ async def _with_retry(name: str, fn: Callable[..., Awaitable], *args) -> None:
             await anyio.sleep(delay)
 
 
-async def _run_all():
+async def _run_single(agent_name: str):
     control_plane_url = os.environ["CONTROL_PLANE_URL"]
     session_token = os.environ["SESSION_TOKEN"]
     lookback_days = int(os.environ.get("ONBOARDING_LOOKBACK_DAYS", "60"))
 
     backend = ControlPlaneClient(control_plane_url, session_token)
 
-    async with anyio.create_task_group() as tg:
-        tg.start_soon(_with_retry, "backfill", _run_backfill, backend, lookback_days)
-        tg.start_soon(_with_retry, "preferences", run_preferences_agent, backend)
-        tg.start_soon(_with_retry, "style", run_style_agent, backend)
+    if agent_name == "backfill":
+        await _with_retry("backfill", _run_backfill, backend, lookback_days)
+    elif agent_name == "preferences":
+        await _with_retry("preferences", run_preferences_agent, backend)
+    elif agent_name == "style":
+        await _with_retry("style", run_style_agent, backend)
+    else:
+        raise ValueError(f"Unknown agent: {agent_name}")
 
 
 def run_onboarding():
-    """Entry point for running all onboarding agents inside the sandbox."""
-    anyio.run(_run_all)
+    """Entry point — runs the agent specified by ONBOARDING_AGENT env var."""
+    agent_name = os.environ.get("ONBOARDING_AGENT")
+    if not agent_name:
+        print("Error: ONBOARDING_AGENT env var not set", file=sys.stderr)
+        sys.exit(1)
+    anyio.run(_run_single, agent_name)
 
 
 if __name__ == "__main__":
