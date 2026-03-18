@@ -45,6 +45,13 @@ def _collect_common_sandbox_files() -> list[dict]:
             "data": init_file.read_text(),
         })
 
+    claude_runtime = PROJECT_ROOT / "src" / "scheduler" / "claude_runtime.py"
+    if claude_runtime.exists():
+        files.append({
+            "path": "/home/user/scheduler/src/scheduler/claude_runtime.py",
+            "data": claude_runtime.read_text(),
+        })
+
     sandbox_dir = PROJECT_ROOT / "src" / "scheduler" / "sandbox"
     for py_file in sandbox_dir.rglob("*.py"):
         rel_path = py_file.relative_to(PROJECT_ROOT / "src")
@@ -242,7 +249,7 @@ def launch_onboarding_in_sandbox(user_id: str, control_plane_url: str, lookback_
     )
 
     try:
-        files = [] if config.e2b_template_id.strip() else _collect_onboarding_sandbox_files()
+        files = _collect_onboarding_sandbox_files()
         if not _prepare_sandbox(sandbox, files):
             return
 
