@@ -37,6 +37,25 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger(__name__)
 
 _WATCH_RENEWAL_INTERVAL = 12 * 3600  # 12 hours
+_UNKNOWN_GMAIL_WEBHOOK_TTL = 300  # 5 minutes
+_unknown_gmail_webhook_emails: dict[str, float] = {}
+
+
+def _is_cached_unknown_gmail_webhook_email(email_address: str) -> bool:
+    """Return True when an unknown webhook email was seen recently."""
+    now = time.time()
+    expires_at = _unknown_gmail_webhook_emails.get(email_address)
+    if expires_at is None:
+        return False
+    if expires_at <= now:
+        del _unknown_gmail_webhook_emails[email_address]
+        return False
+    return True
+
+
+def _cache_unknown_gmail_webhook_email(email_address: str) -> None:
+    """Avoid repeated DB lookups for unknown webhook emails."""
+    _unknown_gmail_webhook_emails[email_address] = time.time() + _UNKNOWN_GMAIL_WEBHOOK_TTL
 
 
 async def _watch_renewal_loop():
@@ -47,9 +66,9 @@ async def _watch_renewal_loop():
             from scheduler.db import cleanup_processed_messages
             from scheduler.gmail.watch import renew_all_watches
 
-            result = renew_all_watches()
+            result = await asyncio.to_thread(renew_all_watches)
             logger.info("watch_renewal_loop: %s", result)
-            deleted = cleanup_processed_messages()
+            deleted = await asyncio.to_thread(cleanup_processed_messages)
             if deleted:
                 logger.info("watch_renewal_loop: cleaned up %d old processed_messages rows", deleted)
         except Exception:
@@ -961,8 +980,13 @@ async def gmail_webhook(request: Request, background_tasks: BackgroundTasks):
     if not email_address or not history_id:
         raise HTTPException(status_code=400, detail="Missing emailAddress or historyId")
 
-    user = get_user_by_email(email_address)
+    if _is_cached_unknown_gmail_webhook_email(email_address):
+        logger.info("gmail_webhook: cached unknown email %s", email_address)
+        return {"status": "ignored", "reason": "unknown user"}
+
+    user = await asyncio.to_thread(get_user_by_email, email_address)
     if not user:
+        _cache_unknown_gmail_webhook_email(email_address)
         logger.warning("gmail_webhook: unknown email %s", email_address)
         # Return 200 so Pub/Sub doesn't retry for unknown users
         return {"status": "ignored", "reason": "unknown user"}
