@@ -261,12 +261,13 @@ def auth_google_callback(code: str | None = None, state: str | None = None, erro
     # Create signed session and redirect to web app
     session_token = _sign_session(str(user.id), email)
     response = RedirectResponse(redirect_url, background=background)
+    is_production = config.web_app_url.startswith("https")
     response.set_cookie(
         key="session",
         value=session_token,
         httponly=True,
-        secure=config.web_app_url.startswith("https"),
-        samesite="lax",
+        secure=is_production,
+        samesite="none" if is_production else "lax",
         max_age=60 * 60 * 24 * 365 * 10,  # 10 years
         path="/",
     )
