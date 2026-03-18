@@ -1,49 +1,34 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import Image from 'next/image';
 
 export default function Header() {
   const router = useRouter();
 
   return (
-    <header
-      className="relative border-b border-gray-100 bg-white"
-      style={{ zIndex: 10 }}
-    >
+    <header className="absolute top-0 left-0 right-0 z-10">
       <nav
-        className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8"
+        className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5 sm:px-8"
         aria-label="Global"
       >
-        {/* Logo */}
-        <div className="flex">
-          <button
-            onClick={() => router.push('/')}
-            className="-m-1.5 flex cursor-pointer items-center gap-2 p-1.5 transition-opacity hover:opacity-80"
-          >
-            <span className="sr-only">Go to Stash homepage</span>
-            <Image
-              src="/logo.png"
-              alt="Stash Logo"
-              width={40}
-              height={40}
-              className="h-8 w-8 sm:h-10 sm:w-10"
-            />
-            <span className="font-[family-name:var(--font-space-grotesk)] text-xl font-bold text-gray-900 sm:text-2xl">
-              Stash
-            </span>
-          </button>
-        </div>
+        <button
+          onClick={() => router.push('/')}
+          className="flex cursor-pointer items-center gap-3 transition-opacity hover:opacity-70"
+        >
+          <span className="sr-only">Go to Scheduled homepage</span>
+          <img
+            src="/scheduled_logo.svg"
+            alt="Scheduled"
+            className="h-5"
+          />
+        </button>
 
-        {/* CTA Button */}
-        <div className="flex items-center gap-2 sm:gap-3">
-          <a
-            href="/settings"
-            className="inline-flex items-center rounded-xl border border-transparent bg-[#43614a] px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors duration-200 hover:cursor-pointer hover:bg-[#527559] focus:ring-2 focus:ring-[#43614a] focus:ring-offset-2 focus:outline-none sm:px-4 sm:py-2 sm:text-sm"
-          >
-            Sign In
-          </a>
-        </div>
+        <a
+          href={`${process.env.NEXT_PUBLIC_CONTROL_PLANE_URL}/auth/google`}
+          className="rounded-full bg-gray-900 px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-800"
+        >
+          Get Started
+        </a>
       </nav>
     </header>
   );

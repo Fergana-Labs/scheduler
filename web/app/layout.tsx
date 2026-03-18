@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Geist, Geist_Mono, Space_Grotesk } from 'next/font/google';
+import { Geist, Geist_Mono, Space_Grotesk, Playfair_Display } from 'next/font/google';
 import './globals.css';
 
 const geistSans = Geist({
@@ -17,8 +17,13 @@ const spaceGrotesk = Space_Grotesk({
   subsets: ['latin'],
 });
 
+const playfairDisplay = Playfair_Display({
+  variable: '--font-playfair',
+  subsets: ['latin'],
+});
+
 export const metadata: Metadata = {
-  title: 'Scheduler - AI Email Scheduling Agent',
+  title: 'Scheduled - AI Email Scheduling Agent',
   description:
     'AI-powered scheduling agent that reads your emails, checks your calendar, and drafts perfect replies. Stop the back-and-forth — let AI handle your scheduling.',
   keywords: [
@@ -45,19 +50,19 @@ export const metadata: Metadata = {
     type: 'website',
     locale: 'en_US',
     url: 'https://scheduler.ferganalabs.com',
-    title: 'Scheduler - AI Email Scheduling Agent',
+    title: 'Scheduled - AI Email Scheduling Agent',
     description:
       'AI-powered scheduling agent that reads your emails, checks your calendar, and drafts perfect replies automatically.',
-    siteName: 'Scheduler',
+    siteName: 'Scheduled',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Scheduler - AI Email Scheduling Agent',
+    title: 'Scheduled - AI Email Scheduling Agent',
     description:
       'AI-powered scheduling agent that reads your emails, checks your calendar, and drafts perfect replies automatically.',
   },
   icons: {
-    icon: '/favicon.ico',
+    icon: '/scheduled_icon.svg',
   },
 };
 
@@ -69,7 +74,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} ${spaceGrotesk.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} ${spaceGrotesk.variable} ${playfairDisplay.variable} antialiased`}
         suppressHydrationWarning
       >
         <main className="bg-white">
