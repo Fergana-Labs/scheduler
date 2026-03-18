@@ -53,6 +53,9 @@ class Config:
     session_secret: str = field(
         default_factory=lambda: os.environ.get("SESSION_SECRET", "change-me-in-production")
     )
+    gmail_webhook_token: str = field(
+        default_factory=lambda: os.environ.get("GMAIL_WEBHOOK_TOKEN", "")
+    )
     guides_dir: str = field(
         default_factory=lambda: os.environ.get(
             "SCHEDULER_GUIDES_DIR",

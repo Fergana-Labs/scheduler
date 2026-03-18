@@ -70,8 +70,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[config.web_app_url],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -770,9 +770,15 @@ async def gmail_webhook(request: Request, background_tasks: BackgroundTasks):
     Google sends a POST with a Pub/Sub message whose data is a base64-encoded
     JSON object containing the user's email address and the latest historyId.
 
-    This endpoint is unauthenticated — Google does not send a session token.
-    We look up the user by email address instead.
+    Verified via a shared secret token passed as a query parameter. The Pub/Sub
+    push subscription URL should be configured as:
+        https://<host>/webhooks/gmail?token=<GMAIL_WEBHOOK_TOKEN>
     """
+    if config.gmail_webhook_token:
+        token = request.query_params.get("token", "")
+        if not hmac.compare_digest(token, config.gmail_webhook_token):
+            raise HTTPException(status_code=403, detail="Invalid webhook token")
+
     from scheduler.db import get_user_by_email
 
     body = await request.json()
