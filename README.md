@@ -2,9 +2,6 @@
 
 Inbound scheduling agent — automatically drafts email responses with proposed meeting times by checking all the places you store your commitments. Saves us a ton of time on recruiting, we hope it saves you time as well!
 
-## Demo Video
-TODO
-
 ## Self-Hosted Setup
 
 See [docs/self-hosting.md](docs/self-hosting.md) for detailed instructions including GCP webhook setup and optional E2B sandboxing. If you are considering self hosting, feel free to reach out to henry@ferganalabs.com or sam@ferganalabs.com and we can help you get set up.
@@ -61,3 +58,6 @@ If `E2B_TEMPLATE_ID` is unset, the code falls back to runtime provisioning insid
 ## License
 
 MIT
+
+## Demo Video
+TODO
