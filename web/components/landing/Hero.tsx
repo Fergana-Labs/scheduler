@@ -78,7 +78,7 @@ export default function Hero() {
           <MarqueeText
             pathId="curve-upper"
             text={incomingText}
-            fill="#00000014"
+            fill="#00000012"
             fontSize={21}
             dur="45s"
             startFrom="100%"

@@ -24,10 +24,10 @@ export default function Header() {
         </button>
 
         <a
-          href={`${process.env.NEXT_PUBLIC_CONTROL_PLANE_URL}/auth/google`}
-          className="rounded-full bg-gray-900 px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-800"
+          href="mailto:henry@ferganalabs.com"
+          className="text-sm text-gray-500 transition-colors hover:text-gray-900"
         >
-          Get Started
+          Contact
         </a>
       </nav>
     </header>
