@@ -14,3 +14,4 @@ uv.lock
 node_modules/
 web/node_modules/
 web/tsconfig.tsbuildinfo
+e2b.toml
