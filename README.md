@@ -60,3 +60,23 @@ python -m scheduler.watcher
 # Run the message hook manually on a specific message
 python -m scheduler.hook --message-id <id>
 ```
+
+## E2B Template
+
+For low-latency E2B runs, build a preprovisioned sandbox template instead of
+installing Python and dependencies on every run.
+
+```bash
+e2b template build -n scheduler-agents
+```
+
+Then set:
+
+```bash
+export AGENT_RUNTIME=e2b
+export CONTROL_PLANE_PUBLIC_URL=https://your-control-plane-url
+export E2B_TEMPLATE_ID=scheduler-agents
+```
+
+If `E2B_TEMPLATE_ID` is unset, the code falls back to runtime provisioning
+inside a fresh sandbox.

@@ -117,6 +117,20 @@ def _collect_drafting_sandbox_files(email_payload: dict, classification_payload:
     return files
 
 
+def _collect_drafting_runtime_files(email_payload: dict, classification_payload: dict) -> list[dict]:
+    """Collect only per-run payload files for a prebuilt drafting template."""
+    return [
+        {
+            "path": "/home/user/scheduler/draft_email.json",
+            "data": json.dumps(email_payload),
+        },
+        {
+            "path": "/home/user/scheduler/draft_classification.json",
+            "data": json.dumps(classification_payload),
+        },
+    ]
+
+
 def _sandbox_pyproject() -> str:
     """Generate a minimal pyproject.toml for the sandbox."""
     return """\
@@ -183,13 +197,21 @@ def _create_sandbox(*, control_plane_url: str, session_token: str, extra_envs: d
     }
     if extra_envs:
         envs.update(extra_envs)
+    template = config.e2b_template_id.strip() or "claude"
     return Sandbox.create(
-        "claude",
+        template,
         envs=envs,
     )
 
 
 def _prepare_sandbox(sandbox: Sandbox, files: list[dict]) -> bool:
+    if config.e2b_template_id.strip():
+        print(f"Using prebuilt E2B template {config.e2b_template_id}; skipping runtime provisioning.")
+        if files:
+            print("Uploading runtime payload...")
+            sandbox.files.write_files(files)
+        return True
+
     print("Installing Python in sandbox...")
     result = sandbox.commands.run(
         "apt-get update -qq && apt-get install -y -qq python3 python3-pip python3-venv "
@@ -220,7 +242,8 @@ def launch_onboarding_in_sandbox(user_id: str, control_plane_url: str, lookback_
     )
 
     try:
-        if not _prepare_sandbox(sandbox, _collect_onboarding_sandbox_files()):
+        files = [] if config.e2b_template_id.strip() else _collect_onboarding_sandbox_files()
+        if not _prepare_sandbox(sandbox, files):
             return
 
         # Run the sandbox onboarding agent
@@ -257,9 +280,14 @@ def launch_draft_composer_in_sandbox(
     )
 
     try:
+        files = (
+            _collect_drafting_runtime_files(email_payload, classification_payload)
+            if config.e2b_template_id.strip()
+            else _collect_drafting_sandbox_files(email_payload, classification_payload)
+        )
         if not _prepare_sandbox(
             sandbox,
-            _collect_drafting_sandbox_files(email_payload, classification_payload),
+            files,
         ):
             return None
 

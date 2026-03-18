@@ -74,6 +74,9 @@ class Config:
     control_plane_public_url: str = field(
         default_factory=lambda: os.environ.get("CONTROL_PLANE_PUBLIC_URL", "")
     )
+    e2b_template_id: str = field(
+        default_factory=lambda: os.environ.get("E2B_TEMPLATE_ID", "")
+    )
 
 
 config = Config()
