@@ -2,15 +2,15 @@
 
 export default function OpenSource() {
   return (
-    <section className="relative px-6 py-24 sm:py-32">
+    <section className="relative px-4 py-20 sm:px-6 sm:py-28 lg:py-32">
       <div className="mx-auto max-w-3xl text-center">
         <p className="text-sm font-medium uppercase tracking-widest text-[#43614a]">
           Open Source
         </p>
-        <h2 className="font-[family-name:var(--font-playfair)] mt-4 text-3xl font-normal italic tracking-tight text-gray-900 sm:text-5xl">
+        <h2 className="font-[family-name:var(--font-playfair)] mt-4 text-3xl font-normal italic tracking-tight text-gray-900 sm:text-4xl lg:text-5xl">
           Built in the open
         </h2>
-        <p className="mx-auto mt-6 max-w-xl text-lg leading-relaxed text-gray-500">
+        <p className="mx-auto mt-6 max-w-xl text-base leading-relaxed text-gray-500 sm:text-lg">
           Scheduled is fully open source. Read the code, run it yourself,
           or contribute — your calendar data is yours.
         </p>
@@ -20,7 +20,7 @@ export default function OpenSource() {
             href="https://github.com/Fergana-Labs/scheduler"
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-2.5 rounded-full border border-gray-900 px-7 py-3.5 text-base font-medium text-gray-900 transition-all hover:bg-gray-900 hover:text-white"
+            className="inline-flex min-h-[44px] w-full items-center justify-center gap-2.5 rounded-full border border-gray-900 px-7 py-3.5 text-base font-medium text-gray-900 transition-all hover:bg-gray-900 hover:text-white sm:w-auto"
           >
             <svg
               className="h-5 w-5"

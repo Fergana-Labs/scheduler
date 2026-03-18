@@ -205,7 +205,7 @@ export default function Hero() {
   return (
     <section
       ref={sectionRef}
-      className="relative overflow-hidden px-6"
+      className="relative overflow-hidden px-4 pt-24 pb-14 sm:px-6 sm:pt-28"
     >
       {/* Flowing icon streams - behind everything */}
       <div className="pointer-events-none absolute inset-0">
@@ -216,23 +216,23 @@ export default function Hero() {
       </div>
 
       {/* Two-column hero — scrolls naturally with the page */}
-      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-6xl items-center gap-12 lg:gap-20">
+      <div className="relative z-10 mx-auto flex min-h-[calc(100svh-6rem)] w-full max-w-6xl flex-col gap-10 sm:gap-11 lg:min-h-screen lg:flex-row lg:items-center lg:gap-20">
         {/* Left: headline + CTA */}
         <div className="flex-1">
-          <h1 className="font-[family-name:var(--font-playfair)] text-5xl font-normal italic leading-[1.1] tracking-tight text-gray-900 sm:text-7xl lg:text-8xl">
+          <h1 className="font-[family-name:var(--font-playfair)] text-[clamp(2.5rem,10vw,4.5rem)] font-normal italic leading-[1.05] tracking-tight text-gray-900 sm:text-5xl lg:text-7xl xl:text-8xl">
             Just hit
             <br />
             send
           </h1>
 
-          <p className="mt-8 max-w-md text-lg leading-relaxed text-gray-500 sm:text-xl">
+          <p className="mt-8 max-w-sm text-base leading-relaxed text-gray-500 sm:max-w-md sm:text-lg">
             Scheduled is an open-source agent that lives in your email and automatically drafts responses.
           </p>
 
           <div className="mt-10">
             <a
               href={`${process.env.NEXT_PUBLIC_CONTROL_PLANE_URL}/auth/login?signup=1`}
-              className="inline-flex items-center gap-2 rounded-full bg-[#43614a] px-7 py-3.5 text-base font-medium text-white transition-all hover:bg-[#527559]"
+              className="inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-full bg-[#43614a] px-7 py-3.5 text-base font-medium text-white transition-all hover:bg-[#527559] sm:w-auto"
             >
               Get Started
               <ArrowRight className="h-4 w-4" />

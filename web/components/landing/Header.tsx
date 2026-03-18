@@ -8,7 +8,7 @@ export default function Header() {
   return (
     <header className="absolute top-0 left-0 right-0 z-10">
       <nav
-        className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5 sm:px-8"
+        className="mx-auto flex max-w-7xl items-center justify-between px-4 py-5 sm:px-6"
         aria-label="Global"
       >
         <button
@@ -23,7 +23,7 @@ export default function Header() {
           />
         </button>
 
-        <div className="flex items-center gap-5">
+        <div className="flex items-center gap-4 text-sm sm:gap-5">
           <a
             href="https://github.com/Fergana-Labs/scheduler"
             target="_blank"
