@@ -101,19 +101,15 @@ export default function Hero() {
 
       {/* Main content */}
       <div className="relative z-10 mx-auto max-w-4xl text-center">
-        <h1 className="text-5xl leading-[1.1] tracking-tight text-gray-900 sm:text-7xl lg:text-8xl">
-          <span className="font-[family-name:var(--font-playfair)] font-normal italic">
-            Don&apos;t schedule,
-          </span>
+        <h1 className="font-[family-name:var(--font-playfair)] text-5xl font-normal italic leading-[1.1] tracking-tight text-gray-900 sm:text-7xl lg:text-8xl">
+          Just hit
           <br />
-          <span className="font-[family-name:var(--font-space-grotesk)] font-bold">
-            just email
-          </span>
+          send
         </h1>
 
         <p className="mx-auto mt-8 max-w-lg text-lg leading-relaxed text-gray-500 sm:text-xl">
-          The AI agent that reads your inbox, checks your
-          calendar, and drafts replies — in your voice.
+          An AI that reads your calendar and suggests times
+          that work — so you never have to check yourself.
         </p>
 
         <div className="mt-10 flex flex-col items-center gap-3">
@@ -124,9 +120,6 @@ export default function Hero() {
             Get Started
             <ArrowRight className="h-4 w-4" />
           </a>
-          <span className="text-sm text-gray-400">
-            Works with Gmail and Google Calendar
-          </span>
         </div>
       </div>
     </section>
