@@ -53,7 +53,7 @@ export default function SettingsPage() {
       } catch {
         // No valid session — clear stale token and redirect to sign-in
         clearSession();
-        window.location.href = `${process.env.NEXT_PUBLIC_CONTROL_PLANE_URL}/auth/google?signin=1`;
+        window.location.href = `${process.env.NEXT_PUBLIC_CONTROL_PLANE_URL}/auth/login`;
         return;
       } finally {
         setLoading(false);

@@ -5,10 +5,12 @@ const SESSION_KEY = 'stash_session';
 export function captureSessionFromURL() {
   if (typeof window === 'undefined') return;
   const params = new URLSearchParams(window.location.search);
-  const token = params.get('session');
+  // Support both 'token' (Auth0) and 'session' (legacy) params
+  const token = params.get('token') || params.get('session');
   if (token) {
     localStorage.setItem(SESSION_KEY, token);
     // Remove token from URL without reload
+    params.delete('token');
     params.delete('session');
     const clean = params.toString();
     const newUrl = window.location.pathname + (clean ? `?${clean}` : '');

@@ -26,6 +26,7 @@ class UserRow:
     process_sales_emails: bool
     created_at: datetime
     updated_at: datetime
+    auth0_sub: str | None = None
 
 
 def _conn():
@@ -104,6 +105,62 @@ def update_gmail_history_id(user_id: str, history_id: str) -> None:
         cur.execute(
             "UPDATE users SET gmail_history_id = %s, updated_at = now() WHERE id = %s",
             (history_id, user_id),
+        )
+        conn.commit()
+
+
+def get_user_by_auth0_sub(auth0_sub: str) -> UserRow | None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM users WHERE auth0_sub = %s", (auth0_sub,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in cur.description]
+        return UserRow(**dict(zip(cols, row)))
+
+
+def create_user_from_auth0(email: str, auth0_sub: str) -> UserRow:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO users (email, auth0_sub)
+            VALUES (%s, %s)
+            RETURNING *
+            """,
+            (email, auth0_sub),
+        )
+        row = cur.fetchone()
+        cols = [desc[0] for desc in cur.description]
+        conn.commit()
+        return UserRow(**dict(zip(cols, row)))
+
+
+def set_auth0_sub(user_id: str, auth0_sub: str) -> None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET auth0_sub = %s, updated_at = now() WHERE id = %s",
+            (auth0_sub, user_id),
+        )
+        conn.commit()
+
+
+def update_google_tokens(
+    user_id: str,
+    google_refresh_token: str,
+    google_access_token: str | None = None,
+    access_token_expires_at: datetime | None = None,
+) -> None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE users SET
+                google_refresh_token = %s,
+                google_access_token = %s,
+                access_token_expires_at = %s,
+                updated_at = now()
+            WHERE id = %s
+            """,
+            (google_refresh_token, google_access_token, access_token_expires_at, user_id),
         )
         conn.commit()
 

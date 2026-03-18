@@ -114,7 +114,7 @@ export default function Hero() {
 
         <div className="mt-10 flex flex-col items-center gap-3">
           <a
-            href={`${process.env.NEXT_PUBLIC_CONTROL_PLANE_URL}/auth/google`}
+            href={`${process.env.NEXT_PUBLIC_CONTROL_PLANE_URL}/auth/login?signup=1`}
             className="inline-flex items-center gap-2 rounded-full bg-[#43614a] px-7 py-3.5 text-base font-medium text-white transition-all hover:bg-[#527559]"
           >
             Get Started

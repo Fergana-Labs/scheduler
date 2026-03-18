@@ -1,10 +1,10 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Image from 'next/image';
 import { CheckCircle, Loader2 } from 'lucide-react';
-import { api, captureSessionFromURL } from '@/lib/api';
+import { api, captureSessionFromURL, getSession } from '@/lib/api';
 import PendingState from '@/components/onboarding/PendingState';
 
 interface UserInfo {
@@ -14,6 +14,8 @@ interface UserInfo {
 
 export default function OnboardingPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const needsGoogle = searchParams.get('needs_google') === '1';
   const [user, setUser] = useState<UserInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -43,14 +45,14 @@ export default function OnboardingPage() {
   }, [router]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || needsGoogle) return;
 
     // Check immediately
     checkStatus();
 
     const interval = setInterval(checkStatus, 10_000);
     return () => clearInterval(interval);
-  }, [user, checkStatus]);
+  }, [user, needsGoogle, checkStatus]);
 
   if (loading) {
     return (
@@ -71,11 +73,56 @@ export default function OnboardingPage() {
             Please sign up to get started.
           </p>
           <a
-            href={`${process.env.NEXT_PUBLIC_CONTROL_PLANE_URL}/auth/google`}
+            href={`${process.env.NEXT_PUBLIC_CONTROL_PLANE_URL}/auth/login`}
             className="mt-6 inline-flex items-center rounded-xl bg-[#43614a] px-6 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#527559]"
           >
             Sign Up with Google
           </a>
+        </div>
+      </div>
+    );
+  }
+
+  if (needsGoogle) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#FAFAFA]">
+        <div className="mx-auto max-w-lg px-4">
+          <div className="rounded-2xl border border-gray-200 bg-white p-8 shadow-sm sm:p-10">
+            <div className="mb-8 flex items-center gap-3">
+              <Image
+                src="/logo.png"
+                alt="Scheduled Logo"
+                width={40}
+                height={40}
+                className="h-10 w-10"
+              />
+              <span className="font-[family-name:var(--font-space-grotesk)] text-2xl font-bold text-gray-900">
+                Scheduled
+              </span>
+            </div>
+
+            <div className="mb-8">
+              <h1 className="text-xl font-semibold text-gray-900">
+                Connect your Google account
+              </h1>
+              <p className="mt-2 text-sm text-gray-500">
+                Signed in as{' '}
+                <span className="font-medium text-gray-700">
+                  {user?.email}
+                </span>
+              </p>
+              <p className="mt-4 text-sm text-gray-500">
+                Scheduled needs access to your Gmail and Calendar to draft scheduling replies.
+              </p>
+            </div>
+
+            <a
+              href={`${process.env.NEXT_PUBLIC_CONTROL_PLANE_URL}/auth/google/connect?token=${getSession() || ''}`}
+              className="inline-flex w-full items-center justify-center rounded-xl bg-[#43614a] px-6 py-4 text-base font-semibold text-white transition-colors hover:bg-[#527559]"
+            >
+              Connect Google Account
+            </a>
+          </div>
         </div>
       </div>
     );

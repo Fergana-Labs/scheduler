@@ -23,6 +23,8 @@ import urllib.parse
 from contextlib import asynccontextmanager
 from datetime import datetime
 
+import jwt
+from jwt import PyJWKClient
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -95,7 +97,29 @@ app.add_middleware(
 )
 
 
-# --- Web auth helpers ---
+# --- Auth0 JWT validation ---
+
+_jwks_client: PyJWKClient | None = None
+
+
+def _get_jwks_client() -> PyJWKClient:
+    global _jwks_client
+    if _jwks_client is None:
+        _jwks_client = PyJWKClient(f"https://{config.auth0_domain}/.well-known/jwks.json")
+    return _jwks_client
+
+
+def _validate_auth0_jwt(token: str) -> dict:
+    signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
+    return jwt.decode(
+        token, signing_key.key,
+        algorithms=["RS256"],
+        audience=config.auth0_audience,
+        issuer=f"https://{config.auth0_domain}/",
+    )
+
+
+# --- Legacy HMAC session helpers (kept for transition period) ---
 
 
 def _sign_session(user_id: str, email: str) -> str:
@@ -117,7 +141,295 @@ def _verify_session(token: str) -> dict | None:
     except Exception:
         return None
 
-# --- Web OAuth routes ---
+
+# --- Unified auth dependency ---
+
+
+def get_authenticated_user(request: Request) -> dict:
+    """Validate Auth0 JWT from Authorization header, with legacy HMAC fallback."""
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = auth_header[7:]
+
+    # Try Auth0 JWT first
+    if config.auth0_domain:
+        try:
+            payload = _validate_auth0_jwt(token)
+            from scheduler.db import get_user_by_auth0_sub
+            user = get_user_by_auth0_sub(payload["sub"])
+            if not user:
+                raise HTTPException(status_code=401, detail="User not found")
+            return {"user_id": str(user.id), "email": user.email}
+        except jwt.PyJWTError:
+            pass  # Fall through to legacy HMAC
+
+    # Legacy HMAC fallback (transition period)
+    legacy = _verify_session(token)
+    if legacy:
+        return legacy
+
+    raise HTTPException(status_code=401, detail="Invalid token")
+
+
+# Alias for backward compatibility with internal callers
+get_web_session = get_authenticated_user
+get_web_user = get_authenticated_user
+
+
+# --- Auth0 routes ---
+
+
+@app.get("/auth/login")
+def auth0_login(signup: str | None = None):
+    """Redirect to Auth0 Universal Login."""
+    params = {
+        "client_id": config.auth0_client_id,
+        "redirect_uri": f"{config.google_web_redirect_uri}/auth/callback",
+        "response_type": "code",
+        "scope": "openid profile email",
+        "audience": config.auth0_audience,
+    }
+    if signup == "1":
+        params["screen_hint"] = "signup"
+    url = f"https://{config.auth0_domain}/authorize?{urllib.parse.urlencode(params)}"
+    return RedirectResponse(url)
+
+
+@app.get("/auth/callback")
+def auth0_callback(code: str | None = None, error: str | None = None):
+    """Handle Auth0 callback — exchange code for tokens, create/match user."""
+    if error:
+        return RedirectResponse(f"{config.web_app_url}?error={error}")
+
+    if not code:
+        return RedirectResponse(f"{config.web_app_url}?error=missing_code")
+
+    import httpx
+
+    # Exchange authorization code for Auth0 tokens
+    token_response = httpx.post(
+        f"https://{config.auth0_domain}/oauth/token",
+        json={
+            "grant_type": "authorization_code",
+            "client_id": config.auth0_client_id,
+            "client_secret": config.auth0_client_secret,
+            "code": code,
+            "redirect_uri": f"{config.google_web_redirect_uri}/auth/callback",
+        },
+    )
+
+    if token_response.status_code != 200:
+        logger.error("Auth0 token exchange failed: %s", token_response.text)
+        return RedirectResponse(f"{config.web_app_url}?error=token_exchange_failed")
+
+    tokens = token_response.json()
+    access_token = tokens["access_token"]
+    id_token = tokens.get("id_token", "")
+
+    # Decode id_token to get email and sub (unverified is fine — we just got it from Auth0)
+    id_claims = jwt.decode(id_token, options={"verify_signature": False})
+    email = id_claims.get("email")
+    auth0_sub = id_claims.get("sub")
+
+    if not email or not auth0_sub:
+        return RedirectResponse(f"{config.web_app_url}?error=missing_user_info")
+
+    from scheduler.db import (
+        create_user_from_auth0,
+        get_guides_for_user,
+        get_user_by_auth0_sub,
+        get_user_by_email,
+        set_auth0_sub,
+    )
+
+    # Look up user by auth0_sub first, then by email for migration
+    user = get_user_by_auth0_sub(auth0_sub)
+    if not user:
+        user = get_user_by_email(email)
+        if user:
+            # Existing user logging in via Auth0 for the first time — link accounts
+            set_auth0_sub(str(user.id), auth0_sub)
+            logger.info("auth0_callback: linked existing user=%s to auth0_sub=%s", user.id, auth0_sub)
+        else:
+            # Brand new user
+            user = create_user_from_auth0(email, auth0_sub)
+            logger.info("auth0_callback: created new user=%s for auth0_sub=%s", user.id, auth0_sub)
+
+    from starlette.background import BackgroundTask
+
+    # Check if user has Google tokens and onboarding status
+    has_google = user.google_refresh_token is not None
+    if has_google:
+        guides = get_guides_for_user(str(user.id))
+        guide_names = {g.name for g in guides}
+        is_onboarded = "scheduling_preferences" in guide_names and "email_style" in guide_names
+    else:
+        is_onboarded = False
+
+    if has_google and is_onboarded:
+        logger.info("auth0_callback: returning user=%s, renewing gmail watch", user.id)
+        background = BackgroundTask(_renew_gmail_watch, str(user.id))
+        redirect_url = f"{config.web_app_url}/settings?token={access_token}"
+    elif has_google and not is_onboarded:
+        logger.info("auth0_callback: user=%s has google but not onboarded, starting onboarding", user.id)
+        background = BackgroundTask(_run_onboarding_for_runtime, str(user.id))
+        redirect_url = f"{config.web_app_url}/onboarding?token={access_token}"
+    else:
+        logger.info("auth0_callback: user=%s needs google connect", user.id)
+        background = None
+        redirect_url = f"{config.web_app_url}/onboarding?token={access_token}&needs_google=1"
+
+    return RedirectResponse(redirect_url, background=background)
+
+
+@app.get("/auth/logout")
+def auth0_logout():
+    """Redirect to Auth0 logout endpoint."""
+    params = {
+        "client_id": config.auth0_client_id,
+        "returnTo": config.web_app_url,
+    }
+    url = f"https://{config.auth0_domain}/v2/logout?{urllib.parse.urlencode(params)}"
+    return RedirectResponse(url)
+
+
+# --- Google Connect flow (separate from login) ---
+
+# Temporary store for Google connect OAuth state tokens
+_google_connect_states: dict[str, float] = {}
+
+
+@app.get("/auth/google/connect")
+def auth_google_connect(token: str | None = None):
+    """Start Google API token OAuth flow. Requires Auth0 JWT via query param."""
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing token")
+
+    # Validate Auth0 JWT (or legacy HMAC)
+    try:
+        if config.auth0_domain:
+            payload = _validate_auth0_jwt(token)
+            from scheduler.db import get_user_by_auth0_sub
+            user = get_user_by_auth0_sub(payload["sub"])
+            if not user:
+                raise HTTPException(status_code=401, detail="User not found")
+            user_id = str(user.id)
+        else:
+            legacy = _verify_session(token)
+            if not legacy:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            user_id = legacy["user_id"]
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    state_data = f"{secrets.token_urlsafe(32)}|user_id={user_id}|auth_token={token}"
+    _google_connect_states[state_data] = time.time()
+
+    params = {
+        "client_id": config.google_client_id,
+        "redirect_uri": f"{config.google_web_redirect_uri}/auth/google/callback",
+        "response_type": "code",
+        "scope": " ".join(SCOPES),
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state_data,
+    }
+    url = f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
+    return RedirectResponse(url)
+
+
+@app.get("/auth/google/callback")
+def auth_google_connect_callback(
+    code: str | None = None, state: str | None = None, error: str | None = None
+):
+    """Handle Google OAuth callback for the Connect flow."""
+    if error:
+        return RedirectResponse(f"{config.web_app_url}?error={error}")
+
+    if not code or not state:
+        return RedirectResponse(f"{config.web_app_url}?error=missing_params")
+
+    # Validate state
+    issued_at = _google_connect_states.pop(state, None)
+    if not issued_at or (time.time() - issued_at > 600):
+        return RedirectResponse(f"{config.web_app_url}?error=invalid_state")
+
+    # Extract user_id and auth_token from state
+    parts = state.split("|")
+    state_dict = {}
+    for part in parts[1:]:
+        if "=" in part:
+            k, v = part.split("=", 1)
+            state_dict[k] = v
+    user_id = state_dict.get("user_id")
+    auth_token = state_dict.get("auth_token")
+
+    if not user_id:
+        return RedirectResponse(f"{config.web_app_url}?error=invalid_state")
+
+    import httpx
+
+    # Exchange authorization code for Google tokens
+    token_response = httpx.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "code": code,
+            "client_id": config.google_client_id,
+            "client_secret": config.google_client_secret,
+            "redirect_uri": f"{config.google_web_redirect_uri}/auth/google/callback",
+            "grant_type": "authorization_code",
+        },
+    )
+
+    if token_response.status_code != 200:
+        logger.error("Google token exchange failed: %s", token_response.text)
+        return RedirectResponse(f"{config.web_app_url}?error=token_exchange_failed")
+
+    tokens = token_response.json()
+    google_access_token = tokens["access_token"]
+    google_refresh_token = tokens.get("refresh_token")
+
+    if not google_refresh_token:
+        return RedirectResponse(f"{config.web_app_url}?error=no_refresh_token")
+
+    from scheduler.db import get_guides_for_user, update_google_tokens
+
+    expires_in = tokens.get("expires_in")
+    expires_at = None
+    if expires_in:
+        from datetime import timedelta
+        expires_at = datetime.now() + timedelta(seconds=expires_in)
+
+    update_google_tokens(
+        user_id=user_id,
+        google_refresh_token=google_refresh_token,
+        google_access_token=google_access_token,
+        access_token_expires_at=expires_at,
+    )
+
+    # Check onboarding status
+    guides = get_guides_for_user(user_id)
+    guide_names = {g.name for g in guides}
+    is_onboarded = "scheduling_preferences" in guide_names and "email_style" in guide_names
+
+    from starlette.background import BackgroundTask
+
+    token_param = f"token={auth_token}" if auth_token else ""
+
+    if is_onboarded:
+        logger.info("google_connect: returning user=%s, renewing gmail watch", user_id)
+        background = BackgroundTask(_renew_gmail_watch, user_id)
+        redirect_url = f"{config.web_app_url}/settings?{token_param}"
+    else:
+        logger.info("google_connect: starting onboarding for user=%s", user_id)
+        background = BackgroundTask(_run_onboarding_for_runtime, user_id)
+        redirect_url = f"{config.web_app_url}/onboarding?{token_param}"
+
+    return RedirectResponse(redirect_url, background=background)
+
+
+# --- Legacy Google OAuth routes (kept for transition period) ---
 
 # Temporary store for OAuth state tokens (state -> timestamp)
 _oauth_states: dict[str, float] = {}
@@ -159,14 +471,10 @@ def root_callback(code: str | None = None, state: str | None = None, error: str 
 
 
 def auth_google_callback(code: str | None = None, state: str | None = None, error: str | None = None):
-    """Handle the OAuth callback from Google.
+    """Handle the OAuth callback from Google (legacy flow).
 
     Exchanges the authorization code for tokens, upserts the user in the
     database, and redirects to the web app with a signed session cookie.
-
-    Supports two modes based on state:
-    - Sign-up (default): expects refresh_token, upserts user, runs full onboarding
-    - Sign-in (state contains signin=1): no refresh_token needed, looks up existing user
     """
     if error:
         return RedirectResponse(f"{config.web_app_url}?error={error}")
@@ -265,25 +573,9 @@ def auth_google_callback(code: str | None = None, state: str | None = None, erro
     return RedirectResponse(redirect_url_with_token, background=background)
 
 
-def get_web_session(request: Request) -> dict:
-    """Validate the session from Authorization header or cookie."""
-    token = None
-    auth_header = request.headers.get("authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[7:]
-    if not token:
-        token = request.cookies.get("session")
-    if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    payload = _verify_session(token)
-    if not payload:
-        raise HTTPException(status_code=401, detail="Invalid session")
-    return payload
-
-
 @app.get("/auth/me")
-def auth_me(session: dict = Depends(get_web_session)):
-    """Return the current user's info from the session cookie."""
+def auth_me(session: dict = Depends(get_authenticated_user)):
+    """Return the current user's info."""
     return {"user_id": session["user_id"], "email": session["email"]}
 
 
@@ -993,22 +1285,11 @@ async def gmail_webhook(request: Request, background_tasks: BackgroundTasks):
     return {"status": "ok"}
 
 
-# --- Web API routes (cookie auth) ---
-
-
-def get_web_user(request: Request) -> dict:
-    """Validate the session cookie and return the user payload."""
-    session_cookie = request.cookies.get("session")
-    if not session_cookie:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    payload = _verify_session(session_cookie)
-    if not payload:
-        raise HTTPException(status_code=401, detail="Invalid session")
-    return payload
+# --- Web API routes ---
 
 
 @app.get("/web/api/v1/onboarding/status")
-def web_onboarding_status(user: dict = Depends(get_web_user)):
+def web_onboarding_status(user: dict = Depends(get_authenticated_user)):
     from scheduler.db import get_guides_for_user, get_user_by_id
 
     db_user = get_user_by_id(user["user_id"])
@@ -1025,7 +1306,7 @@ def web_onboarding_status(user: dict = Depends(get_web_user)):
 
 
 @app.get("/web/api/v1/settings")
-def web_settings_get(user: dict = Depends(get_web_user)):
+def web_settings_get(user: dict = Depends(get_authenticated_user)):
     from scheduler.db import get_guides_for_user, get_user_by_id
 
     db_user = get_user_by_id(user["user_id"])
@@ -1052,7 +1333,7 @@ class WebUpdateSystemEnabledRequest(BaseModel):
 
 
 @app.put("/web/api/v1/settings/system")
-def web_settings_system(req: WebUpdateSystemEnabledRequest, user: dict = Depends(get_web_user)):
+def web_settings_system(req: WebUpdateSystemEnabledRequest, user: dict = Depends(get_authenticated_user)):
     from scheduler.db import update_system_enabled
 
     update_system_enabled(user["user_id"], req.enabled)
@@ -1064,7 +1345,7 @@ class WebUpdateAutopilotRequest(BaseModel):
 
 
 @app.put("/web/api/v1/settings/autopilot")
-def web_settings_autopilot(req: WebUpdateAutopilotRequest, user: dict = Depends(get_web_user)):
+def web_settings_autopilot(req: WebUpdateAutopilotRequest, user: dict = Depends(get_authenticated_user)):
     from scheduler.db import update_autopilot
 
     update_autopilot(user["user_id"], req.enabled)
@@ -1076,7 +1357,7 @@ class WebUpdateSalesEmailRequest(BaseModel):
 
 
 @app.put("/web/api/v1/settings/sales-emails")
-def web_settings_sales_emails(req: WebUpdateSalesEmailRequest, user: dict = Depends(get_web_user)):
+def web_settings_sales_emails(req: WebUpdateSalesEmailRequest, user: dict = Depends(get_authenticated_user)):
     from scheduler.db import update_process_sales_emails
 
     update_process_sales_emails(user["user_id"], req.enabled)
@@ -1088,7 +1369,7 @@ class WebUpdateBrandingRequest(BaseModel):
 
 
 @app.put("/web/api/v1/settings/branding")
-def web_settings_branding(req: WebUpdateBrandingRequest, user: dict = Depends(get_web_user)):
+def web_settings_branding(req: WebUpdateBrandingRequest, user: dict = Depends(get_authenticated_user)):
     from scheduler.db import update_stash_branding
 
     update_stash_branding(user["user_id"], req.enabled)
@@ -1100,7 +1381,7 @@ class WebUpdateGuideRequest(BaseModel):
 
 
 @app.put("/web/api/v1/guides/{name}")
-def web_guide_update(name: str, req: WebUpdateGuideRequest, user: dict = Depends(get_web_user)):
+def web_guide_update(name: str, req: WebUpdateGuideRequest, user: dict = Depends(get_authenticated_user)):
     from scheduler.db import upsert_guide
 
     guide = upsert_guide(user["user_id"], name, req.content)
@@ -1108,7 +1389,7 @@ def web_guide_update(name: str, req: WebUpdateGuideRequest, user: dict = Depends
 
 
 @app.post("/web/api/v1/guides/{name}/regenerate")
-def web_guide_regenerate(name: str, background_tasks: BackgroundTasks, user: dict = Depends(get_web_user)):
+def web_guide_regenerate(name: str, background_tasks: BackgroundTasks, user: dict = Depends(get_authenticated_user)):
     """Regenerate a single guide by re-running the appropriate agent."""
     if name not in ("scheduling_preferences", "email_style"):
         raise HTTPException(status_code=400, detail=f"Unknown guide: {name}")
@@ -1142,7 +1423,7 @@ def _run_guide_regeneration(user_id: str, guide_name: str) -> None:
 
 
 @app.post("/web/api/v1/account/disconnect")
-def web_account_disconnect(request: Request, user: dict = Depends(get_web_user)):
+def web_account_disconnect(request: Request, user: dict = Depends(get_authenticated_user)):
     from scheduler.db import disconnect_user, get_user_by_id
 
     db_user = get_user_by_id(user["user_id"])
