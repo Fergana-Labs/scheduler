@@ -2,66 +2,75 @@
 
 import { ArrowRight, Mail, MailOpen, Inbox, Send, Reply, Forward, Calendar, Clock, Bell, CalendarCheck, CalendarDays, Timer, Video, Users } from 'lucide-react';
 
-// Email-related icons for the upper ribbon
-const upperIcons = [Mail, MailOpen, Inbox, Send, Reply, Forward, Mail, Send, MailOpen, Inbox, Reply, Forward];
-// Integration/calendar icons for the lower ribbon
-const lowerIcons = [Calendar, Clock, Bell, CalendarCheck, CalendarDays, Timer, Video, Users, Calendar, Clock, Bell, CalendarCheck];
+const upperIcons = [Mail, MailOpen, Inbox, Send, Reply, Forward, Mail, Send, MailOpen, Inbox, Reply, Forward, Mail, MailOpen, Send, Reply, Forward, Inbox, Mail, Send];
+const lowerIcons = [Calendar, Clock, Bell, CalendarCheck, CalendarDays, Timer, Video, Users, Calendar, Clock, Bell, CalendarCheck, CalendarDays, Timer, Video, Users, Calendar, Clock, Bell, CalendarCheck];
 
-function ScrollingIconStrip({
+// Asymmetric, playful curves — staying clear of the center hero area
+const UPPER_PATH = "path('M -200,100 C 50,20 180,200 420,60 C 580,-30 700,150 900,80 C 1080,20 1200,160 1400,70 C 1550,10 1650,130 1750,80')";
+const LOWER_PATH = "path('M -200,680 C 80,630 200,720 380,690 C 560,660 650,750 820,710 C 1000,670 1100,740 1250,700 C 1400,660 1550,730 1750,680')";
+
+function IconStream({
   icons,
-  direction,
+  offsetPath,
   duration,
-  yPosition,
   opacity,
-  rotation,
+  reverse,
 }: {
   icons: typeof upperIcons;
-  direction: 'left' | 'right';
+  offsetPath: string;
   duration: number;
-  yPosition: string;
   opacity: number;
-  rotation: number;
+  reverse?: boolean;
 }) {
-  const iconSet = [...icons, ...icons]; // duplicate for seamless loop
-  const animClass = direction === 'left' ? 'animate-scroll-left' : 'animate-scroll-right';
+  const count = icons.length;
 
   return (
-    <div
-      className="absolute left-0 right-0 overflow-hidden"
-      style={{ top: yPosition, transform: `rotate(${rotation}deg)`, opacity }}
-    >
-      <div className={`flex w-max gap-12 ${animClass}`} style={{ animationDuration: `${duration}s` }}>
-        {iconSet.map((Icon, i) => (
-          <div key={i} className="flex h-10 w-10 flex-shrink-0 items-center justify-center">
-            <Icon className="h-7 w-7 text-gray-900" strokeWidth={1.2} />
+    <>
+      {icons.map((Icon, i) => {
+        const delay = -(duration / count) * i;
+        return (
+          <div
+            key={i}
+            className="icon-on-path absolute left-0 top-0"
+            style={{
+              offsetPath,
+              offsetRotate: '0deg',
+              animationName: reverse ? 'move-along-path-reverse' : 'move-along-path',
+              animationDuration: `${duration}s`,
+              animationTimingFunction: 'linear',
+              animationIterationCount: 'infinite',
+              animationDelay: `${delay}s`,
+              opacity,
+            }}
+          >
+            <Icon className="h-5 w-5 text-gray-900" strokeWidth={1.3} />
           </div>
-        ))}
-      </div>
-    </div>
+        );
+      })}
+    </>
   );
 }
 
 export default function Hero() {
   return (
     <section className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden px-6">
-      {/* Scrolling icon ribbons - behind content */}
-      <div className="pointer-events-none absolute inset-0">
-        <ScrollingIconStrip
-          icons={upperIcons}
-          direction="left"
-          duration={30}
-          yPosition="14%"
-          opacity={0.15}
-          rotation={-3}
-        />
-        <ScrollingIconStrip
-          icons={lowerIcons}
-          direction="right"
-          duration={35}
-          yPosition="78%"
-          opacity={0.13}
-          rotation={2}
-        />
+      {/* Flowing icon streams - behind content */}
+      <div className="pointer-events-none absolute inset-0" style={{ position: 'absolute' }}>
+        <div className="relative h-full w-full" style={{ transform: 'scale(1)', transformOrigin: 'top left' }}>
+          <IconStream
+            icons={upperIcons}
+            offsetPath={UPPER_PATH}
+            duration={40}
+            opacity={0.14}
+          />
+          <IconStream
+            icons={lowerIcons}
+            offsetPath={LOWER_PATH}
+            duration={45}
+            opacity={0.12}
+            reverse
+          />
+        </div>
       </div>
 
       {/* Main content */}
