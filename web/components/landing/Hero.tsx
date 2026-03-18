@@ -42,8 +42,6 @@ const EMAILS = [
   },
 ];
 
-// How many px of scroll to dismiss each card
-const SCROLL_PER_CARD = 150;
 
 function IconStream({
   icons,
@@ -89,21 +87,35 @@ function IconStream({
 
 export default function Hero() {
   const sectionRef = useRef<HTMLDivElement>(null);
+  const cardContainerRef = useRef<HTMLDivElement>(null);
   const [cardStates, setCardStates] = useState<number[]>(EMAILS.map(() => 0));
+  // Distance from section top to card container top — measured once
+  const cardOffsetRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!sectionRef.current || !cardContainerRef.current) return;
+    // Measure initial card position relative to section
+    const sectionRect = sectionRef.current.getBoundingClientRect();
+    const cardRect = cardContainerRef.current.getBoundingClientRect();
+    cardOffsetRef.current = cardRect.top - sectionRect.top;
+  }, []);
 
   const handleScroll = useCallback(() => {
     if (!sectionRef.current) return;
 
-    const rect = sectionRef.current.getBoundingClientRect();
-    // First pixel of scroll starts the animation
-    const progress = Math.max(0, -rect.top);
+    const scrolled = Math.max(0, -sectionRef.current.getBoundingClientRect().top);
+
+    // All cards must be fully dismissed by the time the card container's
+    // top edge reaches the viewport top (i.e., starts going off-screen).
+    const budget = Math.max(50, cardOffsetRef.current);
+    const scrollPerCard = budget / EMAILS.length;
 
     const newStates = EMAILS.map((_, i) => {
-      const cardStart = i * SCROLL_PER_CARD;
-      const cardEnd = cardStart + SCROLL_PER_CARD;
-      if (progress <= cardStart) return 0;
-      if (progress >= cardEnd) return 1;
-      return (progress - cardStart) / SCROLL_PER_CARD;
+      const cardStart = i * scrollPerCard;
+      const cardEnd = cardStart + scrollPerCard;
+      if (scrolled <= cardStart) return 0;
+      if (scrolled >= cardEnd) return 1;
+      return (scrolled - cardStart) / scrollPerCard;
     });
 
     setCardStates(newStates);
@@ -115,14 +127,10 @@ export default function Hero() {
     return () => window.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
 
-  // Extra height beyond the viewport to give scroll room for card animations
-  const scrollRoom = EMAILS.length * SCROLL_PER_CARD + 200;
-
   return (
     <section
       ref={sectionRef}
       className="relative overflow-hidden px-6"
-      style={{ paddingBottom: `${scrollRoom}px` }}
     >
       {/* Flowing icon streams - behind everything */}
       <div className="pointer-events-none absolute inset-0">
@@ -158,7 +166,7 @@ export default function Hero() {
         </div>
 
         {/* Right: email card stack */}
-        <div className="relative hidden h-[420px] w-[440px] flex-shrink-0 lg:block">
+        <div ref={cardContainerRef} className="relative hidden h-[420px] w-[440px] flex-shrink-0 lg:block">
           {EMAILS.map((email, i) => {
             const progress = cardStates[i] ?? 0;
             const isGone = progress >= 1;
