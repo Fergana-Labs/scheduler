@@ -15,6 +15,7 @@ Requires:
 """
 
 import os
+import json
 import secrets
 import sys
 import threading
@@ -25,22 +26,20 @@ import uvicorn
 from e2b_code_interpreter import Sandbox
 
 from scheduler.config import config
-from scheduler.controlplane.server import app, register_session
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
-def _collect_sandbox_files() -> list[dict]:
-    """Collect only the files needed inside the sandbox.
-
-    The sandbox needs:
-    - scheduler/sandbox/ (entry point + api_client)
-    - scheduler/onboarding/agent.py (shared agent logic)
-    - scheduler/guides/ (preferences + style agents + backends)
-    - scheduler/config.py (used by guide agents for lookback_days)
-    - pyproject.toml (for pip install)
-    """
+def _collect_common_sandbox_files() -> list[dict]:
     files = []
+
+    init_file = PROJECT_ROOT / "src" / "scheduler" / "__init__.py"
+    if init_file.exists():
+        files.append({
+            "path": "/home/user/scheduler/src/scheduler/__init__.py",
+            "data": init_file.read_text(),
+        })
+
     sandbox_dir = PROJECT_ROOT / "src" / "scheduler" / "sandbox"
     for py_file in sandbox_dir.rglob("*.py"):
         rel_path = py_file.relative_to(PROJECT_ROOT / "src")
@@ -49,7 +48,17 @@ def _collect_sandbox_files() -> list[dict]:
             "data": py_file.read_text(),
         })
 
-    # Shared onboarding agent (no backends — sandbox uses ControlPlaneClient directly)
+    files.append({
+        "path": "/home/user/scheduler/pyproject.toml",
+        "data": _sandbox_pyproject(),
+    })
+    return files
+
+
+def _collect_onboarding_sandbox_files() -> list[dict]:
+    """Collect only the files needed for sandboxed onboarding."""
+    files = _collect_common_sandbox_files()
+
     onboarding_dir = PROJECT_ROOT / "src" / "scheduler" / "onboarding"
     files.append({
         "path": "/home/user/scheduler/src/scheduler/onboarding/__init__.py",
@@ -69,25 +78,35 @@ def _collect_sandbox_files() -> list[dict]:
             "data": py_file.read_text(),
         })
 
-    # Config module (used by guide agents for lookback_days, etc.)
     config_file = PROJECT_ROOT / "src" / "scheduler" / "config.py"
     files.append({
         "path": "/home/user/scheduler/src/scheduler/config.py",
         "data": config_file.read_text(),
     })
 
-    # Include the top-level package init
-    init_file = PROJECT_ROOT / "src" / "scheduler" / "__init__.py"
-    if init_file.exists():
-        files.append({
-            "path": "/home/user/scheduler/src/scheduler/__init__.py",
-            "data": init_file.read_text(),
-        })
+    return files
 
-    # Minimal pyproject.toml for sandbox deps only
+
+def _collect_drafting_sandbox_files(email_payload: dict, classification_payload: dict) -> list[dict]:
+    """Collect only the files needed for sandboxed drafting."""
+    files = _collect_common_sandbox_files()
+    drafts_dir = PROJECT_ROOT / "src" / "scheduler" / "drafts"
+
     files.append({
-        "path": "/home/user/scheduler/pyproject.toml",
-        "data": _sandbox_pyproject(),
+        "path": "/home/user/scheduler/src/scheduler/drafts/__init__.py",
+        "data": (drafts_dir / "__init__.py").read_text(),
+    })
+    files.append({
+        "path": "/home/user/scheduler/src/scheduler/drafts/composer.py",
+        "data": (drafts_dir / "composer.py").read_text(),
+    })
+    files.append({
+        "path": "/home/user/scheduler/draft_email.json",
+        "data": json.dumps(email_payload),
+    })
+    files.append({
+        "path": "/home/user/scheduler/draft_classification.json",
+        "data": json.dumps(classification_payload),
     })
 
     return files
@@ -118,6 +137,8 @@ where = ["src"]
 
 def _start_control_plane() -> threading.Thread:
     """Start the FastAPI control plane server in a background thread."""
+    from scheduler.controlplane.server import app
+
     thread = threading.Thread(
         target=uvicorn.run,
         args=(app,),
@@ -133,72 +154,68 @@ def _start_control_plane() -> threading.Thread:
     return thread
 
 
-def run_onboarding_in_sandbox(control_plane_url: str | None = None):
-    """Spin up an e2b sandbox and run the onboarding agent inside it.
+def _register_sandbox_session(user_id: str) -> str:
+    from scheduler.controlplane.server import register_session
 
-    Args:
-        control_plane_url: Public URL of the control plane. If None,
-            starts a local server (you'll need ngrok or similar for
-            the sandbox to reach it).
-    """
+    session_token = secrets.token_urlsafe(32)
+    print("Registering session on control plane...")
+    register_session(session_token, user_id=user_id)
+    print("Session registered.")
+    return session_token
+
+
+def _create_sandbox(*, control_plane_url: str, session_token: str, extra_envs: dict[str, str] | None = None):
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
     if not anthropic_key:
         print("Error: ANTHROPIC_API_KEY not set")
         sys.exit(1)
 
-    # Start local control plane if no URL provided
-    start_local = control_plane_url is None
-    if start_local:
-        print("Starting control plane server...")
-        _start_control_plane()
-        control_plane_url = f"http://localhost:{config.control_plane_port}"
-        print(f"Control plane running at {control_plane_url}")
-        print(
-            "Note: For the e2b sandbox to reach this, you need the control plane "
-            "on a public URL (e.g., deploy it or use ngrok)."
-        )
-
-    # Generate session token and register it
-    session_token = secrets.token_urlsafe(32)
-    print("Registering session on control plane...")
-    register_session(session_token, user_id="default")
-    print("Session registered.")
-
-    # Create the sandbox
     print("Creating e2b sandbox...")
-    sandbox = Sandbox.create(
+    envs = {
+        "ANTHROPIC_API_KEY": anthropic_key,
+        "CONTROL_PLANE_URL": control_plane_url,
+        "SESSION_TOKEN": session_token,
+    }
+    if extra_envs:
+        envs.update(extra_envs)
+    return Sandbox.create(
         "claude",
-        envs={
-            "ANTHROPIC_API_KEY": anthropic_key,
-            "CONTROL_PLANE_URL": control_plane_url,
-            "SESSION_TOKEN": session_token,
-            "ONBOARDING_LOOKBACK_DAYS": str(config.onboarding_lookback_days),
-        },
+        envs=envs,
+    )
+
+
+def _prepare_sandbox(sandbox: Sandbox, files: list[dict]) -> bool:
+    print("Installing Python in sandbox...")
+    result = sandbox.commands.run(
+        "apt-get update -qq && apt-get install -y -qq python3 python3-pip python3-venv "
+        "> /dev/null 2>&1",
+    )
+    if result.exit_code != 0:
+        print(f"Failed to install Python: {result.stderr}")
+        return False
+
+    print("Uploading sandbox agent files...")
+    sandbox.files.write_files(files)
+
+    print("Installing sandbox dependencies...")
+    result = sandbox.commands.run("cd /home/user/scheduler && pip install -e '.' -q")
+    if result.exit_code != 0:
+        print(f"Failed to install deps: {result.stderr}")
+        return False
+    return True
+
+
+def launch_onboarding_in_sandbox(user_id: str, control_plane_url: str, lookback_days: int | None = None):
+    """Spin up an e2b sandbox and run the onboarding agent inside it."""
+    session_token = _register_sandbox_session(user_id)
+    sandbox = _create_sandbox(
+        control_plane_url=control_plane_url,
+        session_token=session_token,
+        extra_envs={"ONBOARDING_LOOKBACK_DAYS": str(lookback_days or config.onboarding_lookback_days)},
     )
 
     try:
-        # Install Python
-        print("Installing Python in sandbox...")
-        result = sandbox.commands.run(
-            "apt-get update -qq && apt-get install -y -qq python3 python3-pip python3-venv "
-            "> /dev/null 2>&1",
-        )
-        if result.exit_code != 0:
-            print(f"Failed to install Python: {result.stderr}")
-            return
-
-        # Upload only sandbox files (no auth, no Google client libs)
-        print("Uploading sandbox agent files...")
-        files = _collect_sandbox_files()
-        sandbox.files.write_files(files)
-
-        # Install sandbox dependencies
-        print("Installing sandbox dependencies...")
-        result = sandbox.commands.run(
-            "cd /home/user/scheduler && pip install -e '.' -q",
-        )
-        if result.exit_code != 0:
-            print(f"Failed to install deps: {result.stderr}")
+        if not _prepare_sandbox(sandbox, _collect_onboarding_sandbox_files()):
             return
 
         # Run the sandbox onboarding agent
@@ -213,6 +230,64 @@ def run_onboarding_in_sandbox(control_plane_url: str | None = None):
     finally:
         sandbox.kill()
         print("\nSandbox terminated.")
+
+
+def launch_draft_composer_in_sandbox(
+    user_id: str,
+    control_plane_url: str,
+    email_payload: dict,
+    classification_payload: dict,
+    *,
+    autopilot: bool,
+) -> str | None:
+    """Spin up an e2b sandbox and run the draft composer agent inside it."""
+    session_token = _register_sandbox_session(user_id)
+    sandbox = _create_sandbox(
+        control_plane_url=control_plane_url,
+        session_token=session_token,
+        extra_envs={"AUTOPILOT_ENABLED": "1" if autopilot else "0"},
+    )
+
+    try:
+        if not _prepare_sandbox(
+            sandbox,
+            _collect_drafting_sandbox_files(email_payload, classification_payload),
+        ):
+            return None
+
+        print("Running draft composer agent...\n")
+        result = sandbox.commands.run(
+            "cd /home/user/scheduler && python3 -m scheduler.sandbox.drafting",
+        )
+        if result.stdout:
+            print(result.stdout)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
+        draft_id = result.stdout.strip()
+        return draft_id or None
+    finally:
+        sandbox.kill()
+        print("\nSandbox terminated.")
+
+
+def run_onboarding_in_sandbox(control_plane_url: str | None = None):
+    """Dev entry point for running onboarding in e2b."""
+    start_local = control_plane_url is None
+    if start_local:
+        print("Starting control plane server...")
+        _start_control_plane()
+        control_plane_url = f"http://localhost:{config.control_plane_port}"
+        print(f"Control plane running at {control_plane_url}")
+        print(
+            "Note: For the e2b sandbox to reach this, you need the control plane "
+            "on a public URL (e.g., deploy it or use ngrok)."
+        )
+
+    launch_onboarding_in_sandbox(
+        user_id="default",
+        control_plane_url=control_plane_url,
+        lookback_days=config.onboarding_lookback_days,
+    )
 
 
 if __name__ == "__main__":

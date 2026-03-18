@@ -12,6 +12,7 @@ and passed into the sandbox as an env var.
 
 import asyncio
 import base64
+import html
 import hashlib
 import hmac
 import json
@@ -235,7 +236,7 @@ def auth_google_callback(code: str | None = None, state: str | None = None, erro
     else:
         # New user: run full onboarding, redirect to onboarding
         logger.info("onboarding: starting all agents for user=%s after OAuth", user.id)
-        background = BackgroundTask(_run_onboarding_all, str(user.id))
+        background = BackgroundTask(_run_onboarding_for_runtime, str(user.id))
         redirect_url = f"{config.web_app_url}/onboarding"
 
     # Create signed session and redirect to web app
@@ -347,6 +348,19 @@ class CreateDraftRequest(BaseModel):
     to: str
     subject: str
     body: str
+    send_invite: bool = False
+    invite_attendee_email: str | None = None
+    invite_event_summary: str | None = None
+    invite_event_start: str | None = None
+    invite_event_end: str | None = None
+    invite_add_google_meet: bool = False
+
+
+class SendEmailRequest(BaseModel):
+    thread_id: str
+    to: str
+    subject: str
+    body: str
 
 
 class GetEventsRequest(BaseModel):
@@ -402,13 +416,75 @@ def gmail_thread(thread_id: str, session: dict = Depends(get_session)):
     return {"messages": [_serialize_email(e) for e in messages]}
 
 
+@app.get("/api/v1/gmail/message/{message_id}")
+def gmail_message(message_id: str, session: dict = Depends(get_session)):
+    gmail: GmailClient = session["gmail"]
+    email = gmail.get_email(message_id)
+    return {"email": _serialize_email(email)}
+
+
 @app.post("/api/v1/gmail/draft")
 def gmail_draft(req: CreateDraftRequest, session: dict = Depends(get_session)):
     gmail: GmailClient = session["gmail"]
+    from scheduler.db import create_pending_invite, get_user_by_id
+
+    user = get_user_by_id(session["user_id"])
+    body = req.body
+    content_type = "plain"
+    if user and user.stash_branding_enabled:
+        html_body = html.escape(body).replace("\n", "<br>")
+        html_body += '<br><br>sent by <a href="https://stash.ac">Stash</a>'
+        body = html_body
+        content_type = "html"
+
     draft_id = gmail.create_draft(
-        thread_id=req.thread_id, to=req.to, subject=req.subject, body=req.body
+        thread_id=req.thread_id, to=req.to, subject=req.subject, body=body, content_type=content_type
     )
+
+    if req.send_invite:
+        if not all([
+            req.invite_attendee_email,
+            req.invite_event_summary,
+            req.invite_event_start,
+            req.invite_event_end,
+        ]):
+            raise HTTPException(status_code=400, detail="Missing invite fields")
+
+        create_pending_invite(
+            user_id=session["user_id"],
+            thread_id=req.thread_id,
+            attendee_email=req.invite_attendee_email,
+            event_summary=req.invite_event_summary,
+            event_start=datetime.fromisoformat(req.invite_event_start),
+            event_end=datetime.fromisoformat(req.invite_event_end),
+            add_google_meet=req.invite_add_google_meet,
+        )
+
     return {"draft_id": draft_id}
+
+
+@app.post("/api/v1/gmail/send")
+def gmail_send(req: SendEmailRequest, session: dict = Depends(get_session)):
+    gmail: GmailClient = session["gmail"]
+    from scheduler.db import get_user_by_id
+
+    user = get_user_by_id(session["user_id"])
+    body = req.body
+    content_type = "plain"
+    if user and user.stash_branding_enabled:
+        html_body = html.escape(body).replace("\n", "<br>")
+        html_body += '<br><br>sent by <a href="https://stash.ac">Stash</a>'
+        body = html_body
+        content_type = "html"
+
+    message_id = gmail.send_email(
+        thread_id=req.thread_id,
+        to=req.to,
+        subject=req.subject,
+        body=body,
+        content_type=content_type,
+    )
+    return {"message_id": message_id, "status": "sent"}
 
 
 # --- Calendar routes ---
@@ -619,13 +695,79 @@ def _run_onboarding_all(user_id: str) -> None:
         logger.exception("onboarding: failed to set up gmail watch for user=%s", user_id)
 
 
+def _run_onboarding_for_runtime(user_id: str) -> None:
+    """Dispatch onboarding to the configured runtime."""
+    runtime = config.agent_runtime.strip().lower()
+    if runtime == "local":
+        _run_onboarding_all(user_id)
+        return
+
+    if runtime == "e2b":
+        control_plane_url = config.control_plane_public_url.strip()
+        if not control_plane_url:
+            raise RuntimeError("CONTROL_PLANE_PUBLIC_URL must be set when AGENT_RUNTIME=e2b")
+
+        from scheduler.run_e2b import launch_onboarding_in_sandbox
+
+        launch_onboarding_in_sandbox(
+            user_id=user_id,
+            control_plane_url=control_plane_url,
+            lookback_days=config.onboarding_lookback_days,
+        )
+        return
+
+    raise RuntimeError(f"Unsupported AGENT_RUNTIME: {config.agent_runtime}")
+
+
+def _compose_draft_for_runtime(
+    user_id: str,
+    email,
+    classification,
+    gmail: GmailClient,
+    calendar: CalendarClient,
+    autopilot: bool,
+) -> str | None:
+    runtime = config.agent_runtime.strip().lower()
+
+    if runtime == "local":
+        from scheduler.drafts.composer import DraftComposer, LocalDraftBackend
+
+        backend = LocalDraftBackend(gmail, calendar, user_id=user_id)
+        composer = DraftComposer(backend, user_id, autopilot=autopilot)
+        return composer.compose_and_create_draft(email, classification)
+
+    if runtime == "e2b":
+        control_plane_url = config.control_plane_public_url.strip()
+        if not control_plane_url:
+            raise RuntimeError("CONTROL_PLANE_PUBLIC_URL must be set when AGENT_RUNTIME=e2b")
+
+        from scheduler.run_e2b import launch_draft_composer_in_sandbox
+
+        return launch_draft_composer_in_sandbox(
+            user_id=user_id,
+            control_plane_url=control_plane_url,
+            email_payload=_serialize_email(email),
+            classification_payload={
+                "intent": classification.intent.value,
+                "confidence": classification.confidence,
+                "summary": classification.summary,
+                "proposed_times": classification.proposed_times,
+                "participants": classification.participants,
+                "duration_minutes": classification.duration_minutes,
+            },
+            autopilot=autopilot,
+        )
+
+    raise RuntimeError(f"Unsupported AGENT_RUNTIME: {config.agent_runtime}")
+
+
 @app.post("/api/v1/onboarding/run")
 def onboarding_run(request: Request, background_tasks: BackgroundTasks):
     """Kick off the style + preferences guide agents for this user."""
     session = get_web_session(request)
     user_id = session["user_id"]
     logger.info("onboarding: starting all agents for user=%s", user_id)
-    background_tasks.add_task(_run_onboarding_all, user_id)
+    background_tasks.add_task(_run_onboarding_for_runtime, user_id)
     return {"status": "started"}
 
 
@@ -678,7 +820,6 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
     from scheduler.classifier.intent import SchedulingIntent, classify_email
     from scheduler.classifier.newsletter import is_mass_email
     from scheduler.db import mark_message_processed
-    from scheduler.drafts.composer import DraftComposer
 
     calendar = CalendarClient(creds, config.stash_calendar_name)
 
@@ -752,8 +893,14 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
                 classification.confidence,
             )
 
-            composer = DraftComposer(gmail, calendar, user_id, autopilot=user.autopilot_enabled)
-            draft_id = composer.compose_and_create_draft(email, classification)
+            draft_id = _compose_draft_for_runtime(
+                user_id=user_id,
+                email=email,
+                classification=classification,
+                gmail=gmail,
+                calendar=calendar,
+                autopilot=user.autopilot_enabled,
+            )
             if draft_id is None:
                 logger.info("gmail_webhook: thread for message %s already resolved, no draft created", message_id)
                 continue

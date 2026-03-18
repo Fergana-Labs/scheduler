@@ -65,6 +65,15 @@ class Config:
             ),
         )
     )
+    agent_runtime: str = field(
+        default_factory=lambda: os.environ.get(
+            "AGENT_RUNTIME",
+            os.environ.get("ONBOARDING_RUNTIME", "local"),
+        )
+    )
+    control_plane_public_url: str = field(
+        default_factory=lambda: os.environ.get("CONTROL_PLANE_PUBLIC_URL", "")
+    )
 
 
 config = Config()

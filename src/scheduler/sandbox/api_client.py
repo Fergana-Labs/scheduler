@@ -34,6 +34,9 @@ class ControlPlaneClient:
     def read_thread(self, thread_id: str) -> dict:
         return self._get(f"/gmail/thread/{thread_id}")
 
+    def get_email(self, message_id: str) -> dict:
+        return self._get(f"/gmail/message/{message_id}")
+
     def get_calendar_events(self, start_date: str, end_date: str) -> dict:
         return self._post("/calendar/events", {"start_date": start_date, "end_date": end_date})
 
@@ -48,6 +51,12 @@ class ControlPlaneClient:
             "/calendar/add",
             {"summary": summary, "start": start, "end": end, "description": description},
         )
+
+    def create_draft(self, **kwargs) -> dict:
+        return self._post("/gmail/draft", kwargs)
+
+    def send_email(self, **kwargs) -> dict:
+        return self._post("/gmail/send", kwargs)
 
     def write_guide(self, name: str, content: str) -> dict:
         return self._post("/guides/write", {"name": name, "content": content})
