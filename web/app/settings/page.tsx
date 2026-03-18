@@ -84,7 +84,7 @@ export default function SettingsPage() {
           {/* Header */}
           <div className="mb-8 flex items-center gap-3">
             <Image
-              src="/logo.png"
+              src="/scheduled_icon.svg"
               alt="Scheduled Logo"
               width={40}
               height={40}

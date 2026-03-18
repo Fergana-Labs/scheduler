@@ -108,7 +108,7 @@ export default function OnboardingClient({ needsGoogle }: OnboardingClientProps)
           <div className="rounded-2xl border border-gray-200 bg-white p-8 shadow-sm sm:p-10">
             <div className="mb-8 flex items-center gap-3">
               <Image
-                src="/logo.png"
+                src="/scheduled_icon.svg"
                 alt="Scheduled Logo"
                 width={40}
                 height={40}
@@ -153,7 +153,7 @@ export default function OnboardingClient({ needsGoogle }: OnboardingClientProps)
           {/* Header */}
           <div className="mb-8 flex items-center gap-3">
             <Image
-              src="/logo.png"
+              src="/scheduled_icon.svg"
               alt="Scheduled Logo"
               width={40}
               height={40}
