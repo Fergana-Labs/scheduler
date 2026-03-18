@@ -80,7 +80,7 @@
   html,
   body {
     @apply bg-background text-foreground;
-    overflow-x: hidden;
+    overflow-x: clip;
   }
 }
 
