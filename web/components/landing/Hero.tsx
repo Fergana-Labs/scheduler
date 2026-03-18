@@ -43,6 +43,81 @@ const EMAILS = [
 ];
 
 
+// Pixel-art "SENT!" rendered as SVG blocks, matching the favicon style
+function PixelSent() {
+  const p = 4; // pixel size
+  const g = 1; // gap between pixels within a letter
+  const s = p + g; // stride
+  const color = '#43614a';
+  const letterSpacing = p * 1.5; // clear gap between letters
+
+  // Each letter on a 5-col x 5-row grid for clarity
+  const letters: { char: string; w: number; pixels: [number, number][] }[] = [
+    { char: 'S', w: 4, pixels: [
+      [1,0],[2,0],[3,0],
+      [0,1],
+      [0,2],[1,2],[2,2],[3,2],
+                        [3,3],
+      [0,4],[1,4],[2,4],
+    ]},
+    { char: 'E', w: 4, pixels: [
+      [0,0],[1,0],[2,0],[3,0],
+      [0,1],
+      [0,2],[1,2],[2,2],
+      [0,3],
+      [0,4],[1,4],[2,4],[3,4],
+    ]},
+    { char: 'N', w: 4, pixels: [
+      [0,0],            [3,0],
+      [0,1],[1,1],      [3,1],
+      [0,2],      [2,2],[3,2],
+      [0,3],            [3,3],
+      [0,4],            [3,4],
+    ]},
+    { char: 'T', w: 5, pixels: [
+      [0,0],[1,0],[2,0],[3,0],[4,0],
+                  [2,1],
+                  [2,2],
+                  [2,3],
+                  [2,4],
+    ]},
+    { char: '!', w: 1, pixels: [
+      [0,0],
+      [0,1],
+      [0,2],
+      [0,4],
+    ]},
+  ];
+
+  // Calculate total width
+  let totalW = 0;
+  const offsets: number[] = [];
+  letters.forEach((l, i) => {
+    offsets.push(totalW);
+    totalW += l.w * s;
+    if (i < letters.length - 1) totalW += letterSpacing;
+  });
+  const totalH = 5 * s;
+
+  return (
+    <svg width={totalW} height={totalH} viewBox={`0 0 ${totalW} ${totalH}`} className="drop-shadow-md">
+      {letters.map((l, li) => (
+        l.pixels.map(([cx, cy], pi) => (
+          <rect
+            key={`${li}-${pi}`}
+            x={offsets[li] + cx * s}
+            y={cy * s}
+            width={p}
+            height={p}
+            rx={1}
+            fill={color}
+          />
+        ))
+      ))}
+    </svg>
+  );
+}
+
 function IconStream({
   icons,
   offsetPath,
@@ -225,7 +300,7 @@ export default function Hero() {
             );
           })}
 
-          {/* "Sent!" floaters — one per card, rises from top of stack like +10xp */}
+          {/* "SENT" pixel-art floaters — rises from top of stack like +10xp */}
           {EMAILS.map((_, i) => {
             const progress = cardStates[i] ?? 0;
             if (progress < 0.1) return null;
@@ -246,9 +321,7 @@ export default function Hero() {
                   zIndex: 50 + i,
                 }}
               >
-                <span className="whitespace-nowrap font-[family-name:var(--font-geist-mono)] text-2xl font-black uppercase tracking-widest text-[#43614a] drop-shadow-md">
-                  SENT!
-                </span>
+                <PixelSent />
               </div>
             );
           })}
