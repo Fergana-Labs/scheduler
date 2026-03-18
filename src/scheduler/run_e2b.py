@@ -21,6 +21,7 @@ import secrets
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import uvicorn
@@ -290,8 +291,16 @@ def _launch_single_onboarding_agent(
         print(f"\nSandbox for {agent_name} terminated.")
 
 
-def launch_onboarding_in_sandbox(user_id: str, control_plane_url: str, lookback_days: int | None = None):
-    """Spin up three e2b sandboxes (one per agent) and run them in parallel."""
+def launch_onboarding_in_sandbox(
+    user_id: str,
+    control_plane_url: str,
+    lookback_days: int | None = None,
+    on_agent_done: Callable[[str, bool], None] | None = None,
+):
+    """Spin up three e2b sandboxes (one per agent) and run them in parallel.
+
+    *on_agent_done(agent_name, success)* is called as each agent finishes.
+    """
     import concurrent.futures
 
     session_token = _register_sandbox_session(user_id)
@@ -315,9 +324,13 @@ def launch_onboarding_in_sandbox(user_id: str, control_plane_url: str, lookback_
             try:
                 future.result()
                 logger.info("Onboarding agent %s completed successfully", agent_name)
+                if on_agent_done:
+                    on_agent_done(agent_name, True)
             except Exception as e:
                 logger.error("Onboarding agent %s failed: %s", agent_name, e)
                 errors.append(f"{agent_name}: {e}")
+                if on_agent_done:
+                    on_agent_done(agent_name, False)
 
     if errors:
         raise RuntimeError(f"Onboarding failed for: {'; '.join(errors)}")

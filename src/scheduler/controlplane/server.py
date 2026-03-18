@@ -1083,7 +1083,14 @@ def _run_onboarding_for_runtime(user_id: str) -> None:
         if _onboarding_status.get(user_id, {}).get("status") == "running":
             logger.info("onboarding: already running for user=%s, skipping", user_id)
             return
-        _onboarding_status[user_id] = {"status": "running"}
+        _onboarding_status[user_id] = {
+            "status": "running",
+            "agents": {
+                "backfill": "running",
+                "preferences": "running",
+                "style": "running",
+            },
+        }
     try:
         runtime = config.agent_runtime.strip().lower()
         if runtime == "local":
@@ -1105,12 +1112,19 @@ def _run_onboarding_for_runtime(user_id: str) -> None:
                 from scheduler.db import update_stash_calendar_id
                 update_stash_calendar_id(user_id, cal_id)
 
+            def _on_agent_done(agent_name: str, success: bool) -> None:
+                with _onboarding_lock:
+                    entry = _onboarding_status.get(user_id)
+                    if entry and "agents" in entry:
+                        entry["agents"][agent_name] = "done" if success else "failed"
+
             from scheduler.run_e2b import launch_onboarding_in_sandbox
 
             launch_onboarding_in_sandbox(
                 user_id=user_id,
                 control_plane_url=control_plane_url,
                 lookback_days=config.onboarding_lookback_days,
+                on_agent_done=_on_agent_done,
             )
 
             # Set up Gmail watch so incoming emails are processed
@@ -1398,9 +1412,12 @@ def web_onboarding_status(user: dict = Depends(get_authenticated_user)):
     result = {"ready": ready, "connected": connected}
     if not ready:
         status_entry = _onboarding_status.get(user["user_id"])
-        if status_entry and status_entry.get("status") == "failed":
-            result["failed"] = True
-            result["error"] = status_entry.get("error", "Unknown error")
+        if status_entry:
+            if status_entry.get("status") == "failed":
+                result["failed"] = True
+                result["error"] = status_entry.get("error", "Unknown error")
+            if "agents" in status_entry:
+                result["agents"] = status_entry["agents"]
     return result
 
 

@@ -17,6 +17,8 @@ interface OnboardingClientProps {
   needsGoogle: boolean;
 }
 
+type AgentStatus = Record<string, string>;
+
 export default function OnboardingClient({ needsGoogle }: OnboardingClientProps) {
   const router = useRouter();
   const [user, setUser] = useState<UserInfo | null>(null);
@@ -24,6 +26,7 @@ export default function OnboardingClient({ needsGoogle }: OnboardingClientProps)
   const [error, setError] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const [failedError, setFailedError] = useState<string | null>(null);
+  const [agents, setAgents] = useState<AgentStatus | null>(null);
 
   useEffect(() => {
     captureSessionFromURL();
@@ -40,7 +43,10 @@ export default function OnboardingClient({ needsGoogle }: OnboardingClientProps)
 
   const checkStatus = useCallback(async () => {
     try {
-      const status = await api<{ ready: boolean; failed?: boolean; error?: string }>('/web/api/v1/onboarding/status');
+      const status = await api<{ ready: boolean; failed?: boolean; error?: string; agents?: AgentStatus }>('/web/api/v1/onboarding/status');
+      if (status.agents) {
+        setAgents(status.agents);
+      }
       if (status.ready) {
         router.push('/settings');
       } else if (status.failed) {
@@ -58,7 +64,7 @@ export default function OnboardingClient({ needsGoogle }: OnboardingClientProps)
     // Check immediately
     checkStatus();
 
-    const interval = setInterval(checkStatus, 10_000);
+    const interval = setInterval(checkStatus, 3_000);
     return () => clearInterval(interval);
   }, [user, needsGoogle, failed, checkStatus]);
 
@@ -183,7 +189,7 @@ export default function OnboardingClient({ needsGoogle }: OnboardingClientProps)
           {failed ? (
             <FailedState error={failedError} onRetry={handleRetry} />
           ) : (
-            <PendingState />
+            <PendingState agents={agents} />
           )}
         </div>
       </div>

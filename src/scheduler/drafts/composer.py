@@ -97,7 +97,7 @@ class LocalDraftBackend:
         user = get_user_by_id(self._user_id)
         if user and user.stash_branding_enabled:
             html_body = html.escape(body).replace("\n", "<br>")
-            html_body += '<br><br>sent by <a href="https://stash.ac">Scheduled.</a>'
+            html_body += '<br><br>sent by <a href="https://tryscheduled.com">Scheduled.</a>'
             body = html_body
             content_type = "html"
 
@@ -131,7 +131,7 @@ class LocalDraftBackend:
         user = get_user_by_id(self._user_id)
         if user and user.stash_branding_enabled:
             html_body = html.escape(body).replace("\n", "<br>")
-            html_body += '<br><br>sent by <a href="https://stash.ac">Scheduled.</a>'
+            html_body += '<br><br>sent by <a href="https://tryscheduled.com">Scheduled.</a>'
             body = html_body
             content_type = "html"
 
