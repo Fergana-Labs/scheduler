@@ -5,7 +5,7 @@ This guide walks through setting up Scheduler on your own infrastructure.
 ## Prerequisites
 
 - Python 3.11+
-- PostgreSQL database (Neon, Supabase, local, etc.)
+- PostgreSQL database 
 - Google Cloud project with Gmail and Calendar APIs enabled
 - Anthropic API key
 
