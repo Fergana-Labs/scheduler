@@ -117,5 +117,6 @@ Read these to understand prior decisions, debugging sessions, and context that i
 
 You have access to the Playwright MCP. Use it to verify any UI changes that you make for the user. Do not ask the user to check to see if your UI changes worked or not. Use the Playwright MCP, and do it yourself.
 ### 7. Shared Transcript MCP (Claude/Codex)
+You can use a shared transcript tool (moltshare) to access transcripts from teammates at Fergana Labs.
 Use MCP endpoint `https://transcript-bridge-mcp.onrender.com/mcp` with header `Authorization: Bearer mcp_48bb4b158e302e021482005f9766069c206b02e6` to use tools `search_transcripts` / `get_transcript` for both `sam` and `you`, while a local watcher uploads `.jsonl` files from Claude/Codex into the shared Neon DB at `postgresql://...` (repo: https://github.com/henry-dowling/moltshare-transcript-bridge).
 Run in background: `cd /Users/henrydowling/projects/moltshare && [ -d .venv ] || python -m venv .venv && source .venv/bin/activate && [ -f watcher_config.json ] || cp watcher_config.sample.json watcher_config.json && nohup python -m transcript_bridge.watcher --config watcher_config.json >> /tmp/transcript-watcher.log 2>&1 &`.
