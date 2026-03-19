@@ -2,6 +2,8 @@
 
 **Open source Calendly, but AI.**
 
+![Scheduled hero](assets/hero.png)
+
 Scheduled is an AI scheduling agent that lives in your Gmail. When someone emails you to set up a meeting, Scheduled reads the thread, checks your calendar for availability, and drafts a reply with proposed times, all without you lifting a finger. You review the draft and hit send. That's it.
 
 No new app to learn. No link to paste into emails. No configuration to maintain. Just one fewer thing on your plate.
@@ -83,5 +85,8 @@ If `E2B_TEMPLATE_ID` is unset, the code falls back to runtime provisioning insid
 
 MIT
 
-## Demo Video
-TODO
+## Screenshots
+
+| Drafting a reply | Settings |
+|:---:|:---:|
+| ![Draft](assets/draft.png) | ![Settings](assets/settings.png) |
