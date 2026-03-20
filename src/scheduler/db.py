@@ -1,7 +1,7 @@
 """Database client for user credential storage."""
 
 from datetime import datetime, timezone
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 import psycopg2
 import psycopg2.extras
@@ -9,6 +9,18 @@ import psycopg2.extras
 from scheduler.config import config
 
 psycopg2.extras.register_uuid()
+
+_USER_ROW_FIELDS: set[str] = set()  # populated after class definition
+
+
+def _row_to_user(cols, row) -> "UserRow":
+    """Build a UserRow, ignoring any DB columns not yet on the dataclass.
+
+    This prevents 500s during deployment rollover when a migration adds a
+    column before the old instance is replaced.
+    """
+    data = {k: v for k, v in zip(cols, row) if k in _USER_ROW_FIELDS}
+    return UserRow(**data)
 
 
 @dataclass
@@ -24,11 +36,13 @@ class UserRow:
     stash_branding_enabled: bool
     autopilot_enabled: bool
     process_sales_emails: bool
-    reasoning_emails_enabled: bool
     created_at: datetime
     updated_at: datetime
-    auth0_sub: str | None = None
     reasoning_emails_enabled: bool = False
+    auth0_sub: str | None = None
+
+
+_USER_ROW_FIELDS.update(f.name for f in fields(UserRow))
 
 
 def _conn():
@@ -42,7 +56,7 @@ def get_user_by_email(email: str) -> UserRow | None:
         if not row:
             return None
         cols = [desc[0] for desc in cur.description]
-        return UserRow(**dict(zip(cols, row)))
+        return _row_to_user(cols, row)
 
 
 def get_user_by_id(user_id: str) -> UserRow | None:
@@ -52,7 +66,7 @@ def get_user_by_id(user_id: str) -> UserRow | None:
         if not row:
             return None
         cols = [desc[0] for desc in cur.description]
-        return UserRow(**dict(zip(cols, row)))
+        return _row_to_user(cols, row)
 
 
 def upsert_user(
@@ -82,7 +96,7 @@ def upsert_user(
         row = cur.fetchone()
         cols = [desc[0] for desc in cur.description]
         conn.commit()
-        return UserRow(**dict(zip(cols, row)))
+        return _row_to_user(cols, row)
 
 
 def update_user_tokens(
@@ -118,7 +132,7 @@ def get_user_by_auth0_sub(auth0_sub: str) -> UserRow | None:
         if not row:
             return None
         cols = [desc[0] for desc in cur.description]
-        return UserRow(**dict(zip(cols, row)))
+        return _row_to_user(cols, row)
 
 
 def create_user_from_auth0(email: str, auth0_sub: str) -> UserRow:
@@ -134,7 +148,7 @@ def create_user_from_auth0(email: str, auth0_sub: str) -> UserRow:
         row = cur.fetchone()
         cols = [desc[0] for desc in cur.description]
         conn.commit()
-        return UserRow(**dict(zip(cols, row)))
+        return _row_to_user(cols, row)
 
 
 def set_auth0_sub(user_id: str, auth0_sub: str) -> None:
