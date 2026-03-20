@@ -78,6 +78,13 @@ def _cache_unknown_gmail_webhook_email(email_address: str) -> None:
     _unknown_gmail_webhook_emails[email_address] = time.time() + _UNKNOWN_GMAIL_WEBHOOK_TTL
 
 
+def _is_gmail_404(exc: Exception) -> bool:
+    """Return True if exc is a Gmail API 404 (message deleted/not found)."""
+    from googleapiclient.errors import HttpError
+
+    return isinstance(exc, HttpError) and exc.resp.status == 404
+
+
 async def _watch_renewal_loop():
     """Background loop: renew Gmail watches and clean up old processed messages."""
     await asyncio.sleep(60)  # let server finish starting
@@ -893,6 +900,12 @@ def calendar_find(req: FindEventRequest, session: dict = Depends(get_session)):
     return {"exists": False, "event": None}
 
 
+@app.get("/api/v1/calendar/timezone")
+def calendar_timezone(session: dict = Depends(get_session)):
+    calendar: CalendarClient = session["calendar"]
+    return {"timezone": calendar.get_user_timezone()}
+
+
 @app.post("/api/v1/calendar/add")
 def calendar_add(req: AddEventRequest, session: dict = Depends(get_session)):
     calendar: CalendarClient = session["calendar"]
@@ -1380,8 +1393,13 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
                         logger.exception("gmail_webhook: failed to send reasoning email for message %s", message_id)
             mark_message_processed(user_id, message_id)
 
-        except Exception:
-            logger.exception("gmail_webhook: failed to process message %s for user=%s", message_id, email_address)
+        except Exception as exc:
+            # If Gmail returns 404, the message was deleted/moved — don't retry
+            if _is_gmail_404(exc):
+                logger.warning("gmail_webhook: message %s not found (deleted?), skipping", message_id)
+                mark_message_processed(user_id, message_id)
+            else:
+                logger.exception("gmail_webhook: failed to process message %s for user=%s", message_id, email_address)
 
 
 @app.post("/webhooks/gmail")

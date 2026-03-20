@@ -34,6 +34,8 @@ class DraftBackend(Protocol):
 
     def get_calendar_events(self, start_date: str, end_date: str) -> list[dict]: ...
 
+    def get_user_timezone(self) -> str: ...
+
     def read_thread(self, thread_id: str) -> list[dict]: ...
 
     def create_draft(self, args: dict) -> dict: ...
@@ -55,6 +57,9 @@ class LocalDraftBackend:
         from scheduler.guides import load_guide
 
         return load_guide(name, user_id=self._user_id)
+
+    def get_user_timezone(self) -> str:
+        return self._calendar.get_user_timezone()
 
     def get_calendar_events(self, start_date: str, end_date: str) -> list[dict]:
         start = datetime.fromisoformat(start_date)
@@ -299,8 +304,14 @@ class DraftComposer:
         server = create_sdk_mcp_server("draft-tools", tools=tools)
         classification_dict = _classification_dict(classification)
 
+        user_timezone = self._backend.get_user_timezone()
+
         prompt = (
             "You are a scheduling draft composer.\n\n"
+            f"The user's timezone is {user_timezone}. All times you propose and all "
+            "invite_event_start/invite_event_end values MUST include this timezone offset. "
+            "For example, if the user is in America/New_York, use '2026-03-20T15:00:00-04:00' "
+            "not '2026-03-20T15:00:00'.\n\n"
             "You are given an incoming email and a structured classification of that email. "
             "Your job is to:\n"
             "1. Read the full email thread using read_thread.\n"

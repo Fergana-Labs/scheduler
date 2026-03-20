@@ -20,6 +20,9 @@ class ControlPlaneDraftBackend(DraftBackend):
         except Exception:
             return None
 
+    def get_user_timezone(self) -> str:
+        return self._client.get_user_timezone()
+
     def get_calendar_events(self, start_date: str, end_date: str) -> list[dict]:
         return self._client.get_calendar_events(start_date, end_date).get("events", [])
 

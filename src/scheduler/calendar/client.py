@@ -56,12 +56,33 @@ class CalendarClient:
         self._stash_calendar_name = stash_calendar_name
         self._service = None
         self._stash_calendar_id = None
+        self._user_timezone = None
 
     def _get_service(self):
         """Build and cache the Calendar API service."""
         if self._service is None:
             self._service = build("calendar", "v3", credentials=self._credentials)
         return self._service
+
+    def get_user_timezone(self) -> str:
+        """IANA timezone string from the user's primary calendar. Falls back to UTC."""
+        if self._user_timezone:
+            return self._user_timezone
+
+        try:
+            service = self._get_service()
+            cal = service.calendars().get(calendarId="primary").execute()
+            self._user_timezone = cal.get("timeZone", "UTC")
+        except Exception:
+            self._user_timezone = "UTC"
+
+        return self._user_timezone
+
+    def _event_dt_body(self, dt: datetime) -> dict:
+        """Build a start/end dict for the Google Calendar API."""
+        if dt.tzinfo:
+            return {"dateTime": dt.isoformat()}
+        return {"dateTime": dt.isoformat(), "timeZone": self.get_user_timezone()}
 
     def get_or_create_stash_calendar(self) -> str:
         """Get the stash calendar ID, creating it if it doesn't exist.
@@ -155,8 +176,8 @@ class CalendarClient:
 
         body = {
             "summary": event.summary,
-            "start": {"dateTime": event.start.isoformat()},
-            "end": {"dateTime": event.end.isoformat()},
+            "start": self._event_dt_body(event.start),
+            "end": self._event_dt_body(event.end),
             "description": event.description,
         }
         if event.source:
@@ -172,8 +193,8 @@ class CalendarClient:
 
         body = {
             "summary": event.summary,
-            "start": {"dateTime": event.start.isoformat()},
-            "end": {"dateTime": event.end.isoformat()},
+            "start": self._event_dt_body(event.start),
+            "end": self._event_dt_body(event.end),
             "description": event.description,
         }
         service.events().update(
@@ -212,8 +233,8 @@ class CalendarClient:
 
         body = {
             "summary": summary,
-            "start": {"dateTime": start.isoformat()},
-            "end": {"dateTime": end.isoformat()},
+            "start": self._event_dt_body(start),
+            "end": self._event_dt_body(end),
             "description": description,
             "attendees": [{"email": attendee_email}],
         }

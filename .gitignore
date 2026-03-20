@@ -32,6 +32,9 @@ local_dev_guide_artifacts/
 CLAUDE.md
 agents.md
 
+# Temp files
+temp/
+
 # Dev screenshots (root-level PNGs)
 /*.png
 

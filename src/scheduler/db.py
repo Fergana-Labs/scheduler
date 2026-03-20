@@ -28,6 +28,7 @@ class UserRow:
     created_at: datetime
     updated_at: datetime
     auth0_sub: str | None = None
+    reasoning_emails_enabled: bool = False
 
 
 def _conn():

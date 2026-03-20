@@ -37,6 +37,9 @@ class ControlPlaneClient:
     def get_email(self, message_id: str) -> dict:
         return self._get(f"/gmail/message/{message_id}")
 
+    def get_user_timezone(self) -> str:
+        return self._get("/calendar/timezone").get("timezone", "UTC")
+
     def get_calendar_events(self, start_date: str, end_date: str) -> dict:
         return self._post("/calendar/events", {"start_date": start_date, "end_date": end_date})
 
