@@ -48,13 +48,14 @@ def run_drafting() -> None:
     control_plane_url = os.environ["CONTROL_PLANE_URL"]
     session_token = os.environ["SESSION_TOKEN"]
     autopilot = os.environ.get("AUTOPILOT_ENABLED", "0") == "1"
+    user_email = os.environ.get("USER_EMAIL", "")
 
     workdir = Path("/home/user/scheduler")
     email = json.loads((workdir / "draft_email.json").read_text())
     classification = json.loads((workdir / "draft_classification.json").read_text())
 
     backend = ControlPlaneDraftBackend(ControlPlaneClient(control_plane_url, session_token))
-    composer = DraftComposer(backend, user_id="sandbox", autopilot=autopilot)
+    composer = DraftComposer(backend, user_id="sandbox", autopilot=autopilot, user_email=user_email or None)
     result = composer.compose_and_create_draft(email, classification)
     print(f"DRAFT_RESULT:{result or ''}")
 

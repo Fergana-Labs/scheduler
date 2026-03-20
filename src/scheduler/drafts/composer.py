@@ -85,6 +85,7 @@ class LocalDraftBackend:
                 "thread_id": m.thread_id,
                 "sender": m.sender,
                 "recipient": m.recipient,
+                "cc": m.cc,
                 "subject": m.subject,
                 "body": m.body,
                 "date": m.date.isoformat(),
@@ -112,6 +113,7 @@ class LocalDraftBackend:
             subject=args["subject"],
             body=body,
             content_type=content_type,
+            cc=args.get("cc", ""),
         )
 
         if args.get("send_invite"):
@@ -146,6 +148,7 @@ class LocalDraftBackend:
             subject=args["subject"],
             body=body,
             content_type=content_type,
+            cc=args.get("cc", ""),
         )
         return {"message_id": message_id, "status": "sent"}
 
@@ -193,10 +196,11 @@ def _classification_dict(classification: "ClassificationResult" | dict) -> dict:
 class DraftComposer:
     """Agent that composes and creates draft replies for scheduling emails."""
 
-    def __init__(self, backend: DraftBackend, user_id: str, *, autopilot: bool = False):
+    def __init__(self, backend: DraftBackend, user_id: str, *, autopilot: bool = False, user_email: str | None = None):
         self._backend = backend
         self._user_id = user_id
         self._autopilot = autopilot
+        self._user_email = user_email
 
     def _build_system_prompt(self) -> str:
         parts = [
@@ -220,6 +224,25 @@ class DraftComposer:
                 "Match this writing style in the draft:\n\n"
                 + email_style
             )
+
+        if self._user_email:
+            parts.append(
+                "\n\n## User Identity\n"
+                f"You are composing on behalf of: {self._user_email}\n"
+                "This is the user's email address. In group threads, use this to identify "
+                "which messages are from the user vs. other participants. Sign off as the user, "
+                "not as any other participant."
+            )
+
+        parts.append(
+            "\n\n## Tone & Etiquette\n"
+            "- Never re-suggest times that were already declined or said to not work in the thread.\n"
+            "- Be warm, friendly, and accommodating — never passive-aggressive.\n"
+            "- Don't express frustration about scheduling difficulty.\n"
+            "- Be understanding when people can't make certain times.\n"
+            "- Avoid phrases like \"as I mentioned\", \"per my last email\", \"let's try this again\", "
+            "or anything that could sound impatient or annoyed."
+        )
 
         return "\n".join(parts)
 
@@ -254,6 +277,7 @@ class DraftComposer:
             {
                 "thread_id": str,
                 "to": str,
+                "cc": str,
                 "subject": str,
                 "body": str,
                 "send_invite": bool,
@@ -287,7 +311,7 @@ class DraftComposer:
                 "Send an email reply directly (not a draft). Use this instead of create_draft "
                 "when you are confident the reply is ready to send. Do NOT use this for group "
                 "meetings — use create_draft instead so the user can review before sending.",
-                {"thread_id": str, "to": str, "subject": str, "body": str},
+                {"thread_id": str, "to": str, "cc": str, "subject": str, "body": str},
             )
             async def send_email(args):
                 result = self._backend.send_email(args)
@@ -314,7 +338,8 @@ class DraftComposer:
             "not '2026-03-20T15:00:00'.\n\n"
             "You are given an incoming email and a structured classification of that email. "
             "Your job is to:\n"
-            "1. Read the full email thread using read_thread.\n"
+            "1. Read the full email thread using read_thread. Pay attention to any times that "
+            "were proposed and declined.\n"
             "2. Check if the thread is already resolved before proceeding:\n"
             "   - If a time was already confirmed and a calendar invite exists, do NOT create a draft — just stop.\n"
             "   - If someone else already replied on the user's behalf, do NOT create a draft — just stop.\n"
@@ -325,7 +350,8 @@ class DraftComposer:
             "(for example, the next 14 days).\n"
             "4. Based on the intent:\n"
             "   - If requesting_meeting or proposing_times: propose concrete meeting times that respect "
-            "the user's existing commitments and the extracted details from the classification.\n"
+            "the user's existing commitments and the extracted details from the classification. "
+            "NEVER re-suggest a time that someone already said doesn't work.\n"
             "   - If cancelling_rescheduling: acknowledge the cancellation or reschedule request. "
             "If rescheduling, suggest alternative times based on the user's availability. "
             "Note if the user's calendar still has the old event that should be removed.\n"
@@ -334,7 +360,9 @@ class DraftComposer:
             "5. Consider location preferences when drafting replies. If the thread mentions an in-person "
             "meeting but no location, suggest one based on any observed location preferences. "
             "If a location is mentioned in the thread, acknowledge it in the reply.\n"
-            "6. Create a natural-sounding reply. "
+            "6. Create a natural-sounding reply. Do not use passive-aggressive phrases like "
+            "\"as I mentioned\", \"per my last email\", or \"let's try this again\". "
+            "Be warm and accommodating, not impatient. "
             + (
                 "AUTOPILOT MODE IS ON: You should send the email directly using send_email instead of "
                 "creating a draft. The ONLY exception is group meetings (3+ participants including the user) — "
@@ -364,11 +392,16 @@ class DraftComposer:
                 "IMPORTANT: If the thread is already fully resolved (step 2), do NOT call create_draft. "
                 "Simply stop without creating a draft.\n\n"
             )
+            + (f"You are composing on behalf of: {self._user_email}\n\n" if self._user_email else "")
+            + "When replying, preserve CC recipients from the thread. Include anyone who was CC'd "
+            "on the previous messages in your reply's cc field, but exclude the user's own email "
+            "address from CC.\n\n"
             + "Email summary (for quick reference):\n"
             f"Message ID: {_email_field(email, 'id')}\n"
             f"Thread ID: {_email_field(email, 'thread_id')}\n"
             f"Sender: {_email_field(email, 'sender')}\n"
             f"Recipient: {_email_field(email, 'recipient')}\n"
+            f"CC: {_email_field(email, 'cc')}\n"
             f"Subject: {_email_field(email, 'subject')}\n"
             f"Snippet: {_email_field(email, 'snippet')}\n\n"
             "Classification JSON:\n"

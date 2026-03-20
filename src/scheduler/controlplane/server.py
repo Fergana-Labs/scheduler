@@ -704,6 +704,7 @@ def _serialize_email(email) -> dict:
         "thread_id": email.thread_id,
         "sender": email.sender,
         "recipient": email.recipient,
+        "cc": email.cc,
         "subject": email.subject,
         "body": email.body,
         "date": email.date.isoformat(),
@@ -732,6 +733,7 @@ class SearchEmailsRequest(BaseModel):
 class CreateDraftRequest(BaseModel):
     thread_id: str
     to: str
+    cc: str = ""
     subject: str
     body: str
     send_invite: bool = False
@@ -745,6 +747,7 @@ class CreateDraftRequest(BaseModel):
 class SendEmailRequest(BaseModel):
     thread_id: str
     to: str
+    cc: str = ""
     subject: str
     body: str
 
@@ -824,7 +827,7 @@ def gmail_draft(req: CreateDraftRequest, session: dict = Depends(get_session)):
         content_type = "html"
 
     draft_id = gmail.create_draft(
-        thread_id=req.thread_id, to=req.to, subject=req.subject, body=body, content_type=content_type
+        thread_id=req.thread_id, to=req.to, subject=req.subject, body=body, content_type=content_type, cc=req.cc
     )
 
     if req.send_invite:
@@ -869,6 +872,7 @@ def gmail_send(req: SendEmailRequest, session: dict = Depends(get_session)):
         subject=req.subject,
         body=body,
         content_type=content_type,
+        cc=req.cc,
     )
     return {"message_id": message_id, "status": "sent"}
 
@@ -1183,6 +1187,7 @@ def _compose_draft_for_runtime(
     gmail: GmailClient,
     calendar: CalendarClient,
     autopilot: bool,
+    user_email: str = "",
 ) -> str | None:
     runtime = config.agent_runtime.strip().lower()
 
@@ -1190,7 +1195,7 @@ def _compose_draft_for_runtime(
         from scheduler.drafts.composer import DraftComposer, LocalDraftBackend
 
         backend = LocalDraftBackend(gmail, calendar, user_id=user_id)
-        composer = DraftComposer(backend, user_id, autopilot=autopilot)
+        composer = DraftComposer(backend, user_id, autopilot=autopilot, user_email=user_email)
         return composer.compose_and_create_draft(email, classification)
 
     if runtime == "e2b":
@@ -1213,6 +1218,7 @@ def _compose_draft_for_runtime(
                 "duration_minutes": classification.duration_minutes,
             },
             autopilot=autopilot,
+            user_email=user_email,
         )
 
     raise RuntimeError(f"Unsupported AGENT_RUNTIME: {config.agent_runtime}")
@@ -1373,6 +1379,7 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
                 gmail=gmail,
                 calendar=calendar,
                 autopilot=user.autopilot_enabled,
+                user_email=email_address,
             )
             if draft_id is None:
                 logger.info("gmail_webhook: thread for message %s already resolved, no draft created", message_id)

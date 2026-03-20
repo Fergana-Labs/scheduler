@@ -17,6 +17,7 @@ class Email:
     thread_id: str
     sender: str
     recipient: str
+    cc: str
     subject: str
     body: str
     date: datetime
@@ -97,6 +98,7 @@ class GmailClient:
             thread_id=msg_data["threadId"],
             sender=headers.get("from", ""),
             recipient=headers.get("to", ""),
+            cc=headers.get("cc", ""),
             subject=headers.get("subject", ""),
             body=self._extract_body(payload),
             date=date,
@@ -201,7 +203,7 @@ class GmailClient:
         )
         return [self._parse_message(m) for m in thread_data.get("messages", [])]
 
-    def create_draft(self, thread_id: str, to: str, subject: str, body: str, content_type: str = "plain") -> str:
+    def create_draft(self, thread_id: str, to: str, subject: str, body: str, content_type: str = "plain", cc: str = "") -> str:
         """Create a draft reply in a thread.
 
         Args:
@@ -238,6 +240,8 @@ class GmailClient:
         # Build MIME message
         mime_msg = MIMEText(body, content_type)
         mime_msg["To"] = to
+        if cc:
+            mime_msg["Cc"] = cc
         mime_msg["Subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
         if message_id_header:
             mime_msg["In-Reply-To"] = message_id_header
@@ -256,7 +260,7 @@ class GmailClient:
         )
         return draft["id"]
 
-    def send_email(self, thread_id: str, to: str, subject: str, body: str, content_type: str = "plain") -> str:
+    def send_email(self, thread_id: str, to: str, subject: str, body: str, content_type: str = "plain", cc: str = "") -> str:
         """Send an email reply in a thread (actually sends, does not create a draft).
 
         Args:
@@ -294,6 +298,8 @@ class GmailClient:
         # Build MIME message
         mime_msg = MIMEText(body, content_type)
         mime_msg["To"] = to
+        if cc:
+            mime_msg["Cc"] = cc
         mime_msg["Subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
         if message_id_header:
             mime_msg["In-Reply-To"] = message_id_header

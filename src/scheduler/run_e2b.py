@@ -343,13 +343,17 @@ def launch_draft_composer_in_sandbox(
     classification_payload: dict,
     *,
     autopilot: bool,
+    user_email: str = "",
 ) -> str | None:
     """Spin up an e2b sandbox and run the draft composer agent inside it."""
     session_token = _register_sandbox_session(user_id)
     sandbox = _create_sandbox(
         control_plane_url=control_plane_url,
         session_token=session_token,
-        extra_envs={"AUTOPILOT_ENABLED": "1" if autopilot else "0"},
+        extra_envs={
+            "AUTOPILOT_ENABLED": "1" if autopilot else "0",
+            "USER_EMAIL": user_email,
+        },
     )
 
     try:
