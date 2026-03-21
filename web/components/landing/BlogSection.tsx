@@ -29,7 +29,7 @@ const otherPosts = [
   },
   {
     slug: 'scheduled-case-study',
-    title: 'How I Stopped Dreading the Scheduling Email',
+    title: 'The Tyranny of Scheduling',
     description:
       'Scheduling is the laundry of startup life. It barely takes any time, but the mental friction is enormous. Here is how we built Scheduled to make it disappear.',
     category: 'Case Studies',

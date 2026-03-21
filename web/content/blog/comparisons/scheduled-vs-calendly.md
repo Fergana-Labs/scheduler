@@ -11,103 +11,95 @@ metaDescription: 'Scheduled vs Calendly and Cal.com: Compare AI-powered email sc
 
 # Scheduled vs Calendly & Cal.com: AI Drafts vs Scheduling Links
 
-Last week I sent a VC a Calendly link. He booked. It worked fine. But the whole time I was thinking about the three other investors I *didn't* send links to because it would've felt weird. Like I was routing them into a queue.
+Calendly made scheduling links mainstream. You share a link, someone picks a time, it's done. For a lot of use cases, that's exactly the right solution.
 
-That's the gap I kept hitting. Calendly solves scheduling for strangers. But most of the people I schedule with aren't strangers.
+But scheduling links have a social cost that doesn't show up in the feature list. Sending a booking link to someone you have a real relationship with, an investor, a close collaborator, a friend you're trying to grab coffee with, can feel transactional. It signals "I'm too busy to email you like a normal person." For inbound from strangers, that's fine. For relationships that matter, it's a trade-off a lot of people don't want to make.
 
-Between fundraising, user interviews, recruiting, and just staying in touch with people I actually like, I send a lot of scheduling emails. When someone I have a real relationship with says "let's find time next week," I want my reply to feel like me. Not like a link to a booking page.
+Scheduled takes a different approach entirely. Instead of giving the other person a link, it writes an email reply for you with proposed times. The recipient just sees a normal message from you, in your voice, with no booking page and no indication that AI was involved.
 
-So I'd do it manually. Open my calendar, cross-reference three other calendars, figure out time zones, type out "How about Tuesday at 2pm or Thursday at 10am?" Hit send. Forty times a week.
+This post compares the two approaches.
 
-I built [Scheduled](https://scheduler.ferganalabs.com) because I wanted that personal reply without the calendar Tetris.
+## Calendly
 
-## What Calendly Does
+Calendly is the standard in scheduling links. You create a booking page tied to your calendar, share the link, and the other person picks a time. Confirmations and reminders are handled automatically.
 
-Calendly is great at what it does. You create a booking page, share the link, people pick a time. It handles confirmations, reminders, timezone conversion. Done.
+Over the years, Calendly has grown into a full scheduling platform: round-robin team scheduling, Salesforce and HubSpot integrations, routing forms, analytics, and embeddable widgets. For sales teams fielding dozens of demo requests per day, or recruiters managing high-volume interview scheduling, it's a mature, reliable tool.
 
-It's grown into a real platform. Round-robin team scheduling, Salesforce integrations, routing forms, analytics. For a sales team handling fifty demo requests a day, it's exactly the right tool. The prospect doesn't know you. They just want to book a slot and move on.
+## Cal.com
 
-## What Cal.com Does
+Cal.com offers the same scheduling link model as Calendly, but open source. You can self-host it, own your data, and customize the experience. There's also a hosted version for teams that want the open-source ethos without the operational overhead.
 
-Cal.com does the same thing as Calendly but open source. You can self-host it, own your data, customize everything. If you want the booking link model but don't want to depend on a proprietary vendor, Cal.com is the move.
+The community is active and the feature set is competitive with Calendly's. The main distinction is ownership and control. If you want scheduling links but don't want to depend on a proprietary vendor, Cal.com is the go-to alternative.
 
-They have a hosted version too. Strong community, active development.
+## Scheduled
 
-Both Calendly and Cal.com solve the same problem: replace email back-and-forth with a link. The difference between them is ownership and control.
+[Scheduled](https://scheduler.ferganalabs.com) works differently from both. There's no link and no booking page.
 
-## What Scheduled Does
+Scheduled is an AI agent that lives in Gmail. It monitors your inbox for emails that involve scheduling, reads the conversation, checks your availability across all connected calendars, and writes a reply proposing specific times. It can operate in draft mode, where every reply lands in your Gmail drafts for you to review and send, or in full autopilot mode, where it handles everything automatically.
 
-Scheduled works completely differently. There's no link. There's no booking page.
+Three things set it apart:
 
-It's an AI agent that lives in your Gmail. It watches your inbox for emails that involve scheduling, reads the conversation, checks your availability across all your calendars, and writes a reply proposing specific times. You can use it in draft mode, where every reply lands in your drafts for you to review and send. Or you can turn on autopilot and let it handle everything automatically.
+**It sounds like you.** Scheduled learns your writing style from your email history. The replies it generates use your greetings, your sign-offs, your level of formality. To the recipient, it reads like you sat down and wrote it yourself.
 
-Here's what actually matters though. **The person on the other end just gets a normal email from you.** No branded booking page, no "pick a slot" widget, no indication that anything other than you wrote it. It sounds like you because it learns your voice. It proposes the right times because it learns your preferences, your favorite coffee spots, the conference rooms you actually use, how you like to structure group meetings.
+**It learns your preferences.** Preferred meeting times, favorite locations, how you structure group events versus one-on-ones, buffer time between calls. Rather than configuring rules manually, Scheduled picks these up from your existing calendar and email patterns.
 
-To the recipient, it feels personal. That's the whole point. You're not sending someone a link that says "I'm too busy to email you like a human." You're sending them an email that reads like you sat down and wrote it.
+**The recipient never knows.** No branded booking page, no "pick a slot" widget, no third-party branding. The other person just gets a normal email. This is the fundamental difference from scheduling links: the interaction stays personal instead of transactional.
 
-It's [open source under MIT](https://github.com/Fergana-Labs/scheduler) and it never stores your email content.
+Scheduled is [open source under MIT](https://github.com/Fergana-Labs/scheduler) and never stores your email content. Everything stays in Google.
 
-## Honest Comparison
+## Comparison
 
 | Feature | Calendly | Cal.com | Scheduled |
 |---|---|---|---|
-| **How it works** | Share a link; they pick a slot | Share a link; they pick a slot | AI reads your email, checks calendars, drafts a reply with times |
-| **What they see** | A branded booking page | A booking page (customizable) | A normal email from you. No links, no pages. |
+| **How it works** | Share a link; they pick a slot | Share a link; they pick a slot | AI reads your email, checks calendars, writes a reply with times |
+| **What the recipient sees** | A branded booking page | A booking page (customizable) | A normal email from you |
 | **Where it lives** | Separate web app | Separate web app (self-hostable) | Inside Gmail |
 | **Automation** | Sends confirmations and reminders | Sends confirmations and reminders | Draft mode (you review and send) or full autopilot |
 | **Personalization** | Templates | Templates | Learns your writing style, tone, and scheduling preferences |
-| **Detects scheduling emails?** | No, you share the link manually | No, you share the link manually | Yes, AI classifies incoming emails automatically |
+| **Detects scheduling emails** | No, you share the link manually | No, you share the link manually | Yes, AI classifies incoming emails automatically |
 | **Open source** | No | Yes | Yes (MIT) |
-| **Privacy** | Your data on Calendly's servers | Self-hostable | Never stores email content |
+| **Privacy** | Data on Calendly's servers | Self-hostable | Never stores email content |
 | **Cost** | Free tier; paid from $10/mo | Free tier; paid plans; self-host option | Open source, free to self-host |
 
-## Where Calendly and Cal.com Are Better
+## Where Calendly and Cal.com are the better choice
 
-I'm not here to trash Calendly. There are situations where it's clearly the right call.
+**Inbound from strangers.** When someone visits your website and wants to book a demo or consultation, a scheduling link is the most efficient option. There's no existing relationship where a link might feel impersonal. This is what Calendly was built for and where it excels.
 
-**Inbound from strangers.** If someone hits your website and wants to book a demo, a scheduling link is perfect. They don't have a relationship with you yet. A link on a landing page is the most efficient thing you can offer. Calendly is built for this.
+**Public booking pages.** Office hours, intake calls, interviews. Anything that requires a public URL where anyone can book time. Scheduled works inside email threads, not on websites.
 
-**Public booking pages.** Office hours, consultations, intake calls. Anything where you need a public URL that says "book time with me." Scheduled doesn't do this. It works inside email threads, not on websites.
+**Integrations ecosystem.** Calendly connects to CRMs, payment processors, video conferencing, and marketing tools out of the box. If your scheduling workflow feeds into a broader sales or operations pipeline, that ecosystem is mature and well-tested.
 
-**Big integrations.** Calendly plugs into CRMs, payment processors, Zoom, and a bunch of marketing tools. If your scheduling feeds into a sales pipeline, that ecosystem matters.
+**Team coordination.** Round-robin assignment, collective availability, routing forms. These are complex team scheduling problems that Calendly and Cal.com have invested years in solving.
 
-**Team coordination.** Round-robin, collective availability, routing forms. Calendly and Cal.com have spent years on these. If you're managing a team of SDRs, these features are real.
+Cal.com specifically is the right choice if you want the scheduling link model with open-source transparency and self-hosting.
 
-**When people expect a link.** In high-volume sales and recruiting, links are normal. Nobody blinks. In those contexts, just use one.
+## Where Scheduled is the better choice
 
-Cal.com specifically wins if you want all of the above but also want to self-host and own the code.
+**Relationships where links feel transactional.** When a colleague, client, investor, or collaborator emails to find a time, a booking link can signal "I'm handling this at scale." A natural email reply that proposes times keeps the interaction personal. Scheduled handles the calendar-checking and reply-writing work without changing what the other person sees.
 
-## Where Scheduled Is Better
+**When the recipient shouldn't know AI is involved.** With scheduling links, the tool is visible by design. With Scheduled, the output is a plain email in your voice. The recipient has no way to tell an AI agent was involved.
 
-Scheduled fills the gap that booking links leave open.
+**Preference-aware scheduling.** Scheduled learns your preferred times, locations, group meeting structure, and buffer time from your existing patterns. It doesn't just check if a slot is open. It checks if the slot is one you'd actually want.
 
-**It doesn't look like a tool.** This is the big one. When you send someone a Calendly link, they know you're using Calendly. When Scheduled writes a reply for you, they just see a normal email. It still feels personal. For anyone doing outreach where relationships matter, that's a real difference. You're not signaling "I do this at scale." You're signaling "I took the time."
+**Multiple calendars.** For people juggling work, personal, shared, and project calendars, Scheduled checks all of them before proposing times. No manual cross-referencing.
 
-**It sounds like you.** Scheduled learns your writing voice. Not generic template language, your actual tone. The reply it drafts reads the way you'd write it if you had the time.
+**Timezone handling.** Automatic timezone detection and conversion. One less thing to get wrong when scheduling across continents.
 
-**It learns how you schedule.** Your preferred meeting times, your go-to locations, how you handle group events, whether you like buffer time between calls. It picks all of this up and uses it.
+**Privacy and open source.** MIT licensed, never stores email content, fully auditable source code. Self-hostable for organizations with compliance requirements.
 
-**Everything's automatic.** It catches scheduling emails as they come in. You don't have to remember to share a link or even notice the email right away. In draft mode, it writes the reply and waits for you. On autopilot, it just handles it.
+## Using both
 
-**Multiple calendars.** I have a work calendar, a personal calendar, a shared family calendar, and a side project calendar. Checking all four before proposing times is painful. Scheduled checks them all.
+For many people, the right setup is both tools.
 
-**Time zones.** It handles conversion automatically. One less thing to mess up when you're scheduling across continents.
+Calendly or Cal.com handles inbound from your website, landing pages, and outbound templates. Strangers and leads book time through a link without friction.
 
-**Privacy and open source.** It's MIT licensed and never stores your email content. If you want to audit what it does with your data, you can read every line of code.
+Scheduled handles everything that comes through your inbox. The colleague who writes "let's sync this week," the candidate who replies "I'd love to chat," the investor who asks "are you free Friday?" These are conversations where a natural email reply is more appropriate than a link.
 
-## You Can Use Both
+The two tools operate in different channels with very little overlap. Scheduling links live on your website. Scheduled lives in your inbox.
 
-Honestly, for a lot of people the answer is both.
+## Try Scheduled
 
-Put Calendly or Cal.com on your website for inbound. Let strangers and leads book time without friction.
-
-Use Scheduled for everything that comes through your inbox. The colleague who writes "let's sync this week." The candidate who replies "I'd love to chat." The investor who says "are you free Friday?"
-
-They don't overlap much. Calendly lives on your website. Scheduled lives in your inbox. Different channels, different relationships, different tools.
-
-## Try It
-
-Scheduled is open source and free to self-host. If you want to try it, break it, or build on it, have at it.
+Scheduled is open source and free to self-host.
 
 - **Try Scheduled:** [scheduler.ferganalabs.com](https://scheduler.ferganalabs.com)
 - **View the source:** [github.com/Fergana-Labs/scheduler](https://github.com/Fergana-Labs/scheduler)
