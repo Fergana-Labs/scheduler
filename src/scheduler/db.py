@@ -373,28 +373,25 @@ def delete_user(user_id: str) -> None:
         conn.commit()
 
 
-def is_message_processed(user_id: str, message_id: str) -> bool:
-    """Check if a message has already been processed (without marking it)."""
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM processed_messages WHERE user_id = %s AND message_id = %s",
-            (user_id, message_id),
-        )
-        return cur.fetchone() is not None
+def try_claim_message(user_id: str, message_id: str) -> bool:
+    """Atomically claim a message for processing. Returns True if claimed, False if already claimed.
 
-
-def mark_message_processed(user_id: str, message_id: str) -> None:
-    """Mark a message as processed."""
+    This replaces the old check-then-mark pattern to prevent duplicate processing
+    from concurrent webhook handlers.
+    """
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO processed_messages (user_id, message_id)
             VALUES (%s, %s)
             ON CONFLICT (user_id, message_id) DO NOTHING
+            RETURNING 1
             """,
             (user_id, message_id),
         )
+        claimed = cur.fetchone() is not None
         conn.commit()
+        return claimed
 
 
 def cleanup_processed_messages(days: int = 7) -> int:

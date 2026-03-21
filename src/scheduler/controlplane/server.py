@@ -22,7 +22,7 @@ import threading
 import time
 import urllib.parse
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 
 import jwt
 from jwt import PyJWKClient
@@ -1286,13 +1286,14 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
 
     from scheduler.classifier.intent import SchedulingIntent, classify_email
     from scheduler.classifier.newsletter import is_mass_email
-    from scheduler.db import is_message_processed, mark_message_processed
+    from scheduler.db import try_claim_message
 
     calendar = CalendarClient(creds, config.stash_calendar_name)
 
     for message_id in new_message_ids:
-        if is_message_processed(user_id, message_id):
-            logger.info("gmail_webhook: message %s already processed, skipping", message_id)
+        # Atomic claim: prevents duplicate processing from concurrent webhooks
+        if not try_claim_message(user_id, message_id):
+            logger.info("gmail_webhook: message %s already claimed, skipping", message_id)
             continue
 
         try:
@@ -1303,39 +1304,52 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
                 from scheduler.db import delete_pending_invite, get_pending_invite_by_thread
 
                 invite = get_pending_invite_by_thread(user_id, email.thread_id)
-                if invite:
-                    # Classify whether the sent message still confirms the meeting
-                    from scheduler.classifier.intent import classify_sent_message_confirms_invite
-
-                    confirms = classify_sent_message_confirms_invite(email.body, invite.event_summary)
-                    if not confirms:
-                        logger.info(
-                            "gmail_webhook: message %s in thread %s does not confirm the meeting, deleting pending invite",
-                            message_id,
-                            email.thread_id,
-                        )
-                        delete_pending_invite(str(invite.id))
-                    else:
-                        logger.info(
-                            "gmail_webhook: message %s confirms invite for thread %s, creating calendar event",
-                            message_id,
-                            email.thread_id,
-                        )
-                        try:
-                            event_id = calendar.create_invite_event(
-                                summary=invite.event_summary,
-                                start=invite.event_start,
-                                end=invite.event_end,
-                                attendee_email=invite.attendee_email,
-                                add_google_meet=invite.add_google_meet,
-                            )
-                            delete_pending_invite(str(invite.id))
-                            logger.info("gmail_webhook: created invite event %s for thread %s", event_id, email.thread_id)
-                        except Exception:
-                            logger.exception("gmail_webhook: failed to create invite event for thread %s", email.thread_id)
-                else:
+                if not invite:
                     logger.info("gmail_webhook: message %s is from the user, skipping", message_id)
-                mark_message_processed(user_id, message_id)
+                    continue
+
+                invite_age_hours = (datetime.now(timezone.utc) - invite.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 3600
+
+                # Skip stale invites (>24h old) — user likely forgot about them
+                if invite_age_hours > 24:
+                    logger.info(
+                        "gmail_webhook: pending invite for thread %s is %.1fh old, expired — deleting",
+                        email.thread_id,
+                        invite_age_hours,
+                    )
+                    delete_pending_invite(str(invite.id))
+                    continue
+
+                # Classify whether the sent message still confirms the meeting
+                from scheduler.classifier.intent import classify_sent_message_confirms_invite
+
+                confirms = classify_sent_message_confirms_invite(email.body, invite.event_summary)
+                if not confirms:
+                    logger.info(
+                        "gmail_webhook: message %s in thread %s does not confirm the meeting, deleting pending invite",
+                        message_id,
+                        email.thread_id,
+                    )
+                    delete_pending_invite(str(invite.id))
+                    continue
+
+                logger.info(
+                    "gmail_webhook: message %s confirms invite for thread %s, creating calendar event",
+                    message_id,
+                    email.thread_id,
+                )
+                try:
+                    event_id = calendar.create_invite_event(
+                        summary=invite.event_summary,
+                        start=invite.event_start,
+                        end=invite.event_end,
+                        attendee_email=invite.attendee_email,
+                        add_google_meet=invite.add_google_meet,
+                    )
+                    delete_pending_invite(str(invite.id))
+                    logger.info("gmail_webhook: created invite event %s for thread %s", event_id, email.thread_id)
+                except Exception:
+                    logger.exception("gmail_webhook: failed to create invite event for thread %s", email.thread_id)
                 continue
 
             # Skip emails from Scheduled's own sending addresses (e.g. reasoning emails)
@@ -1343,26 +1357,22 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
             if (config.postmark_from_email and config.postmark_from_email in sender_str) or \
                (config.postmark_bot_email and config.postmark_bot_email in sender_str):
                 logger.info("gmail_webhook: message %s is from Scheduled, skipping", message_id)
-                mark_message_processed(user_id, message_id)
                 continue
 
             # Skip newsletters / mass emails (before classifier, saves API cost)
             if is_mass_email(email.headers, email.sender):
                 logger.info("gmail_webhook: message %s is a mass email/newsletter, skipping", message_id)
-                mark_message_processed(user_id, message_id)
                 continue
 
             classification = classify_email(email.subject, email.body, email.sender)
 
             if classification.intent == SchedulingIntent.NOT_SCHEDULING:
                 logger.info("gmail_webhook: message %s is not scheduling-related, skipping", message_id)
-                mark_message_processed(user_id, message_id)
                 continue
 
             # Skip sales emails unless user opted in
             if classification.is_sales_email and not user.process_sales_emails:
                 logger.info("gmail_webhook: message %s is a sales email, skipping", message_id)
-                mark_message_processed(user_id, message_id)
                 continue
 
             logger.info(
@@ -1398,13 +1408,11 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
                         )
                     except Exception:
                         logger.exception("gmail_webhook: failed to send reasoning email for message %s", message_id)
-            mark_message_processed(user_id, message_id)
 
         except Exception as exc:
             # If Gmail returns 404, the message was deleted/moved — don't retry
             if _is_gmail_404(exc):
                 logger.warning("gmail_webhook: message %s not found (deleted?), skipping", message_id)
-                mark_message_processed(user_id, message_id)
             else:
                 logger.exception("gmail_webhook: failed to process message %s for user=%s", message_id, email_address)
 
