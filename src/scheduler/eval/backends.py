@@ -1,105 +1,128 @@
 """Eval backends — record once, replay forever.
 
-One recording file captures every Gmail search, thread read, calendar lookup,
-guide load, and timezone fetch. Both guide and draft eval commands replay
-from the same file.
-
-Recording format:
+Fixture format:
 {
   "metadata": {"recorded_at": "...", ...},
-  "calls": [
-    {"method": "search_emails", "args": {...}, "result": {...}},
-    {"method": "read_thread", "args": {"thread_id": "..."}, "result": [...]},
-    ...
-  ]
+  "messages": [ {id, thread_id, sender, recipient, cc, subject, body, date, snippet}, ... ],
+  "events": [ {id, summary, start, end, description, source}, ... ],
+  "timezone": "America/Los_Angeles",
+  "guides": {"scheduling_preferences": "...", "email_style": "..."}
 }
 
-The raw result is always stored in a normalized form (lists of dicts).
-Each replay backend wraps it in whatever shape its protocol expects.
+The fixture is a flat dump of the user's inbox + calendar. Replay backends
+search/filter this data in-memory so the agent gets realistic results for
+any query it makes.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 
 
 # ---------------------------------------------------------------------------
-# Recording store — shared across all backends in one eval run
+# Fixture I/O
 # ---------------------------------------------------------------------------
 
-class RecordingStore:
-    """Accumulates recorded API calls from any backend."""
+def save_fixture(
+    path: str,
+    messages: list[dict],
+    events: list[dict],
+    timezone: str,
+    guides: dict[str, str | None],
+    metadata: dict | None = None,
+) -> None:
+    data = {
+        "metadata": {
+            "recorded_at": datetime.now().isoformat(),
+            **(metadata or {}),
+        },
+        "messages": messages,
+        "events": events,
+        "timezone": timezone,
+        "guides": guides,
+    }
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
 
-    def __init__(self):
-        self.calls: list[dict] = []
 
-    def record(self, method: str, args: dict, result) -> None:
-        self.calls.append({"method": method, "args": args, "result": result})
-
-    def save(self, path: str, metadata: dict | None = None) -> None:
-        data = {
-            "metadata": {
-                "recorded_at": datetime.now().isoformat(),
-                **(metadata or {}),
-            },
-            "calls": self.calls,
-        }
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-
-
-def load_recording(path: str) -> tuple[list[dict], dict]:
-    """Load a recording file. Returns (calls, metadata)."""
+def load_fixture(path: str) -> dict:
     with open(path) as f:
-        data = json.load(f)
-    calls = data.get("calls", [])
-    metadata = data.get("metadata", {})
-    return calls, metadata
-
-
-class ReplayLookup:
-    """Lookup table for replaying recorded calls."""
-
-    def __init__(self, calls: list[dict]):
-        self._lookup: dict[str, any] = {}
-        for entry in calls:
-            key = self._key(entry["method"], entry["args"])
-            self._lookup[key] = entry["result"]
-
-    def _key(self, method: str, args: dict) -> str:
-        return json.dumps({"method": method, "args": args}, sort_keys=True)
-
-    def get(self, method: str, args: dict):
-        key = self._key(method, args)
-        if key in self._lookup:
-            return self._lookup[key]
-
-        fallbacks = {
-            "search_emails": {"emails": []},
-            "read_thread": [],
-            "get_calendar_events": [],
-            "get_user_timezone": "UTC",
-            "load_guide": None,
-        }
-        return fallbacks.get(method, {})
+        return json.load(f)
 
 
 # ---------------------------------------------------------------------------
-# Live API helpers (shared by recording backends)
+# In-memory Gmail search over fixture messages
 # ---------------------------------------------------------------------------
 
-def _get_live_clients():
-    from scheduler.auth.google_auth import get_credentials
-    from scheduler.calendar.client import CalendarClient
-    from scheduler.config import config
-    from scheduler.gmail.client import GmailClient
+def _search_messages(messages: list[dict], query: str, max_results: int = 50) -> list[dict]:
+    """Naive Gmail-like search over fixture messages.
 
-    creds = get_credentials()
-    gmail = GmailClient(creds)
-    calendar = CalendarClient(creds, config.stash_calendar_name)
-    return gmail, calendar
+    Supports:
+      - from:me / from:<addr>  — filter by sender
+      - bare keywords           — match against subject + body + snippet
+    """
+    terms = query.strip().split()
+    from_filter = None
+    keywords = []
 
+    for term in terms:
+        if term.lower().startswith("from:"):
+            from_filter = term[5:].lower()
+        else:
+            keywords.append(term.lower())
+
+    results = []
+    for msg in messages:
+        # from: filter
+        if from_filter:
+            sender = (msg.get("sender") or "").lower()
+            if from_filter == "me":
+                # "from:me" — heuristic: sender contains the user's domain
+                # or sender field is empty (shouldn't happen). We can't know
+                # the user's exact email, so match on the most common sender.
+                # Better heuristic: skip this message if sender looks like
+                # someone else. We'll rely on keyword matching too.
+                pass  # don't filter on from:me, just use keywords
+            elif from_filter not in sender:
+                continue
+
+        # keyword matching — all keywords must appear in subject, body, or snippet
+        if keywords:
+            searchable = " ".join([
+                (msg.get("subject") or ""),
+                (msg.get("body") or ""),
+                (msg.get("snippet") or ""),
+            ]).lower()
+            if not all(kw in searchable for kw in keywords):
+                continue
+
+        results.append(msg)
+        if len(results) >= max_results:
+            break
+
+    return results
+
+
+def _filter_events(events: list[dict], start_date: str, end_date: str) -> list[dict]:
+    """Filter fixture events by date range."""
+    start = datetime.fromisoformat(start_date)
+    end = datetime.fromisoformat(end_date)
+
+    results = []
+    for event in events:
+        event_start = datetime.fromisoformat(event["start"])
+        event_end = datetime.fromisoformat(event["end"])
+        # Include if event overlaps with the requested window
+        if event_end > start and event_start < end:
+            results.append(event)
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Serialization helpers (used by cmd_record)
+# ---------------------------------------------------------------------------
 
 def _serialize_email(email) -> dict:
     return {
@@ -129,61 +152,35 @@ def _serialize_event(event) -> dict:
 # ---------------------------------------------------------------------------
 # Guide backends (GuideBackend protocol)
 #
+# search_emails returns {"emails": [...]}
 # read_thread returns {"messages": [...]}
 # get_calendar_events returns {"events": [...]}
 # ---------------------------------------------------------------------------
 
-class RecordingGuideBackend:
-    """Hits real Gmail/Calendar, records everything, captures guide writes."""
-
-    def __init__(self, store: RecordingStore):
-        self._store = store
-        self._gmail, self._calendar = _get_live_clients()
-        self.captured_guides: dict[str, str] = {}
-
-    def search_emails(self, query: str, max_results: int = 50) -> dict:
-        emails = self._gmail.search(query=query, max_results=max_results)
-        result = {"emails": [_serialize_email(e) for e in emails]}
-        self._store.record("search_emails", {"query": query, "max_results": max_results}, result)
-        return result
-
-    def read_thread(self, thread_id: str) -> dict:
-        messages = self._gmail.get_thread(thread_id)
-        raw = [_serialize_email(m) for m in messages]
-        self._store.record("read_thread", {"thread_id": thread_id}, raw)
-        return {"messages": raw}
-
-    def get_calendar_events(self, start_date: str, end_date: str) -> dict:
-        events = self._calendar.get_all_events(
-            time_min=datetime.fromisoformat(start_date),
-            time_max=datetime.fromisoformat(end_date),
-        )
-        raw = [_serialize_event(e) for e in events]
-        self._store.record("get_calendar_events", {"start_date": start_date, "end_date": end_date}, raw)
-        return {"events": raw}
-
-    def write_guide(self, name: str, content: str) -> dict:
-        self.captured_guides[name] = content
-        return {"status": "captured", "name": name}
-
-
 class ReplayGuideBackend:
-    """Replays from a recording. No Gmail/Calendar access."""
+    """Replays from a fixture. Searches/filters in-memory. No API access."""
 
-    def __init__(self, lookup: ReplayLookup):
-        self._lookup = lookup
+    def __init__(self, fixture: dict):
+        self._messages = fixture.get("messages", [])
+        self._events = fixture.get("events", [])
+        # Group messages by thread_id for fast thread lookups
+        self._threads: dict[str, list[dict]] = {}
+        for msg in self._messages:
+            tid = msg.get("thread_id", "")
+            self._threads.setdefault(tid, []).append(msg)
         self.captured_guides: dict[str, str] = {}
 
     def search_emails(self, query: str, max_results: int = 50) -> dict:
-        return self._lookup.get("search_emails", {"query": query, "max_results": max_results})
+        results = _search_messages(self._messages, query, max_results)
+        return {"emails": results}
 
     def read_thread(self, thread_id: str) -> dict:
-        raw = self._lookup.get("read_thread", {"thread_id": thread_id})
-        return {"messages": raw}
+        messages = self._threads.get(thread_id, [])
+        return {"messages": messages}
 
     def get_calendar_events(self, start_date: str, end_date: str) -> dict:
-        raw = self._lookup.get("get_calendar_events", {"start_date": start_date, "end_date": end_date})
-        return {"events": raw}
+        results = _filter_events(self._events, start_date, end_date)
+        return {"events": results}
 
     def write_guide(self, name: str, content: str) -> dict:
         self.captured_guides[name] = content
@@ -195,81 +192,37 @@ class ReplayGuideBackend:
 #
 # read_thread returns list[dict] (bare list)
 # get_calendar_events returns list[dict] (bare list)
-# also has load_guide, get_user_timezone, create_draft, send_email, add_calendar_event
 # ---------------------------------------------------------------------------
 
-class RecordingDraftBackend:
-    """Hits real Gmail/Calendar, records everything, captures writes."""
-
-    def __init__(self, store: RecordingStore, user_id: str | None = None):
-        self._store = store
-        self._gmail, self._calendar = _get_live_clients()
-        self._user_id = user_id
-
-        self.captured_draft: dict | None = None
-        self.captured_sent: dict | None = None
-        self.captured_events: list[dict] = []
-
-    def load_guide(self, name: str) -> str | None:
-        from scheduler.guides import load_guide
-        result = load_guide(name, user_id=self._user_id)
-        self._store.record("load_guide", {"name": name}, result)
-        return result
-
-    def get_user_timezone(self) -> str:
-        result = self._calendar.get_user_timezone()
-        self._store.record("get_user_timezone", {}, result)
-        return result
-
-    def get_calendar_events(self, start_date: str, end_date: str) -> list[dict]:
-        events = self._calendar.get_all_events(
-            time_min=datetime.fromisoformat(start_date),
-            time_max=datetime.fromisoformat(end_date),
-            include_primary=True,
-        )
-        raw = [_serialize_event(e) for e in events]
-        self._store.record("get_calendar_events", {"start_date": start_date, "end_date": end_date}, raw)
-        return raw
-
-    def read_thread(self, thread_id: str) -> list[dict]:
-        messages = self._gmail.get_thread(thread_id)
-        raw = [_serialize_email(m) for m in messages]
-        self._store.record("read_thread", {"thread_id": thread_id}, raw)
-        return raw
-
-    def create_draft(self, args: dict) -> dict:
-        self.captured_draft = args
-        return {"draft_id": "dry-run-draft"}
-
-    def send_email(self, args: dict) -> dict:
-        self.captured_sent = args
-        return {"message_id": "dry-run-sent", "status": "captured"}
-
-    def add_calendar_event(self, args: dict) -> dict:
-        self.captured_events.append(args)
-        return {"event_id": "dry-run-event"}
-
-
 class ReplayDraftBackend:
-    """Replays from a recording. No Gmail/Calendar access."""
+    """Replays from a fixture. Searches/filters in-memory. No API access."""
 
-    def __init__(self, lookup: ReplayLookup):
-        self._lookup = lookup
+    def __init__(self, fixture: dict):
+        self._messages = fixture.get("messages", [])
+        self._events = fixture.get("events", [])
+        self._timezone = fixture.get("timezone", "UTC")
+        self._guides = fixture.get("guides", {})
+        # Group messages by thread_id
+        self._threads: dict[str, list[dict]] = {}
+        for msg in self._messages:
+            tid = msg.get("thread_id", "")
+            self._threads.setdefault(tid, []).append(msg)
+
         self.captured_draft: dict | None = None
         self.captured_sent: dict | None = None
         self.captured_events: list[dict] = []
 
     def load_guide(self, name: str) -> str | None:
-        return self._lookup.get("load_guide", {"name": name})
+        return self._guides.get(name)
 
     def get_user_timezone(self) -> str:
-        return self._lookup.get("get_user_timezone", {})
+        return self._timezone
 
     def get_calendar_events(self, start_date: str, end_date: str) -> list[dict]:
-        return self._lookup.get("get_calendar_events", {"start_date": start_date, "end_date": end_date})
+        return _filter_events(self._events, start_date, end_date)
 
     def read_thread(self, thread_id: str) -> list[dict]:
-        return self._lookup.get("read_thread", {"thread_id": thread_id})
+        return self._threads.get(thread_id, [])
 
     def create_draft(self, args: dict) -> dict:
         self.captured_draft = args

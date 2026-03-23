@@ -1,13 +1,13 @@
 """Eval CLI — record your inbox once, then replay for deterministic evals.
 
 Usage:
-    # Step 1: Record everything into one fixture (hits real Gmail/Calendar)
+    # Step 1: Dump inbox + calendar to a fixture (run once, no LLM calls)
     python -m scheduler.eval record --out fixture.json --thread-ids t1 t2 t3
 
     # Step 2: Run evals against the frozen fixture (no API access)
     python -m scheduler.eval guides --fixture fixture.json
-    python -m scheduler.eval draft --fixture fixture.json --thread-id t1
-    python -m scheduler.eval classify --fixture fixture.json --thread-id t1
+    python -m scheduler.eval draft --fixture fixture.json --thread-ids t1
+    python -m scheduler.eval classify --fixture fixture.json --thread-ids t1
 """
 
 from __future__ import annotations
@@ -18,72 +18,102 @@ import sys
 
 
 def cmd_record(args):
-    """Record a fixture: run guide agents + read specific threads, save everything."""
-    import anyio
-    from scheduler.eval.backends import (
-        RecordingDraftBackend,
-        RecordingGuideBackend,
-        RecordingStore,
-    )
-    from scheduler.guides.preferences import run_preferences_agent
-    from scheduler.guides.style import run_style_agent
+    """Dump the last 1000 emails + calendar + guides to a fixture. No LLM calls."""
+    from datetime import datetime, timedelta
 
-    store = RecordingStore()
+    from scheduler.auth.google_auth import get_credentials
+    from scheduler.calendar.client import CalendarClient
+    from scheduler.config import config
+    from scheduler.eval.backends import _serialize_email, _serialize_event, save_fixture
+    from scheduler.gmail.client import GmailClient
 
-    # 1. Run guide agents (they search Gmail + read threads + read calendar)
-    print("Recording guide agents (searching inbox, reading threads)...", file=sys.stderr)
-    guide_backend = RecordingGuideBackend(store)
+    creds = get_credentials()
+    gmail = GmailClient(creds)
+    calendar = CalendarClient(creds, config.stash_calendar_name)
 
-    async def _run_guides():
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(run_preferences_agent, guide_backend)
-            tg.start_soon(run_style_agent, guide_backend)
+    # 1. Fetch last 1000 emails (everything the guide agents could see)
+    lookback_days = config.onboarding_lookback_days
+    query = f"newer_than:{lookback_days}d"
+    print(f"Fetching emails from the last {lookback_days} days (up to 1000)...", file=sys.stderr)
+    emails = gmail.search(query=query, max_results=1000)
+    messages = [_serialize_email(e) for e in emails]
+    print(f"  {len(messages)} emails fetched", file=sys.stderr)
 
-    anyio.run(_run_guides)
+    # 2. Read full threads for every email we found
+    thread_ids = list({m["thread_id"] for m in messages})
+    print(f"Reading {len(thread_ids)} unique threads...", file=sys.stderr)
+    seen_message_ids = {m["id"] for m in messages}
+    for tid in thread_ids:
+        thread_messages = gmail.get_thread(tid)
+        for m in thread_messages:
+            if m.id not in seen_message_ids:
+                messages.append(_serialize_email(m))
+                seen_message_ids.add(m.id)
 
-    # 2. Read specific threads for draft eval (+ their calendar context)
-    if args.thread_ids:
-        print(f"Recording {len(args.thread_ids)} thread(s) for draft eval...", file=sys.stderr)
-        draft_backend = RecordingDraftBackend(store)
-        for tid in args.thread_ids:
-            draft_backend.read_thread(tid)
-            draft_backend.load_guide("scheduling_preferences")
-            draft_backend.load_guide("email_style")
-        draft_backend.get_user_timezone()
-        # Record a wide calendar window for draft agent availability checks
-        from datetime import datetime, timedelta
-        now = datetime.now()
-        draft_backend.get_calendar_events(
-            now.isoformat(),
-            (now + timedelta(days=30)).isoformat(),
-        )
+    # 3. Also fetch any extra threads passed via --thread-ids
+    extra_thread_ids = set(args.thread_ids or []) - set(thread_ids)
+    if extra_thread_ids:
+        print(f"Reading {len(extra_thread_ids)} additional thread(s)...", file=sys.stderr)
+        for tid in extra_thread_ids:
+            thread_messages = gmail.get_thread(tid)
+            for m in thread_messages:
+                if m.id not in seen_message_ids:
+                    messages.append(_serialize_email(m))
+                    seen_message_ids.add(m.id)
 
-    # 3. Save
+    print(f"  {len(messages)} total messages across {len(thread_ids) + len(extra_thread_ids)} threads", file=sys.stderr)
+
+    # 4. Calendar: lookback + 30 days ahead
+    now = datetime.now()
+    cal_start = now - timedelta(days=lookback_days)
+    cal_end = now + timedelta(days=30)
+    print("Fetching calendar events...", file=sys.stderr)
+    raw_events = calendar.get_all_events(cal_start, cal_end, include_primary=True)
+    events = [_serialize_event(e) for e in raw_events]
+    print(f"  {len(events)} calendar events", file=sys.stderr)
+
+    # 5. Timezone
+    tz = calendar.get_user_timezone()
+
+    # 6. Guides (if they exist)
+    from scheduler.guides import load_guide
+    guides = {}
+    for name in ["scheduling_preferences", "email_style"]:
+        guides[name] = load_guide(name)
+
+    # 7. Save
     metadata = {
         "thread_ids": args.thread_ids or [],
-        "guide_names": list(guide_backend.captured_guides.keys()),
+        "lookback_days": lookback_days,
+        "n_messages": len(messages),
+        "n_threads": len(thread_ids) + len(extra_thread_ids),
+        "n_events": len(events),
+        "calendar_window": {"start": cal_start.isoformat(), "end": cal_end.isoformat()},
     }
-    store.save(args.out, metadata=metadata)
-    n_calls = len(store.calls)
-    print(f"Saved {n_calls} recorded calls to {args.out}", file=sys.stderr)
+    save_fixture(args.out, messages=messages, events=events, timezone=tz, guides=guides, metadata=metadata)
+    print(f"Saved fixture to {args.out}", file=sys.stderr)
 
 
 def cmd_classify(args):
     """Run the classifier on a thread from the fixture."""
     from scheduler.classifier.intent import classify_email
-    from scheduler.eval.backends import ReplayLookup, load_recording
+    from scheduler.eval.backends import load_fixture
 
-    calls, metadata = load_recording(args.fixture)
-    lookup = ReplayLookup(calls)
+    fixture = load_fixture(args.fixture)
 
-    thread_ids = args.thread_ids or metadata.get("thread_ids", [])
+    # Group messages by thread
+    threads: dict[str, list[dict]] = {}
+    for msg in fixture["messages"]:
+        threads.setdefault(msg["thread_id"], []).append(msg)
+
+    thread_ids = args.thread_ids or fixture.get("metadata", {}).get("thread_ids", [])
     if not thread_ids:
         print("No thread IDs specified and none found in fixture metadata", file=sys.stderr)
         sys.exit(1)
 
     results = []
     for tid in thread_ids:
-        messages = lookup.get("read_thread", {"thread_id": tid})
+        messages = threads.get(tid, [])
         if not messages:
             print(f"Thread {tid} not found in fixture, skipping", file=sys.stderr)
             continue
@@ -108,26 +138,28 @@ def cmd_draft(args):
     """Run the draft composer against a thread from the fixture."""
     from scheduler.classifier.intent import classify_email
     from scheduler.drafts.composer import DraftComposer
-    from scheduler.eval.backends import ReplayDraftBackend, ReplayLookup, load_recording
+    from scheduler.eval.backends import ReplayDraftBackend, load_fixture
 
-    calls, metadata = load_recording(args.fixture)
-    lookup = ReplayLookup(calls)
+    fixture = load_fixture(args.fixture)
 
-    thread_ids = args.thread_ids or metadata.get("thread_ids", [])
+    # Group messages by thread
+    threads: dict[str, list[dict]] = {}
+    for msg in fixture["messages"]:
+        threads.setdefault(msg["thread_id"], []).append(msg)
+
+    thread_ids = args.thread_ids or fixture.get("metadata", {}).get("thread_ids", [])
     if not thread_ids:
         print("No thread IDs specified and none found in fixture metadata", file=sys.stderr)
         sys.exit(1)
 
     results = []
     for tid in thread_ids:
-        messages = lookup.get("read_thread", {"thread_id": tid})
+        messages = threads.get(tid, [])
         if not messages:
             print(f"Thread {tid} not found in fixture, skipping", file=sys.stderr)
             continue
 
         latest = messages[-1]
-
-        # Classify (this is a live LLM call — the thing we're evaluating)
         c = classify_email(latest["subject"], latest["body"], latest["sender"])
         classification = {
             "intent": c.intent.value,
@@ -138,7 +170,7 @@ def cmd_draft(args):
             "duration_minutes": c.duration_minutes,
         }
 
-        backend = ReplayDraftBackend(lookup)
+        backend = ReplayDraftBackend(fixture)
         composer = DraftComposer(backend, user_id="eval", user_email="eval@test.com")
         composer.compose_and_create_draft(latest, classification)
 
@@ -156,13 +188,12 @@ def cmd_draft(args):
 def cmd_guides(args):
     """Run guide-writer agents against the fixture."""
     import anyio
-    from scheduler.eval.backends import ReplayGuideBackend, ReplayLookup, load_recording
+    from scheduler.eval.backends import ReplayGuideBackend, load_fixture
     from scheduler.guides.preferences import run_preferences_agent
     from scheduler.guides.style import run_style_agent
 
-    calls, _metadata = load_recording(args.fixture)
-    lookup = ReplayLookup(calls)
-    backend = ReplayGuideBackend(lookup)
+    fixture = load_fixture(args.fixture)
+    backend = ReplayGuideBackend(fixture)
 
     async def _run():
         async with anyio.create_task_group() as tg:
@@ -178,23 +209,23 @@ def main():
     parser = argparse.ArgumentParser(description="Eval CLI for scheduler agents")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    rec = sub.add_parser("record", help="Record inbox/calendar/threads to a fixture (run once)")
+    rec = sub.add_parser("record", help="Dump inbox + calendar to a fixture (run once)")
     rec.add_argument("--out", required=True, help="Output fixture file path")
-    rec.add_argument("--thread-ids", nargs="*", help="Gmail thread IDs to include for draft eval")
+    rec.add_argument("--thread-ids", nargs="*", help="Extra thread IDs to include for draft eval")
     rec.set_defaults(func=cmd_record)
 
     cls = sub.add_parser("classify", help="Run classifier on thread(s) from a fixture")
-    cls.add_argument("--fixture", required=True, help="Recording fixture file")
-    cls.add_argument("--thread-ids", nargs="*", help="Thread IDs to classify (default: all from fixture)")
+    cls.add_argument("--fixture", required=True, help="Fixture file")
+    cls.add_argument("--thread-ids", nargs="*", help="Thread IDs to classify (default: all from metadata)")
     cls.set_defaults(func=cmd_classify)
 
     dft = sub.add_parser("draft", help="Run draft composer on thread(s) from a fixture")
-    dft.add_argument("--fixture", required=True, help="Recording fixture file")
-    dft.add_argument("--thread-ids", nargs="*", help="Thread IDs to draft (default: all from fixture)")
+    dft.add_argument("--fixture", required=True, help="Fixture file")
+    dft.add_argument("--thread-ids", nargs="*", help="Thread IDs to draft (default: all from metadata)")
     dft.set_defaults(func=cmd_draft)
 
     gd = sub.add_parser("guides", help="Run guide-writer agents against a fixture")
-    gd.add_argument("--fixture", required=True, help="Recording fixture file")
+    gd.add_argument("--fixture", required=True, help="Fixture file")
     gd.set_defaults(func=cmd_guides)
 
     parsed = parser.parse_args()
