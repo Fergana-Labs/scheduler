@@ -29,8 +29,6 @@
     --blue-dim: rgba(96, 165, 250, 0.1);
     --purple: #a78bfa;
     --purple-dim: rgba(167, 139, 250, 0.1);
-    --trigger-glow: rgba(232, 164, 74, 0.06);
-    --trigger-border: rgba(232, 164, 74, 0.3);
     --mono: 'JetBrains Mono', monospace;
     --serif: 'Source Serif 4', Georgia, serif;
     --radius: 8px;
@@ -63,12 +61,6 @@
     color: var(--text-muted);
     letter-spacing: 0.04em;
   }
-  #loader .file-inputs {
-    display: flex;
-    gap: 16px;
-    flex-wrap: wrap;
-    justify-content: center;
-  }
   #loader label {
     display: flex;
     flex-direction: column;
@@ -79,7 +71,7 @@
     border-radius: var(--radius-lg);
     cursor: pointer;
     transition: all 0.2s;
-    min-width: 260px;
+    min-width: 300px;
     text-align: center;
   }
   #loader label:hover { border-color: var(--accent); background: var(--surface-raised); }
@@ -96,11 +88,6 @@
     font-family: var(--mono);
     font-size: 0.75rem;
     color: var(--text-dim);
-  }
-  #loader label span.label-status {
-    font-family: var(--mono);
-    font-size: 0.7rem;
-    color: var(--green);
   }
   #loader input[type="file"] { display: none; }
   #loader .auto-load-hint {
@@ -124,7 +111,6 @@
     padding: 16px 32px;
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 24px;
   }
   header .logo {
@@ -145,28 +131,55 @@
   header .stats .stat-value { color: var(--text); font-weight: 600; }
   header .stats .stat-green { color: var(--green); }
   header .stats .stat-red { color: var(--red); }
-  header .filter-bar {
-    display: flex;
-    gap: 8px;
-  }
-  header .filter-btn {
+  header .run-time {
     font-family: var(--mono);
     font-size: 0.7rem;
+    color: var(--text-dim);
+    margin-left: auto;
+    white-space: nowrap;
+  }
+
+  /* ── Tabs ── */
+  .tab-bar {
+    display: flex;
+    gap: 4px;
+    padding: 12px 32px 0;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--bg);
+    position: sticky;
+    top: 57px;
+    z-index: 99;
+  }
+  .tab-btn {
+    font-family: var(--mono);
+    font-size: 0.75rem;
     font-weight: 500;
-    padding: 5px 12px;
-    border-radius: 20px;
-    border: 1px solid var(--border);
+    padding: 10px 20px;
+    border: none;
     background: transparent;
     color: var(--text-muted);
     cursor: pointer;
+    border-bottom: 2px solid transparent;
     transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
-  header .filter-btn:hover { border-color: var(--text-muted); color: var(--text); }
-  header .filter-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-btn .tab-count {
+    font-size: 0.65rem;
+    padding: 1px 7px;
+    border-radius: 10px;
+    background: var(--surface-raised);
+    color: var(--text-dim);
+  }
+  .tab-btn.active .tab-count { background: var(--accent-dim); color: var(--accent); }
 
-  /* ── Eval cards ── */
-  .eval-list { padding: 24px 32px 80px; max-width: 1200px; margin: 0 auto; }
+  .tab-content { display: none; padding: 24px 32px 80px; max-width: 1200px; margin: 0 auto; }
+  .tab-content.active { display: block; }
 
+  /* ── Cards (shared) ── */
   .eval-card {
     background: var(--surface);
     border: 1px solid var(--border-subtle);
@@ -174,6 +187,7 @@
     margin-bottom: 20px;
     overflow: hidden;
     transition: border-color 0.2s;
+    animation: fadeUp 0.3s ease both;
   }
   .eval-card:hover { border-color: var(--border); }
 
@@ -196,6 +210,7 @@
   }
   .eval-status.pass { background: var(--green); box-shadow: 0 0 8px rgba(74, 222, 128, 0.3); }
   .eval-status.fail { background: var(--red); box-shadow: 0 0 8px rgba(248, 113, 113, 0.3); }
+  .eval-status.neutral { background: var(--text-dim); }
 
   .eval-id {
     font-family: var(--mono);
@@ -231,18 +246,12 @@
     letter-spacing: 0.04em;
     white-space: nowrap;
   }
-  .badge-intent {
-    background: var(--purple-dim);
-    color: var(--purple);
-  }
-  .badge-confidence {
-    background: var(--blue-dim);
-    color: var(--blue);
-  }
-  .badge-invite {
-    background: var(--accent-dim);
-    color: var(--accent);
-  }
+  .badge-intent { background: var(--purple-dim); color: var(--purple); }
+  .badge-confidence { background: var(--blue-dim); color: var(--blue); }
+  .badge-invite { background: var(--accent-dim); color: var(--accent); }
+  .badge-pass { background: var(--green-dim); color: var(--green); }
+  .badge-fail { background: var(--red-dim); color: var(--red); }
+  .badge-sales { background: var(--red-dim); color: var(--red); }
 
   .chevron {
     color: var(--text-dim);
@@ -258,7 +267,7 @@
   }
   .eval-card.open .eval-card-body { display: block; }
 
-  /* ── Thread timeline ── */
+  /* ── Section labels ── */
   .section-label {
     font-family: var(--mono);
     font-size: 0.7rem;
@@ -269,155 +278,119 @@
     margin: 20px 0 12px;
   }
 
+  /* ── Thread timeline ── */
   .thread-timeline {
     display: flex;
     flex-direction: column;
     gap: 2px;
   }
-
   .thread-msg {
     padding: 14px 16px;
     border-radius: var(--radius);
     background: var(--surface-raised);
     border: 1px solid transparent;
-    transition: all 0.15s;
   }
   .thread-msg.is-trigger {
-    background: var(--trigger-glow);
-    border-color: var(--trigger-border);
-    box-shadow: inset 0 0 0 1px rgba(232, 164, 74, 0.05);
+    background: rgba(232, 164, 74, 0.06);
+    border-color: rgba(232, 164, 74, 0.3);
   }
-  .thread-msg.is-user {
-    margin-left: 40px;
-  }
-
+  .thread-msg.is-user { margin-left: 40px; }
   .msg-header {
     display: flex;
     align-items: baseline;
     gap: 10px;
     margin-bottom: 6px;
   }
-  .msg-sender {
-    font-family: var(--mono);
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--text);
-  }
+  .msg-sender { font-family: var(--mono); font-size: 0.75rem; font-weight: 600; color: var(--text); }
   .thread-msg.is-trigger .msg-sender { color: var(--accent); }
-  .msg-date {
-    font-family: var(--mono);
-    font-size: 0.65rem;
-    color: var(--text-dim);
-  }
+  .msg-date { font-family: var(--mono); font-size: 0.65rem; color: var(--text-dim); }
   .msg-trigger-label {
-    font-family: var(--mono);
-    font-size: 0.6rem;
-    font-weight: 600;
-    color: var(--accent);
-    background: var(--accent-dim);
-    padding: 1px 8px;
-    border-radius: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+    font-family: var(--mono); font-size: 0.6rem; font-weight: 600;
+    color: var(--accent); background: var(--accent-dim);
+    padding: 1px 8px; border-radius: 10px; text-transform: uppercase; letter-spacing: 0.06em;
   }
   .msg-body {
-    font-size: 0.85rem;
-    color: var(--text-muted);
-    line-height: 1.65;
-    white-space: pre-wrap;
-    word-break: break-word;
-    max-height: 200px;
-    overflow-y: auto;
+    font-size: 0.85rem; color: var(--text-muted); line-height: 1.65;
+    white-space: pre-wrap; word-break: break-word;
+    max-height: 200px; overflow-y: auto;
   }
   .msg-body::-webkit-scrollbar { width: 4px; }
   .msg-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
   /* ── Comparison panel ── */
-  .comparison {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-    margin-top: 4px;
-  }
-  @media (max-width: 800px) {
-    .comparison { grid-template-columns: 1fr; }
-  }
-
-  .response-panel {
-    border-radius: var(--radius);
-    overflow: hidden;
-  }
+  .comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 4px; }
+  @media (max-width: 800px) { .comparison { grid-template-columns: 1fr; } }
+  .response-panel { border-radius: var(--radius); overflow: hidden; }
   .response-panel-header {
-    font-family: var(--mono);
-    font-size: 0.7rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    padding: 10px 14px;
+    font-family: var(--mono); font-size: 0.7rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em; padding: 10px 14px;
   }
-  .response-panel.agent .response-panel-header {
-    background: var(--blue-dim);
-    color: var(--blue);
-  }
-  .response-panel.golden .response-panel-header {
-    background: var(--green-dim);
-    color: var(--green);
-  }
-  .response-panel.empty .response-panel-header {
-    background: var(--red-dim);
-    color: var(--red);
-  }
+  .response-panel.agent .response-panel-header { background: var(--blue-dim); color: var(--blue); }
+  .response-panel.golden .response-panel-header { background: var(--green-dim); color: var(--green); }
+  .response-panel.empty .response-panel-header { background: var(--red-dim); color: var(--red); }
   .response-panel-body {
-    background: var(--surface-raised);
-    padding: 16px;
-    font-size: 0.85rem;
-    line-height: 1.7;
-    color: var(--text);
-    white-space: pre-wrap;
-    word-break: break-word;
-    min-height: 80px;
-    border: 1px solid var(--border-subtle);
-    border-top: none;
+    background: var(--surface-raised); padding: 16px; font-size: 0.85rem;
+    line-height: 1.7; color: var(--text); white-space: pre-wrap; word-break: break-word;
+    min-height: 80px; border: 1px solid var(--border-subtle); border-top: none;
     border-radius: 0 0 var(--radius) var(--radius);
   }
-  .response-panel-body .no-draft {
-    color: var(--red);
-    font-family: var(--mono);
-    font-size: 0.8rem;
-    font-style: italic;
-  }
+  .response-panel-body .no-draft { color: var(--red); font-family: var(--mono); font-size: 0.8rem; font-style: italic; }
   .response-panel-body .meta {
-    font-family: var(--mono);
-    font-size: 0.68rem;
-    color: var(--text-dim);
-    margin-bottom: 10px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--border-subtle);
+    font-family: var(--mono); font-size: 0.68rem; color: var(--text-dim);
+    margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--border-subtle);
   }
 
   /* ── Classification detail ── */
   .classification-detail {
-    display: flex;
-    gap: 16px;
-    flex-wrap: wrap;
-    padding: 12px 16px;
-    background: var(--surface-raised);
-    border-radius: var(--radius);
-    margin-top: 16px;
+    display: flex; gap: 16px; flex-wrap: wrap; padding: 12px 16px;
+    background: var(--surface-raised); border-radius: var(--radius); margin-top: 16px;
   }
-  .classification-detail .cd-item {
-    font-family: var(--mono);
-    font-size: 0.72rem;
-  }
+  .classification-detail .cd-item { font-family: var(--mono); font-size: 0.72rem; }
   .cd-item .cd-label {
-    color: var(--text-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    font-size: 0.6rem;
-    display: block;
-    margin-bottom: 2px;
+    color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em;
+    font-size: 0.6rem; display: block; margin-bottom: 2px;
   }
   .cd-item .cd-value { color: var(--text-muted); }
+
+  /* ── Guide panels ── */
+  .guide-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  @media (max-width: 800px) { .guide-panels { grid-template-columns: 1fr; } }
+  .guide-panel {
+    background: var(--surface); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg); overflow: hidden;
+  }
+  .guide-panel-header {
+    font-family: var(--mono); font-size: 0.75rem; font-weight: 600;
+    padding: 14px 20px; background: var(--surface-raised);
+    color: var(--accent); text-transform: uppercase; letter-spacing: 0.06em;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .guide-panel-body {
+    padding: 20px; font-size: 0.85rem; line-height: 1.7;
+    color: var(--text-muted); white-space: pre-wrap; word-break: break-word;
+    max-height: 600px; overflow-y: auto;
+  }
+
+  /* ── Onboard events table ── */
+  .events-table { width: 100%; border-collapse: collapse; }
+  .events-table th {
+    font-family: var(--mono); font-size: 0.65rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-dim); text-align: left; padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .events-table td {
+    font-family: var(--mono); font-size: 0.78rem; padding: 12px 16px;
+    border-bottom: 1px solid var(--border-subtle); color: var(--text-muted);
+  }
+  .events-table tr:hover td { background: var(--surface-raised); }
+  .events-table .event-summary { color: var(--text); font-weight: 500; }
+
+  /* ── Empty state ── */
+  .empty-state {
+    text-align: center; padding: 60px 20px;
+    font-family: var(--mono); font-size: 0.85rem; color: var(--text-dim);
+  }
 
   /* ── Scrollbar ── */
   ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -425,10 +398,6 @@
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 
-  /* ── Animations ── */
-  .eval-card {
-    animation: fadeUp 0.3s ease both;
-  }
   @keyframes fadeUp {
     from { opacity: 0; transform: translateY(8px); }
     to { opacity: 1; transform: translateY(0); }
@@ -439,71 +408,54 @@
 
 <div id="loader">
   <h1>SCHEDULED EVAL VIEWER</h1>
-  <div class="file-inputs">
-    <label id="label-results">
-      <span class="label-title">Results</span>
-      <span class="label-file">draft_results.json</span>
-      <input type="file" id="file-results" accept=".json">
-    </label>
-    <label id="label-evals">
-      <span class="label-title">Eval Cases</span>
-      <span class="label-file">draft_canonical_evals.json</span>
-      <input type="file" id="file-evals" accept=".json">
-    </label>
-  </div>
-  <div class="auto-load-hint">or place this file next to the JSON files and they'll load automatically</div>
+  <label id="label-results">
+    <span class="label-title">Load Results</span>
+    <span class="label-file">run.json (from python -m scheduler.eval run)</span>
+    <input type="file" id="file-results" accept=".json">
+  </label>
+  <div class="auto-load-hint">or place this file next to results/run.json and it'll load automatically</div>
 </div>
 
 <div id="app">
   <header>
     <div class="logo">SCHEDULED EVALS</div>
     <div class="stats" id="stats"></div>
-    <div class="filter-bar" id="filters">
-      <button class="filter-btn active" data-filter="all">All</button>
-      <button class="filter-btn" data-filter="pass">Drafted</button>
-      <button class="filter-btn" data-filter="fail">No draft</button>
-    </div>
+    <div class="run-time" id="run-time"></div>
   </header>
-  <div class="eval-list" id="eval-list"></div>
+
+  <div class="tab-bar" id="tab-bar"></div>
+
+  <div id="tab-guides" class="tab-content"></div>
+  <div id="tab-onboard" class="tab-content"></div>
+  <div id="tab-classify" class="tab-content"></div>
+  <div id="tab-draft" class="tab-content"></div>
 </div>
 
 <script>
-let resultsData = null;
-let evalsData = null;
+let data = null;
 
-// Try auto-loading relative paths
 async function tryAutoLoad() {
   try {
-    const [r1, r2] = await Promise.all([
-      fetch('results/draft_results.json'),
-      fetch('draft_canonical_evals.json')
-    ]);
-    if (r1.ok && r2.ok) {
-      resultsData = await r1.json();
-      evalsData = await r2.json();
+    const r = await fetch('results/run.json');
+    if (r.ok) {
+      data = await r.json();
       document.getElementById('label-results').classList.add('loaded');
-      document.getElementById('label-evals').classList.add('loaded');
       render();
     }
   } catch (e) { /* silent */ }
 }
 
-// File input handlers
 document.getElementById('file-results').addEventListener('change', async (e) => {
   const text = await e.target.files[0].text();
-  resultsData = JSON.parse(text);
+  data = JSON.parse(text);
   document.getElementById('label-results').classList.add('loaded');
-  document.getElementById('label-results').querySelector('.label-file').textContent = e.target.files[0].name;
-  if (resultsData && evalsData) render();
+  render();
 });
 
-document.getElementById('file-evals').addEventListener('change', async (e) => {
-  const text = await e.target.files[0].text();
-  evalsData = JSON.parse(text);
-  document.getElementById('label-evals').classList.add('loaded');
-  document.getElementById('label-evals').querySelector('.label-file').textContent = e.target.files[0].name;
-  if (resultsData && evalsData) render();
-});
+function esc(str) {
+  if (!str) return '';
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 
 function extractName(sender) {
   if (!sender) return 'Unknown';
@@ -519,7 +471,16 @@ function formatDate(dateStr) {
   } catch { return dateStr; }
 }
 
-function cleanBody(body) {
+function formatDateShort(dateStr) {
+  if (!dateStr) return '';
+  try {
+    const d = new Date(dateStr);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
+           d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  } catch { return dateStr; }
+}
+
+function clean(body) {
   if (!body) return '';
   return body.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 }
@@ -533,100 +494,248 @@ function render() {
   document.getElementById('loader').style.display = 'none';
   document.getElementById('app').classList.add('visible');
 
-  const evalsById = {};
-  for (const ev of evalsData) evalsById[ev.eval_id] = ev;
+  const meta = data.metadata || {};
+  const guides = data.guides || {};
+  const onboard = data.onboard || [];
+  const classify = data.classify || [];
+  const draft = data.draft || [];
 
-  const merged = resultsData.map(r => ({
-    result: r,
-    evalCase: evalsById[r.eval_id] || null
-  }));
+  // Header stats
+  const classifyMatches = classify.filter(r => r.intent_match !== undefined);
+  const classifyPassed = classifyMatches.filter(r => r.intent_match).length;
+  const draftCount = draft.filter(r => r.draft).length;
 
-  // Stats
-  const total = merged.length;
-  const drafted = merged.filter(m => m.result.draft).length;
-  const noDraft = total - drafted;
   document.getElementById('stats').innerHTML = `
-    <span><span class="stat-value">${total}</span> cases</span>
-    <span><span class="stat-value stat-green">${drafted}</span> drafted</span>
-    <span><span class="stat-value stat-red">${noDraft}</span> no draft</span>
+    <span>Classify: <span class="stat-value stat-green">${classifyPassed}</span>/<span class="stat-value">${classifyMatches.length}</span></span>
+    <span>Drafts: <span class="stat-value stat-green">${draftCount}</span>/<span class="stat-value">${draft.length}</span></span>
+    <span>Onboard: <span class="stat-value">${onboard.length}</span> events</span>
+    <span>Guides: <span class="stat-value">${Object.keys(guides).length}</span></span>
   `;
 
-  // Filters
-  let activeFilter = 'all';
-  document.querySelectorAll('.filter-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      activeFilter = btn.dataset.filter;
-      applyFilter();
-    });
-  });
-
-  function applyFilter() {
-    document.querySelectorAll('.eval-card').forEach(card => {
-      const hasDraft = card.dataset.hasDraft === 'true';
-      if (activeFilter === 'all') card.style.display = '';
-      else if (activeFilter === 'pass') card.style.display = hasDraft ? '' : 'none';
-      else if (activeFilter === 'fail') card.style.display = hasDraft ? 'none' : '';
-    });
+  if (meta.ran_at) {
+    document.getElementById('run-time').textContent = 'Run: ' + formatDate(meta.ran_at);
   }
 
-  // Render cards
-  const list = document.getElementById('eval-list');
-  list.innerHTML = '';
+  // Tabs
+  const tabs = [
+    { id: 'guides', label: 'Guides', count: Object.keys(guides).length },
+    { id: 'onboard', label: 'Onboard', count: onboard.length },
+    { id: 'classify', label: 'Classify', count: classify.length },
+    { id: 'draft', label: 'Draft', count: draft.length },
+  ];
 
-  merged.forEach((m, idx) => {
-    const { result, evalCase } = m;
-    const hasDraft = !!result.draft;
-    const card = document.createElement('div');
-    card.className = 'eval-card';
-    card.dataset.hasDraft = hasDraft;
-    card.style.animationDelay = `${idx * 0.04}s`;
+  const tabBar = document.getElementById('tab-bar');
+  tabBar.innerHTML = '';
+  tabs.forEach((tab, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'tab-btn' + (i === 0 ? ' active' : '');
+    btn.dataset.tab = tab.id;
+    btn.innerHTML = `${tab.label} <span class="tab-count">${tab.count}</span>`;
+    btn.addEventListener('click', () => switchTab(tab.id));
+    tabBar.appendChild(btn);
+  });
 
-    const subject = evalCase ? evalCase.subject : result.thread_id;
-    const intent = result.classification.intent.replace(/_/g, ' ');
-    const confidence = Math.round(result.classification.confidence * 100);
-    const hasInvite = result.draft && result.draft.send_invite;
+  // Render all tabs
+  renderGuides(guides);
+  renderOnboard(onboard);
+  renderClassify(classify);
+  renderDraft(draft);
 
-    card.innerHTML = `
-      <div class="eval-card-header">
-        <div class="eval-status ${hasDraft ? 'pass' : 'fail'}"></div>
-        <span class="eval-id">${result.eval_id}</span>
-        <span class="eval-subject">${escapeHtml(subject)}</span>
-        <div class="eval-badges">
-          <span class="badge badge-intent">${intent}</span>
-          <span class="badge badge-confidence">${confidence}%</span>
-          ${hasInvite ? '<span class="badge badge-invite">invite</span>' : ''}
-        </div>
-        <span class="chevron">&#9654;</span>
+  // Show first tab
+  document.getElementById('tab-guides').classList.add('active');
+}
+
+function switchTab(tabId) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector(`.tab-btn[data-tab="${tabId}"]`).classList.add('active');
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById('tab-' + tabId).classList.add('active');
+}
+
+// ── Guides tab ──
+function renderGuides(guides) {
+  const el = document.getElementById('tab-guides');
+  if (!Object.keys(guides).length) {
+    el.innerHTML = '<div class="empty-state">No guides generated</div>';
+    return;
+  }
+
+  const names = {
+    scheduling_preferences: 'Scheduling Preferences',
+    email_style: 'Email Style',
+  };
+
+  let html = '<div class="guide-panels">';
+  for (const [name, content] of Object.entries(guides)) {
+    if (!content) continue;
+    html += `
+      <div class="guide-panel">
+        <div class="guide-panel-header">${esc(names[name] || name)}</div>
+        <div class="guide-panel-body">${esc(content)}</div>
       </div>
-      <div class="eval-card-body">
-        ${renderThread(evalCase, result)}
-        ${renderClassification(result)}
-        <div class="section-label">Comparison</div>
-        <div class="comparison">
-          ${renderAgentDraft(result)}
-          ${renderGoldenResponse(result)}
+    `;
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+// ── Onboard tab ──
+function renderOnboard(events) {
+  const el = document.getElementById('tab-onboard');
+  if (!events.length) {
+    el.innerHTML = '<div class="empty-state">No calendar events added by onboarding</div>';
+    return;
+  }
+
+  let html = `
+    <table class="events-table">
+      <thead><tr>
+        <th>Summary</th>
+        <th>Start</th>
+        <th>End</th>
+        <th>Description</th>
+      </tr></thead>
+      <tbody>
+  `;
+  for (const ev of events) {
+    html += `<tr>
+      <td class="event-summary">${esc(ev.summary)}</td>
+      <td>${formatDateShort(ev.start)}</td>
+      <td>${formatDateShort(ev.end)}</td>
+      <td>${esc((ev.description || '').substring(0, 120))}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+// ── Classify tab ──
+function renderClassify(results) {
+  const el = document.getElementById('tab-classify');
+  if (!results.length) {
+    el.innerHTML = '<div class="empty-state">No classifier results</div>';
+    return;
+  }
+
+  let html = '';
+  results.forEach((r, idx) => {
+    const hasExpected = r.intent_match !== undefined;
+    const passed = r.intent_match;
+    const statusClass = hasExpected ? (passed ? 'pass' : 'fail') : 'neutral';
+    const intent = r.intent.replace(/_/g, ' ');
+    const confidence = Math.round(r.confidence * 100);
+
+    html += `
+      <div class="eval-card" style="animation-delay: ${idx * 0.04}s">
+        <div class="eval-card-header" onclick="this.parentElement.classList.toggle('open')">
+          <div class="eval-status ${statusClass}"></div>
+          <span class="eval-id">${esc(r.description || r.thread_id)}</span>
+          <span class="eval-subject">${esc(r.subject || '')}</span>
+          <div class="eval-badges">
+            <span class="badge badge-intent">${intent}</span>
+            <span class="badge badge-confidence">${confidence}%</span>
+            ${r.is_sales_email ? '<span class="badge badge-sales">sales</span>' : ''}
+            ${hasExpected ? `<span class="badge ${passed ? 'badge-pass' : 'badge-fail'}">${passed ? 'PASS' : 'FAIL'}</span>` : ''}
+          </div>
+          <span class="chevron">&#9654;</span>
+        </div>
+        <div class="eval-card-body">
+          <div class="classification-detail">
+            <div class="cd-item">
+              <span class="cd-label">Summary</span>
+              <span class="cd-value">${esc(r.summary || '—')}</span>
+            </div>
+            ${r.proposed_times && r.proposed_times.length ? `
+              <div class="cd-item">
+                <span class="cd-label">Proposed Times</span>
+                <span class="cd-value">${r.proposed_times.map(esc).join(', ')}</span>
+              </div>
+            ` : ''}
+            ${r.duration_minutes ? `
+              <div class="cd-item">
+                <span class="cd-label">Duration</span>
+                <span class="cd-value">${r.duration_minutes} min</span>
+              </div>
+            ` : ''}
+            ${hasExpected ? `
+              <div class="cd-item">
+                <span class="cd-label">Expected</span>
+                <span class="cd-value">${esc(r.expected_intent)}</span>
+              </div>
+            ` : ''}
+            ${r.participants && r.participants.length ? `
+              <div class="cd-item">
+                <span class="cd-label">Participants</span>
+                <span class="cd-value">${r.participants.map(esc).join(', ')}</span>
+              </div>
+            ` : ''}
+          </div>
+          ${r.sender ? `
+            <div class="section-label">Email</div>
+            <div class="thread-msg">
+              <div class="msg-header">
+                <span class="msg-sender">${esc(extractName(r.sender))}</span>
+              </div>
+              <div class="msg-body">${esc(clean(r.body))}</div>
+            </div>
+          ` : ''}
         </div>
       </div>
     `;
-
-    card.querySelector('.eval-card-header').addEventListener('click', () => {
-      card.classList.toggle('open');
-    });
-
-    list.appendChild(card);
   });
+  el.innerHTML = html;
 }
 
-function renderThread(evalCase, result) {
-  if (!evalCase || !evalCase.messages || !evalCase.messages.length) {
-    return '<div class="section-label">Thread</div><div style="color:var(--text-dim);font-family:var(--mono);font-size:0.75rem;padding:12px;">No thread data available</div>';
+// ── Draft tab ──
+function renderDraft(results) {
+  const el = document.getElementById('tab-draft');
+  if (!results.length) {
+    el.innerHTML = '<div class="empty-state">No draft results</div>';
+    return;
   }
 
-  const triggerIdx = evalCase.trigger_message_index;
-  const msgs = evalCase.messages;
+  let html = '';
+  results.forEach((r, idx) => {
+    const hasDraft = !!r.draft;
+    const intent = r.classification.intent.replace(/_/g, ' ');
+    const confidence = Math.round(r.classification.confidence * 100);
+    const hasInvite = r.draft && r.draft.send_invite;
 
+    html += `
+      <div class="eval-card" style="animation-delay: ${idx * 0.04}s">
+        <div class="eval-card-header" onclick="this.parentElement.classList.toggle('open')">
+          <div class="eval-status ${hasDraft ? 'pass' : 'fail'}"></div>
+          <span class="eval-id">${esc(r.eval_id)}</span>
+          <span class="eval-subject">${esc(r.subject || '')}</span>
+          <div class="eval-badges">
+            <span class="badge badge-intent">${intent}</span>
+            <span class="badge badge-confidence">${confidence}%</span>
+            ${hasInvite ? '<span class="badge badge-invite">invite</span>' : ''}
+          </div>
+          <span class="chevron">&#9654;</span>
+        </div>
+        <div class="eval-card-body">
+          ${renderDraftThread(r)}
+          ${renderDraftClassification(r)}
+          <div class="section-label">Comparison</div>
+          <div class="comparison">
+            ${renderAgentDraft(r)}
+            ${renderGoldenResponse(r)}
+          </div>
+        </div>
+      </div>
+    `;
+  });
+  el.innerHTML = html;
+}
+
+function renderDraftThread(result) {
+  const msgs = result.messages;
+  if (!msgs || !msgs.length) {
+    return '<div class="section-label">Thread</div><div style="color:var(--text-dim);font-family:var(--mono);font-size:0.75rem;padding:12px;">No thread data</div>';
+  }
+
+  const triggerIdx = result.trigger_message_index;
   let html = '<div class="section-label">Email Thread</div><div class="thread-timeline">';
   msgs.forEach((msg, i) => {
     const isTrigger = i === triggerIdx;
@@ -634,11 +743,11 @@ function renderThread(evalCase, result) {
     html += `
       <div class="thread-msg ${isTrigger ? 'is-trigger' : ''} ${isUser ? 'is-user' : ''}">
         <div class="msg-header">
-          <span class="msg-sender">${escapeHtml(extractName(msg.sender))}</span>
+          <span class="msg-sender">${esc(extractName(msg.sender))}</span>
           <span class="msg-date">${formatDate(msg.date)}</span>
           ${isTrigger ? '<span class="msg-trigger-label">Trigger</span>' : ''}
         </div>
-        <div class="msg-body">${escapeHtml(cleanBody(msg.body))}</div>
+        <div class="msg-body">${esc(clean(msg.body))}</div>
       </div>
     `;
   });
@@ -646,18 +755,18 @@ function renderThread(evalCase, result) {
   return html;
 }
 
-function renderClassification(result) {
+function renderDraftClassification(result) {
   const c = result.classification;
   return `
     <div class="classification-detail">
       <div class="cd-item">
         <span class="cd-label">Summary</span>
-        <span class="cd-value">${escapeHtml(c.summary || '—')}</span>
+        <span class="cd-value">${esc(c.summary || '—')}</span>
       </div>
       ${c.proposed_times && c.proposed_times.length ? `
         <div class="cd-item">
           <span class="cd-label">Proposed Times</span>
-          <span class="cd-value">${c.proposed_times.map(escapeHtml).join(', ')}</span>
+          <span class="cd-value">${c.proposed_times.map(esc).join(', ')}</span>
         </div>
       ` : ''}
       ${c.duration_minutes ? `
@@ -690,8 +799,8 @@ function renderAgentDraft(result) {
     <div class="response-panel agent">
       <div class="response-panel-header">Agent Draft</div>
       <div class="response-panel-body">
-        ${meta ? `<div class="meta">${escapeHtml(meta)}</div>` : ''}
-        ${escapeHtml(cleanBody(d.body))}
+        ${meta ? `<div class="meta">${esc(meta)}</div>` : ''}
+        ${esc(clean(d.body))}
       </div>
     </div>
   `;
@@ -717,16 +826,11 @@ function renderGoldenResponse(result) {
     <div class="response-panel golden">
       <div class="response-panel-header">Golden Response</div>
       <div class="response-panel-body">
-        ${meta ? `<div class="meta">${escapeHtml(meta)}</div>` : ''}
-        ${escapeHtml(cleanBody(g.body))}
+        ${meta ? `<div class="meta">${esc(meta)}</div>` : ''}
+        ${esc(clean(g.body))}
       </div>
     </div>
   `;
-}
-
-function escapeHtml(str) {
-  if (!str) return '';
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 tryAutoLoad();
