@@ -23,6 +23,11 @@ _NOREPLY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_GCAL_SENDER_PATTERN = re.compile(
+    r"^calendar-(notification|server)@google\.com$",
+    re.IGNORECASE,
+)
+
 
 def _extract_email(sender: str) -> str:
     """Extract the bare email address from a 'Name <addr>' string."""
@@ -56,6 +61,10 @@ def is_mass_email(headers: dict[str, str], sender: str) -> bool:
     # Sender patterns
     addr = _extract_email(sender).lower()
     if _NOREPLY_PATTERN.match(addr):
+        return True
+
+    # Google Calendar automated invites/notifications
+    if _GCAL_SENDER_PATTERN.match(addr):
         return True
 
     return False
