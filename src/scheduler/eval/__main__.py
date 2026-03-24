@@ -209,6 +209,7 @@ def run_draft_eval(fixture: dict, thread_ids: list[str] | None = None) -> list[d
             "subject": case.get("subject", trigger.get("subject", "")) if case else trigger.get("subject", ""),
             "messages": thread_msgs,
             "trigger_message_index": trigger_idx,
+            "user_email": user_email,
             "classification": classification,
             "draft": backend.captured_draft,
             "sent": backend.captured_sent,
@@ -278,6 +279,18 @@ def cmd_run(args):
     drafted = sum(1 for r in draft_results if r.get("draft"))
     print(f"  Drafts: {drafted}/{len(draft_results)} produced", file=sys.stderr)
 
+    # Phase 3: LLM judge on draft evals
+    judge_verdicts = []
+    if not getattr(args, "no_judge", False):
+        from scheduler.eval.judge import judge_draft_evals
+        print("Phase 3: Running LLM judge on draft evals...", file=sys.stderr)
+        judge_verdicts = judge_draft_evals(draft_results)
+        # Merge verdicts into draft results
+        verdict_by_id = {v["eval_id"]: v for v in judge_verdicts if "eval_id" in v}
+        for r in draft_results:
+            if r.get("eval_id") in verdict_by_id:
+                r["judge"] = verdict_by_id[r["eval_id"]]
+
     results = {
         "metadata": {
             "fixture": args.fixture,
@@ -287,6 +300,7 @@ def cmd_run(args):
             "n_draft": len(draft_results),
             "n_onboard_events": len(onboard_events),
             "n_guides": len(guides),
+            "n_judge": len(judge_verdicts),
         },
         "guides": guides,
         "onboard": onboard_events,
@@ -426,6 +440,15 @@ def cmd_draft(args):
     fixture = load_fixture(args.fixture)
     results = run_draft_eval(fixture, thread_ids=args.thread_ids)
 
+    # Run LLM judge unless --no-judge
+    if not args.no_judge:
+        from scheduler.eval.judge import judge_draft_evals
+        verdicts = judge_draft_evals(results)
+        verdict_by_id = {v["eval_id"]: v for v in verdicts if "eval_id" in v}
+        for r in results:
+            if r.get("eval_id") in verdict_by_id:
+                r["judge"] = verdict_by_id[r["eval_id"]]
+
     print(json.dumps(results, indent=2))
 
     cases_with_golden = [r for r in results if "golden_response" in r]
@@ -433,11 +456,34 @@ def cmd_draft(args):
         print(f"\n--- Draft eval summary ({len(cases_with_golden)} cases) ---", file=sys.stderr)
         for r in cases_with_golden:
             eval_id = r["eval_id"]
-            draft_body = (r.get("draft") or {}).get("body", "(no draft)")
-            golden_body = r["golden_response"].get("body", "")
-            print(f"\n  {eval_id}:", file=sys.stderr)
-            print(f"    Golden:  {golden_body[:120]}", file=sys.stderr)
-            print(f"    Got:     {draft_body[:120]}", file=sys.stderr)
+            judge = r.get("judge", {})
+            if judge and "verdict" in judge:
+                verdict = judge["verdict"]
+                score = judge.get("score", "?")
+                max_score = judge.get("max_score", 5)
+                summary = judge.get("summary", "")
+                status = f"{'PASS' if verdict == 'PASS' else 'FAIL'}  {score}/{max_score}"
+                print(f"\n  {status}  {eval_id}", file=sys.stderr)
+                # Show which criteria failed
+                for cname, cval in judge.get("criteria", {}).items():
+                    if not cval.get("pass", False):
+                        print(f"         FAIL {cname}: {cval.get('reason', '')}", file=sys.stderr)
+                if summary:
+                    print(f"         {summary}", file=sys.stderr)
+            else:
+                draft_body = (r.get("draft") or {}).get("body", "(no draft)")
+                golden_body = r["golden_response"].get("body", "")
+                print(f"\n  {eval_id}:", file=sys.stderr)
+                print(f"    Golden:  {golden_body[:120]}", file=sys.stderr)
+                print(f"    Got:     {draft_body[:120]}", file=sys.stderr)
+
+        # Overall judge summary
+        judged = [r for r in cases_with_golden if "judge" in r]
+        if judged:
+            passed = sum(1 for r in judged if r["judge"].get("verdict") == "PASS")
+            total_score = sum(r["judge"].get("score", 0) for r in judged)
+            max_total = sum(r["judge"].get("max_score", 5) for r in judged)
+            print(f"\n--- Judge: {passed}/{len(judged)} PASS, {total_score}/{max_total} criteria passed ---", file=sys.stderr)
 
 
 def cmd_guides(args):
@@ -501,6 +547,7 @@ def main():
     run.add_argument("--fixture", required=True, help="Fixture file")
     run.add_argument("--out", default="evals/results/run.json", help="Output results JSON (default: evals/results/run.json)")
     run.add_argument("--lookback-days", type=int, help="Lookback window for onboarding (default: 60)")
+    run.add_argument("--no-judge", action="store_true", help="Skip LLM judge on draft evals")
     run.set_defaults(func=cmd_run)
 
     # record
@@ -524,6 +571,7 @@ def main():
     dft = sub.add_parser("draft", help="Run draft composer on thread(s) from a fixture")
     dft.add_argument("--fixture", required=True, help="Fixture file")
     dft.add_argument("--thread-ids", nargs="*", help="Thread IDs (default: canonical evals)")
+    dft.add_argument("--no-judge", action="store_true", help="Skip LLM judge on draft evals")
     dft.set_defaults(func=cmd_draft)
 
     # guides
