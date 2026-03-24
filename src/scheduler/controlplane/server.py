@@ -657,9 +657,14 @@ def register_session(session_token: str, user_id: str) -> None:
     """
     _cleanup_expired_sessions()
 
+    from scheduler.db import get_user_by_id
+
     creds = load_credentials(user_id)
     gmail = GmailClient(creds)
-    calendar = CalendarClient(creds, config.stash_calendar_name)
+
+    db_user = get_user_by_id(user_id)
+    extra_ids = (db_user.calendar_ids or []) if db_user else []
+    calendar = CalendarClient(creds, config.stash_calendar_name, extra_calendar_ids=extra_ids)
     calendar.get_or_create_stash_calendar()
 
     sessions[session_token] = {
@@ -1295,7 +1300,7 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
     from scheduler.classifier.newsletter import is_mass_email
     from scheduler.db import try_claim_message
 
-    calendar = CalendarClient(creds, config.stash_calendar_name)
+    calendar = CalendarClient(creds, config.stash_calendar_name, extra_calendar_ids=user.calendar_ids or [])
 
     for message_id in new_message_ids:
         # Atomic claim: prevents duplicate processing from concurrent webhooks
@@ -1539,6 +1544,7 @@ def web_settings_get(user: dict = Depends(get_authenticated_user)):
         "stash_branding_enabled": db_user.stash_branding_enabled,
         "reasoning_emails_enabled": db_user.reasoning_emails_enabled,
         "stash_calendar_id": db_user.stash_calendar_id,
+        "calendar_ids": db_user.calendar_ids or [],
         "guides": [
             {"name": g.name, "content": g.content, "updated_at": g.updated_at.isoformat()}
             for g in guides
@@ -1604,6 +1610,42 @@ def web_settings_reasoning_emails(req: WebUpdateReasoningEmailsRequest, user: di
 
     update_reasoning_emails_enabled(user["user_id"], req.enabled)
     return {"reasoning_emails_enabled": req.enabled}
+
+
+@app.get("/web/api/v1/calendars")
+def web_list_calendars(user: dict = Depends(get_authenticated_user)):
+    """List all Google calendars visible to the user, with selection state."""
+    from scheduler.db import get_user_by_id
+
+    db_user = get_user_by_id(user["user_id"])
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    creds = load_credentials(user["user_id"])
+    calendar = CalendarClient(creds, config.stash_calendar_name)
+    selected_ids = set(db_user.calendar_ids or [])
+
+    all_cals = calendar.list_calendars()
+    stash_id = calendar.get_or_create_stash_calendar()
+
+    # Filter out the stash calendar — users shouldn't toggle it
+    return [
+        {**cal, "selected": cal["id"] in selected_ids}
+        for cal in all_cals
+        if cal["id"] != stash_id
+    ]
+
+
+class WebUpdateCalendarsRequest(BaseModel):
+    calendar_ids: list[str]
+
+
+@app.put("/web/api/v1/settings/calendars")
+def web_settings_calendars(req: WebUpdateCalendarsRequest, user: dict = Depends(get_authenticated_user)):
+    from scheduler.db import update_calendar_ids
+
+    update_calendar_ids(user["user_id"], req.calendar_ids)
+    return {"calendar_ids": req.calendar_ids}
 
 
 class WebUpdateGuideRequest(BaseModel):

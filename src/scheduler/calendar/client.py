@@ -51,9 +51,10 @@ class CalendarClient:
     formal calendar invites.
     """
 
-    def __init__(self, credentials, stash_calendar_name: str = "Scheduled Calendar"):
+    def __init__(self, credentials, stash_calendar_name: str = "Scheduled Calendar", extra_calendar_ids: list[str] | None = None):
         self._credentials = credentials
         self._stash_calendar_name = stash_calendar_name
+        self._extra_calendar_ids = extra_calendar_ids or []
         self._service = None
         self._stash_calendar_id = None
         self._user_timezone = None
@@ -109,6 +110,29 @@ class CalendarClient:
         self._stash_calendar_id = new_cal["id"]
         return self._stash_calendar_id
 
+    def list_calendars(self) -> list[dict]:
+        """Return all calendars visible to the user.
+
+        Each entry has 'id', 'summary', and 'primary' (bool).
+        """
+        service = self._get_service()
+        calendars = []
+        page_token = None
+
+        while True:
+            result = service.calendarList().list(pageToken=page_token).execute()
+            for item in result.get("items", []):
+                calendars.append({
+                    "id": item["id"],
+                    "summary": item.get("summary", "(no title)"),
+                    "primary": item.get("primary", False),
+                })
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
+
+        return calendars
+
     def _list_events(
         self, calendar_id: str, time_min: datetime, time_max: datetime
     ) -> list[Event]:
@@ -158,6 +182,11 @@ class CalendarClient:
         if include_primary:
             primary_events = self._list_events("primary", time_min, time_max)
             events.extend(primary_events)
+
+        for cal_id in self._extra_calendar_ids:
+            if cal_id == "primary" or cal_id == stash_id:
+                continue
+            events.extend(self._list_events(cal_id, time_min, time_max))
 
         events.sort(key=lambda e: e.start)
         return events

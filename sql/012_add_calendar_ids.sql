@@ -1,0 +1,1 @@
+ALTER TABLE users ADD COLUMN calendar_ids TEXT[] NOT NULL DEFAULT '{}';

@@ -40,6 +40,7 @@ class UserRow:
     updated_at: datetime
     reasoning_emails_enabled: bool = False
     auth0_sub: str | None = None
+    calendar_ids: list[str] | None = None
 
 
 _USER_ROW_FIELDS.update(f.name for f in fields(UserRow))
@@ -404,6 +405,15 @@ def cleanup_processed_messages(days: int = 7) -> int:
         count = cur.rowcount
         conn.commit()
         return count
+
+
+def update_calendar_ids(user_id: str, calendar_ids: list[str]) -> None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET calendar_ids = %s, updated_at = now() WHERE id = %s",
+            (calendar_ids, user_id),
+        )
+        conn.commit()
 
 
 def disconnect_user(user_id: str) -> None:

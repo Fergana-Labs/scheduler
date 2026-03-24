@@ -7,6 +7,7 @@ import GuideEditor from './GuideEditor';
 import CalendarLink from './CalendarLink';
 import BrandingToggle from './BrandingToggle';
 import ReasoningEmailToggle from './ReasoningEmailToggle';
+import CalendarPicker from './CalendarPicker';
 import DisconnectButton from './DisconnectButton';
 
 interface Guide {
@@ -63,6 +64,8 @@ export default function ReadyState({
           updatedAt={emailGuide.updated_at}
         />
       )}
+
+      <CalendarPicker />
 
       {calendarId && <CalendarLink calendarId={calendarId} />}
 
