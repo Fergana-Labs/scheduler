@@ -104,7 +104,7 @@ export default function SettingsPage() {
             <button
               onClick={() => {
                 clearSession();
-                window.location.href = `${process.env.NEXT_PUBLIC_CONTROL_PLANE_URL}/auth/logout`;
+                window.location.href = '/';
               }}
               className="flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
             >
