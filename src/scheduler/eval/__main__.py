@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 
@@ -118,37 +119,67 @@ def cmd_record(args):
     print(f"Saved fixture to {args.out}", file=sys.stderr)
 
 
+def _load_canonical_classifier_evals() -> list[dict]:
+    """Load canonical classifier eval cases from the JSON file."""
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "evals", "classifier_canonical_evals.json")
+    path = os.path.normpath(path)
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return json.load(f)
+
+
 def cmd_classify(args):
-    """Run the classifier on a thread from the fixture."""
+    """Run the classifier on specific messages from the fixture."""
     from scheduler.classifier.intent import classify_email
     from scheduler.eval.backends import load_fixture
 
     fixture = load_fixture(args.fixture)
 
-    # Group messages by thread
+    # Index messages by id and group by thread
+    messages_by_id: dict[str, dict] = {}
     threads: dict[str, list[dict]] = {}
     for msg in fixture["messages"]:
+        messages_by_id[msg["id"]] = msg
         threads.setdefault(msg["thread_id"], []).append(msg)
 
-    thread_ids = _resolve_thread_ids(args)
-    if not thread_ids:
-        print("No thread IDs specified. Add them to eval/config.py or pass --thread-ids.", file=sys.stderr)
-        sys.exit(1)
+    # Build list of (message_to_classify, eval_metadata) pairs
+    eval_targets: list[tuple[dict, dict | None]] = []
+
+    if args.thread_ids:
+        # Ad-hoc mode: classify latest message in each thread, no expected values
+        for tid in args.thread_ids:
+            thread_msgs = threads.get(tid, [])
+            if not thread_msgs:
+                print(f"Thread {tid} not found in fixture, skipping", file=sys.stderr)
+                continue
+            eval_targets.append((thread_msgs[-1], None))
+    else:
+        # Canonical mode: load eval cases with message_id targeting
+        canonical = _load_canonical_classifier_evals()
+        if not canonical:
+            print("No canonical evals found and no --thread-ids specified.", file=sys.stderr)
+            sys.exit(1)
+        for case in canonical:
+            msg_id = case.get("message_id")
+            if msg_id and msg_id in messages_by_id:
+                eval_targets.append((messages_by_id[msg_id], case))
+            else:
+                # Fallback: latest message in thread
+                thread_msgs = threads.get(case["thread_id"], [])
+                if thread_msgs:
+                    eval_targets.append((thread_msgs[-1], case))
+                else:
+                    print(f"Message {msg_id} / thread {case['thread_id']} not in fixture, skipping", file=sys.stderr)
 
     results = []
-    for tid in thread_ids:
-        messages = threads.get(tid, [])
-        if not messages:
-            print(f"Thread {tid} not found in fixture, skipping", file=sys.stderr)
-            continue
-
-        latest = messages[-1]
-        c = classify_email(latest["subject"], latest["body"], latest["sender"])
-        case = _get_eval_case(tid)
+    for msg, case in eval_targets:
+        c = classify_email(msg["subject"], msg["body"], msg["sender"])
 
         result = {
-            "thread_id": tid,
-            "description": case.description if case else "",
+            "thread_id": msg["thread_id"],
+            "message_id": msg["id"],
+            "description": case.get("description", "") if case else "",
             "intent": c.intent.value,
             "confidence": c.confidence,
             "summary": c.summary,
@@ -159,10 +190,12 @@ def cmd_classify(args):
         }
 
         if case:
-            result["expected_intent"] = case.expected_intent
-            result["intent_match"] = c.intent.value == case.expected_intent
-            result["expected_is_sales"] = case.expected_is_sales
-            result["is_sales_match"] = c.is_sales_email == case.expected_is_sales
+            expected_intent = case["expected_classification"].lower()
+            result["expected_intent"] = expected_intent
+            result["intent_match"] = c.intent.value == expected_intent
+            expected_is_sales = case.get("expected_is_sales", False)
+            result["expected_is_sales"] = expected_is_sales
+            result["is_sales_match"] = c.is_sales_email == expected_is_sales
 
         results.append(result)
 
