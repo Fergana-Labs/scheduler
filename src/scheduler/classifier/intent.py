@@ -221,6 +221,128 @@ def classify_email(
     )
 
 
+@dataclass
+class InviteVerificationResult:
+    """Result of verifying whether a sent message still confirms a pending invite."""
+
+    action: str  # "send" | "update" | "skip"
+    reason: str
+    updated_attendee_emails: list[str] | None = None
+    updated_event_summary: str | None = None
+    updated_event_start: str | None = None  # ISO 8601
+    updated_event_end: str | None = None  # ISO 8601
+    updated_add_google_meet: bool | None = None
+    updated_location: str | None = None
+
+
+def verify_sent_message_for_invite(
+    sent_message_body: str,
+    sent_message_sender: str,
+    thread_messages: list[dict],
+    pending_invite: Any,
+) -> InviteVerificationResult:
+    """Verify whether a user's sent message still confirms a pending calendar invite.
+
+    Compares the sent message against the pending invite details and the thread
+    context. Returns whether to send the invite as-is, update it, or skip it.
+    """
+    client = _get_anthropic_client()
+
+    system_prompt = (
+        "You are verifying whether a sent email still confirms a proposed calendar invite.\n\n"
+        "You are given:\n"
+        "1. A pending calendar invite proposal (attendees, time, summary, location)\n"
+        "2. The full email thread history\n"
+        "3. The message the user just sent\n\n"
+        "Your job: decide whether the user's sent message confirms, modifies, or cancels "
+        "the proposed meeting.\n\n"
+        "Return a single JSON object with these fields:\n"
+        "{\n"
+        '  "action": "send" | "update" | "skip",\n'
+        '  "reason": string explaining your decision,\n'
+        '  "updated_attendee_emails": list of strings | null,\n'
+        '  "updated_event_summary": string | null,\n'
+        '  "updated_event_start": string (ISO 8601) | null,\n'
+        '  "updated_event_end": string (ISO 8601) | null,\n'
+        '  "updated_add_google_meet": boolean | null,\n'
+        '  "updated_location": string | null\n'
+        "}\n\n"
+        "Actions:\n"
+        '- "send": The sent message confirms the meeting as proposed. No changes needed.\n'
+        '- "update": The sent message confirms a meeting but details changed (different time, '
+        "attendees, location, summary, etc.). Populate the updated_* fields with the new values. "
+        "Only include fields that changed — leave others null. For updated_attendee_emails, "
+        "provide the FULL list of attendee emails (not just added/removed ones).\n"
+        '- "skip": The sent message declines, cancels, changes the topic, or does not confirm '
+        "any meeting. The invite should NOT be sent.\n\n"
+        "Be conservative: if there is any ambiguity about whether the user is confirming the "
+        "meeting, choose skip. It is much better to not send an invite than to send an unwanted one.\n\n"
+        "Only return the JSON object, no prose."
+    )
+
+    thread_section = ""
+    if thread_messages:
+        thread_section = "--- Thread history (oldest first) ---\n"
+        for msg in thread_messages:
+            date_str = msg.get("date", "")
+            date_line = f" ({date_str})" if date_str else ""
+            thread_section += f"From: {msg['sender']}{date_line}\n{msg['body']}\n\n"
+        thread_section += "--- End of thread history ---\n\n"
+
+    attendees_str = ", ".join(pending_invite.attendee_emails)
+    location_str = pending_invite.location or "(none)"
+
+    user_content = (
+        "Verify whether this sent message confirms the proposed calendar invite.\n\n"
+        f"PENDING INVITE PROPOSAL:\n"
+        f"  Attendees: {attendees_str}\n"
+        f"  Summary: {pending_invite.event_summary}\n"
+        f"  Start: {pending_invite.event_start.isoformat()}\n"
+        f"  End: {pending_invite.event_end.isoformat()}\n"
+        f"  Location: {location_str}\n"
+        f"  Google Meet: {pending_invite.add_google_meet}\n\n"
+        f"{thread_section}"
+        f"SENT MESSAGE (from {sent_message_sender}):\n"
+        f"{sent_message_body}\n"
+    )
+
+    try:
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=512,
+            temperature=0,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text").strip()
+
+        # Strip markdown code fences if present
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1]
+        if text.endswith("```"):
+            text = text.rsplit("```", 1)[0]
+
+        data: dict = json.loads(text.strip())
+    except Exception:
+        # Safe fallback: never send an invite on error
+        return InviteVerificationResult(action="skip", reason="verification failed due to error")
+
+    action = data.get("action", "skip")
+    if action not in ("send", "update", "skip"):
+        action = "skip"
+
+    return InviteVerificationResult(
+        action=action,
+        reason=data.get("reason", ""),
+        updated_attendee_emails=data.get("updated_attendee_emails"),
+        updated_event_summary=data.get("updated_event_summary"),
+        updated_event_start=data.get("updated_event_start"),
+        updated_event_end=data.get("updated_event_end"),
+        updated_add_google_meet=data.get("updated_add_google_meet"),
+        updated_location=data.get("updated_location"),
+    )
+
+
 def classify_message_for_event(message: str, sender: str) -> dict | None:
     """Classify whether a message (text, Slack, etc.) creates a new event.
 

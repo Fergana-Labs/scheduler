@@ -38,24 +38,23 @@ def _format_time(dt: datetime) -> str:
     return dt.strftime("%-I:%M %p")
 
 
-def send_reasoning_email(
-    user_email: str,
-    thread_id: str,
-    subject: str,
+def build_reasoning_body(
     classification: ClassificationResult,
-    gmail: GmailClient,
-    calendar: CalendarClient,
-) -> None:
-    """Insert a reasoning message into the thread (no notification)."""
-    # Determine relevant dates from proposed_times
+    events: list,
+    invite_proposal: dict | None = None,
+) -> str:
+    """Build the reasoning email body. Pure function — no API calls.
+
+    Args:
+        classification: The classifier result for this thread.
+        events: Calendar events for the relevant date range. Each event
+            must have .start (datetime), .end (datetime), .summary (str).
+        invite_proposal: Optional dict with pending invite details to show.
+    """
     dates = _parse_dates(classification.proposed_times)
     day_start = min(dates).replace(hour=0, minute=0, second=0, microsecond=0)
     day_end = max(dates).replace(hour=23, minute=59, second=59, microsecond=0) + timedelta(seconds=1)
 
-    # Fetch calendar events for those days
-    events = calendar.get_all_events(day_start, day_end, include_primary=True)
-
-    # Build the email body
     date_label = day_start.strftime("%B %-d, %Y")
     if day_start.date() != (day_end - timedelta(seconds=1)).date():
         date_label = f"{day_start.strftime('%B %-d')} – {(day_end - timedelta(seconds=1)).strftime('%B %-d, %Y')}"
@@ -68,18 +67,63 @@ def send_reasoning_email(
     else:
         events_lines = "  No other meetings"
 
-    body = (
+    invite_section = ""
+    if invite_proposal:
+        start_str = invite_proposal.get("event_start", "")
+        end_str = invite_proposal.get("event_end", "")
+        try:
+            start_dt = dateutil_parser.parse(start_str)
+            end_dt = dateutil_parser.parse(end_str)
+            time_label = f"{_format_time(start_dt)} – {_format_time(end_dt)} on {start_dt.strftime('%B %-d')}"
+        except (ValueError, OverflowError):
+            time_label = f"{start_str} – {end_str}"
+        meet_line = " (with Google Meet)" if invite_proposal.get("add_google_meet") else ""
+        attendees = invite_proposal.get("attendee_emails", [])
+        attendees_label = ", ".join(attendees) or "(none)"
+        location = invite_proposal.get("location", "")
+        location_line = f"  - Where: {location}\n" if location else ""
+        invite_section = (
+            f"\n"
+            f"Calendar invite:\n"
+            f"  When you send this draft, Scheduled will create a calendar invite:\n"
+            f"  - What: {invite_proposal.get('event_summary', '')}\n"
+            f"  - With: {attendees_label}\n"
+            f"  - When: {time_label}{meet_line}\n"
+            f"{location_line}"
+            f"  An agent will verify your sent message still confirms the meeting\n"
+            f"  before sending the invite.\n"
+        )
+
+    return (
         f"Scheduled drafted a reply in this thread.\n"
         f"\n"
         f"Why: {classification.summary}\n"
         f"\n"
         f"Your meetings on {date_label}:\n"
         f"{events_lines}\n"
+        f"{invite_section}"
         f"\n"
         f"— Scheduled"
     )
 
-    # Insert directly into Gmail — no notification triggered
+
+def send_reasoning_email(
+    user_email: str,
+    thread_id: str,
+    subject: str,
+    classification: ClassificationResult,
+    gmail: GmailClient,
+    calendar: CalendarClient,
+    invite_proposal: dict | None = None,
+) -> None:
+    """Insert a reasoning message into the thread (no notification)."""
+    dates = _parse_dates(classification.proposed_times)
+    day_start = min(dates).replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = max(dates).replace(hour=23, minute=59, second=59, microsecond=0) + timedelta(seconds=1)
+
+    events = calendar.get_all_events(day_start, day_end, include_primary=True)
+    body = build_reasoning_body(classification, events, invite_proposal=invite_proposal)
+
     msg_id = gmail.insert_message(
         thread_id=thread_id,
         to=user_email,

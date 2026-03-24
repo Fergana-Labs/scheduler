@@ -1181,7 +1181,7 @@ def _compose_draft_for_runtime(
     calendar: CalendarClient,
     autopilot: bool,
     user_email: str = "",
-) -> str | None:
+) -> dict | None:
     runtime = config.agent_runtime.strip().lower()
 
     if runtime == "local":
@@ -1233,6 +1233,82 @@ def onboarding_run(request: Request, background_tasks: BackgroundTasks):
 
 # --- Gmail webhook ---
 
+
+
+def _handle_sent_message_for_invite(user_id: str, email, gmail: GmailClient, calendar: CalendarClient) -> None:
+    """Check if a user-sent message should trigger a pending calendar invite."""
+    from scheduler.classifier.intent import verify_sent_message_for_invite
+    from scheduler.db import get_pending_invite_by_thread, delete_pending_invite, update_pending_invite
+
+    pending = get_pending_invite_by_thread(user_id, email.thread_id)
+    if not pending:
+        return
+
+    logger.info("gmail_webhook: sent message in thread %s has pending invite, verifying", email.thread_id)
+
+    # Fetch thread context (messages before this one)
+    thread_messages = []
+    try:
+        for t_email in gmail.get_thread(email.thread_id):
+            if t_email.id == email.id:
+                break
+            thread_messages.append({"sender": t_email.sender, "body": t_email.body, "date": t_email.date.isoformat()})
+    except Exception:
+        logger.warning("gmail_webhook: failed to fetch thread for invite verification")
+
+    result = verify_sent_message_for_invite(
+        sent_message_body=email.body,
+        sent_message_sender=email.sender,
+        thread_messages=thread_messages,
+        pending_invite=pending,
+    )
+
+    logger.info("gmail_webhook: invite verification: action=%s reason=%s", result.action, result.reason)
+
+    if result.action == "skip":
+        delete_pending_invite(pending.id)
+        logger.info("gmail_webhook: deleted pending invite %s (skipped)", pending.id)
+        return
+
+    if result.action == "update":
+        update_pending_invite(
+            pending.id,
+            attendee_emails=result.updated_attendee_emails,
+            event_summary=result.updated_event_summary,
+            event_start=datetime.fromisoformat(result.updated_event_start) if result.updated_event_start else None,
+            event_end=datetime.fromisoformat(result.updated_event_end) if result.updated_event_end else None,
+            add_google_meet=result.updated_add_google_meet,
+            location=result.updated_location,
+        )
+        # Apply updates to pending directly to avoid a re-fetch
+        if result.updated_attendee_emails:
+            pending.attendee_emails = result.updated_attendee_emails
+        if result.updated_event_summary:
+            pending.event_summary = result.updated_event_summary
+        if result.updated_event_start:
+            pending.event_start = datetime.fromisoformat(result.updated_event_start)
+        if result.updated_event_end:
+            pending.event_end = datetime.fromisoformat(result.updated_event_end)
+        if result.updated_add_google_meet is not None:
+            pending.add_google_meet = result.updated_add_google_meet
+        if result.updated_location is not None:
+            pending.location = result.updated_location
+
+    # action == "send" or "update" — create the calendar invite
+    try:
+        calendar.create_invite_event(
+            summary=pending.event_summary,
+            start=pending.event_start,
+            end=pending.event_end,
+            attendee_emails=pending.attendee_emails,
+            location=pending.location,
+            add_google_meet=pending.add_google_meet,
+        )
+        logger.info("gmail_webhook: created invite event for thread %s", email.thread_id)
+    except Exception:
+        logger.exception("gmail_webhook: failed to create invite event for thread %s", email.thread_id)
+
+    delete_pending_invite(pending.id)
 
 
 def _process_new_messages(user_id: str, email_address: str, history_id: str) -> None:
@@ -1292,9 +1368,9 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
         try:
             email = gmail.get_email(message_id)
 
-            # Skip messages sent by the user — we only process incoming emails
+            # User-sent messages: check if there's a pending invite for this thread
             if email.sender and email_address in email.sender:
-                logger.info("gmail_webhook: message %s is from the user, skipping", message_id)
+                _handle_sent_message_for_invite(user_id, email, gmail, calendar)
                 continue
 
             # Skip emails from Scheduled's own sending addresses (e.g. reasoning emails)
@@ -1348,7 +1424,7 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
                 classification.confidence,
             )
 
-            draft_id = _compose_draft_for_runtime(
+            compose_result = _compose_draft_for_runtime(
                 user_id=user_id,
                 email=email,
                 classification=classification,
@@ -1357,10 +1433,34 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
                 autopilot=user.autopilot_enabled,
                 user_email=email_address,
             )
+
+            compose_result = compose_result or {}
+            draft_id = compose_result.get("draft_id")
+            invite_proposal = compose_result.get("invite_proposal")
+
             if draft_id is None:
                 logger.info("gmail_webhook: thread for message %s already resolved, no draft created", message_id)
             else:
                 logger.info("gmail_webhook: created draft %s for message %s", draft_id, message_id)
+
+                # Store pending invite if the composer proposed one
+                if invite_proposal:
+                    from scheduler.db import create_pending_invite
+                    try:
+                        create_pending_invite(
+                            user_id=user_id,
+                            thread_id=email.thread_id,
+                            attendee_emails=invite_proposal["attendee_emails"],
+                            event_summary=invite_proposal["event_summary"],
+                            event_start=datetime.fromisoformat(invite_proposal["event_start"]),
+                            event_end=datetime.fromisoformat(invite_proposal["event_end"]),
+                            add_google_meet=invite_proposal.get("add_google_meet", False),
+                            location=invite_proposal.get("location", ""),
+                        )
+                        logger.info("gmail_webhook: created pending invite for thread %s", email.thread_id)
+                    except Exception:
+                        logger.exception("gmail_webhook: failed to create pending invite for thread %s", email.thread_id)
+
                 if user.reasoning_emails_enabled:
                     try:
                         from scheduler.lifecycle.reasoning import send_reasoning_email
@@ -1371,6 +1471,7 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
                             classification=classification,
                             gmail=gmail,
                             calendar=calendar,
+                            invite_proposal=invite_proposal,
                         )
                     except Exception:
                         logger.exception("gmail_webhook: failed to send reasoning email for message %s", message_id)

@@ -344,7 +344,7 @@ def launch_draft_composer_in_sandbox(
     *,
     autopilot: bool,
     user_email: str = "",
-) -> str | None:
+) -> dict | None:
     """Spin up an e2b sandbox and run the draft composer agent inside it."""
     session_token = _register_sandbox_session(user_id)
     sandbox = _create_sandbox(
@@ -379,11 +379,14 @@ def launch_draft_composer_in_sandbox(
             logger.error("e2b drafting sandbox exited with code %d", result.exit_code)
             raise RuntimeError(f"e2b drafting sandbox failed (exit code {result.exit_code})")
 
-        # Parse structured output: "DRAFT_RESULT:<draft_id>"
+        # Parse structured output: "COMPOSE_RESULT:<json>"
         for line in reversed(result.stdout.strip().splitlines()):
-            if line.startswith("DRAFT_RESULT:"):
-                draft_id = line.removeprefix("DRAFT_RESULT:")
-                return draft_id or None
+            if line.startswith("COMPOSE_RESULT:"):
+                raw = line.removeprefix("COMPOSE_RESULT:")
+                try:
+                    return json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    return None
         return None
     finally:
         try:
