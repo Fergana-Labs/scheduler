@@ -1109,7 +1109,7 @@ def _run_onboarding_all(user_id: str) -> None:
 
 def _run_onboarding_for_runtime(user_id: str) -> None:
     """Dispatch onboarding to the configured runtime."""
-    from scheduler.db import update_system_enabled
+    from scheduler.db import update_onboarding_status, update_system_enabled
 
     with _onboarding_lock:
         if _onboarding_status.get(user_id, {}).get("status") == "running":
@@ -1123,11 +1123,15 @@ def _run_onboarding_for_runtime(user_id: str) -> None:
                 "style": "running",
             },
         }
+
+    update_onboarding_status(user_id, "running")
+
     try:
         runtime = config.agent_runtime.strip().lower()
         if runtime == "local":
             _run_onboarding_all(user_id)
             update_system_enabled(user_id, True)
+            update_onboarding_status(user_id, "done")
             logger.info("onboarding: system enabled for user=%s", user_id)
             with _onboarding_lock:
                 _onboarding_status.pop(user_id, None)
@@ -1179,6 +1183,7 @@ def _run_onboarding_for_runtime(user_id: str) -> None:
                 logger.exception("onboarding[e2b]: failed to set up gmail watch for user=%s", user_id)
 
             update_system_enabled(user_id, True)
+            update_onboarding_status(user_id, "done")
             logger.info("onboarding[e2b]: system enabled for user=%s", user_id)
 
             with _onboarding_lock:
@@ -1188,6 +1193,7 @@ def _run_onboarding_for_runtime(user_id: str) -> None:
         raise RuntimeError(f"Unsupported AGENT_RUNTIME: {config.agent_runtime}")
     except Exception as e:
         logger.exception("onboarding: failed for user=%s", user_id)
+        update_onboarding_status(user_id, "failed")
         with _onboarding_lock:
             _onboarding_status[user_id] = {"status": "failed", "error": str(e)}
 
@@ -1506,26 +1512,41 @@ async def gmail_webhook(request: Request, background_tasks: BackgroundTasks):
 
 
 @app.get("/web/api/v1/onboarding/status")
-def web_onboarding_status(user: dict = Depends(get_authenticated_user)):
+def web_onboarding_status(
+    user: dict = Depends(get_authenticated_user),
+    background_tasks: BackgroundTasks = None,
+):
     from scheduler.db import get_user_by_id
 
     db_user = get_user_by_id(user["user_id"])
     connected = db_user is not None and db_user.google_refresh_token is not None
 
     if connected:
-        ready = _is_onboarded(user["user_id"], stash_calendar_id=db_user.stash_calendar_id if db_user else None)
+        ready = _is_onboarded(user["user_id"], stash_calendar_id=db_user.stash_calendar_id)
     else:
         ready = False
 
     result = {"ready": ready, "connected": connected}
-    if not ready:
-        status_entry = _onboarding_status.get(user["user_id"])
+    if not ready and connected:
+        user_id = user["user_id"]
+        status_entry = _onboarding_status.get(user_id)
+
         if status_entry:
+            # Live in-memory status available (normal case)
             if status_entry.get("status") == "failed":
                 result["failed"] = True
                 result["error"] = status_entry.get("error", "Unknown error")
             if "agents" in status_entry:
                 result["agents"] = status_entry["agents"]
+        elif db_user.onboarding_status == "running":
+            # DB says running but no in-memory status — server restarted mid-onboarding.
+            # Auto-retry by kicking off onboarding again.
+            logger.info("onboarding: detected interrupted run for user=%s, auto-retrying", user_id)
+            background_tasks.add_task(_run_onboarding_for_runtime, user_id)
+        elif db_user.onboarding_status == "failed":
+            result["failed"] = True
+            result["error"] = "Onboarding failed. Please try again."
+
     return result
 
 

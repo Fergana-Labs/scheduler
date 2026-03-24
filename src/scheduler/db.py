@@ -41,6 +41,7 @@ class UserRow:
     reasoning_emails_enabled: bool = False
     auth0_sub: str | None = None
     calendar_ids: list[str] | None = None
+    onboarding_status: str | None = None
 
 
 _USER_ROW_FIELDS.update(f.name for f in fields(UserRow))
@@ -416,6 +417,15 @@ def update_calendar_ids(user_id: str, calendar_ids: list[str]) -> None:
         conn.commit()
 
 
+def update_onboarding_status(user_id: str, status: str | None) -> None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET onboarding_status = %s, updated_at = now() WHERE id = %s",
+            (status, user_id),
+        )
+        conn.commit()
+
+
 def disconnect_user(user_id: str) -> None:
     """Revoke Google tokens and delete guides, but keep the user row."""
     with _conn() as conn, conn.cursor() as cur:
@@ -428,6 +438,7 @@ def disconnect_user(user_id: str) -> None:
                 access_token_expires_at = NULL,
                 gmail_history_id = NULL,
                 stash_calendar_id = NULL,
+                onboarding_status = NULL,
                 updated_at = now()
             WHERE id = %s
             """,
