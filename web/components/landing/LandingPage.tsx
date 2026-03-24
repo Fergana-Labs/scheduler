@@ -4,7 +4,6 @@ import Header from './Header';
 import Footer from './Footer';
 import Hero from './Hero';
 import OpenSource from './OpenSource';
-import BlogSection from './BlogSection';
 
 export default function LandingPage() {
   return (
@@ -12,7 +11,6 @@ export default function LandingPage() {
       <Header />
       <Hero />
       <OpenSource />
-      <BlogSection />
       <Footer />
     </div>
   );
