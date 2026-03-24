@@ -218,7 +218,7 @@ export default function Hero() {
       {/* Two-column hero — scrolls naturally with the page */}
       <div className="relative z-10 mx-auto flex w-full max-w-6xl flex-col gap-10 sm:gap-11 lg:min-h-screen lg:flex-row lg:items-center lg:gap-20 lg:pb-28">
         {/* Left: headline + CTA */}
-        <div className="flex-1">
+        <div className="flex-1 text-center lg:text-left">
           <h1 className="font-[family-name:var(--font-playfair)] text-[clamp(2.5rem,10vw,4.5rem)] font-normal italic leading-[1.05] tracking-tight text-gray-900 sm:text-5xl lg:text-7xl xl:text-8xl">
             Just hit
             <br />
