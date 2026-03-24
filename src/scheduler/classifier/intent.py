@@ -304,3 +304,142 @@ def classify_message_for_event(message: str, sender: str) -> dict | None:
         return None
 
 
+def classify_chat_message(
+    messages: str,
+    sender: str,
+    platform: str = "chat",
+    context_messages: list[dict] | None = None,
+) -> ClassificationResult:
+    """Classify whether a chat message (or batch) is about scheduling.
+
+    Uses Haiku for cost efficiency at chat volume. The prompt is tuned for
+    informal, short chat messages rather than emails.
+
+    Args:
+        messages: The new message text (may be multiple concatenated lines
+            from a buffered batch).
+        sender: Display name of the sender.
+        platform: Source platform (e.g. "whatsapp", "instagram", "linkedin").
+        context_messages: Prior messages in the room for context, each with
+            'sender' and 'body' keys.
+
+    Returns:
+        ClassificationResult with the intent and extracted details.
+    """
+    client = _get_anthropic_client()
+
+    system_prompt = (
+        "You are a classifier that decides whether a chat message needs a scheduling draft reply.\n\n"
+        "Given a chat conversation and the latest message(s), decide: does this need the user to "
+        "take a scheduling action (propose times, accept/decline, reschedule, etc.)? "
+        "If yes, intent is \"needs_draft\". If no, intent is \"doesnt_need_draft\".\n\n"
+        "Chat messages are short and informal — people often split thoughts across multiple messages. "
+        "Consider the batch as a whole, not each line individually.\n\n"
+        f"Platform: {platform}. "
+        + (
+            "LinkedIn messages tend to be more formal and business-oriented. "
+            if platform == "linkedin"
+            else "Chat messages are casual and conversational. "
+        )
+        + "\n\n"
+        "needs_draft examples:\n"
+        "- \"Hey, wanna grab coffee this week?\"\n"
+        "- \"Can we do a call tomorrow?\"\n"
+        "- \"Are you free on Thursday?\"\n"
+        "- \"Let's reschedule our meeting\"\n"
+        "- \"I need to cancel Friday's lunch\"\n\n"
+        "doesnt_need_draft examples:\n"
+        "- \"Thanks!\"\n"
+        "- \"Sounds good\"\n"
+        "- \"Check out this link\"\n"
+        "- \"Happy birthday!\"\n"
+        "- Random chitchat or memes\n"
+        "- Group chat banter\n\n"
+        "You MUST respond with a single JSON object only, no prose, matching this schema:\n"
+        "{\n"
+        '  "intent": "needs_draft" | "doesnt_need_draft",\n'
+        '  "confidence": number between 0 and 1,\n'
+        '  "summary": string,\n'
+        '  "proposed_times": list of strings,\n'
+        '  "participants": list of strings,\n'
+        '  "duration_minutes": integer minutes or null,\n'
+        '  "is_sales_email": false\n'
+        "}\n"
+        "Set is_sales_email to false for chat messages (sales outreach is an email concept).\n"
+        "If the message doesnt_need_draft, leave the other fields as your best-effort defaults."
+    )
+
+    # Build context section
+    context_section = ""
+    if context_messages:
+        context_section = "--- Prior conversation ---\n"
+        for msg in context_messages:
+            context_section += f"{msg['sender']}: {msg['body']}\n"
+        context_section += "--- End of prior conversation ---\n\n"
+
+    user_content = (
+        "Classify the following chat message(s) for scheduling intent.\n\n"
+        f"{context_section}"
+        f"NEW MESSAGE(S) from {sender}:\n{messages}\n"
+    )
+
+    try:
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20250415",
+            max_tokens=512,
+            temperature=0,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        text = ""
+        for block in resp.content:
+            if getattr(block, "type", None) == "text":
+                text += block.text
+
+        # Strip markdown code fences if present
+        text = text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1]
+        if text.endswith("```"):
+            text = text.rsplit("```", 1)[0]
+        text = text.strip()
+
+        data: _EmailClassificationJSON = json.loads(text)
+    except Exception:
+        return ClassificationResult(
+            intent=SchedulingIntent.DOESNT_NEED_DRAFT,
+            confidence=0.0,
+            summary="",
+            proposed_times=[],
+            participants=[],
+            duration_minutes=None,
+            is_sales_email=False,
+        )
+
+    intent_str = data.get("intent", "doesnt_need_draft")
+    try:
+        intent = SchedulingIntent(intent_str)
+    except ValueError:
+        intent = SchedulingIntent.DOESNT_NEED_DRAFT
+
+    confidence = float(data.get("confidence", 0.0))
+    summary = data.get("summary") or ""
+    proposed_times = list(data.get("proposed_times") or [])
+    participants = list(data.get("participants") or [])
+    duration_raw = data.get("duration_minutes", None)
+    duration_minutes: int | None
+    try:
+        duration_minutes = int(duration_raw) if duration_raw is not None else None
+    except (TypeError, ValueError):
+        duration_minutes = None
+
+    return ClassificationResult(
+        intent=intent,
+        confidence=confidence,
+        summary=summary,
+        proposed_times=proposed_times,
+        participants=participants,
+        duration_minutes=duration_minutes,
+        is_sales_email=False,
+    )
+

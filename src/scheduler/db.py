@@ -42,6 +42,10 @@ class UserRow:
     auth0_sub: str | None = None
     calendar_ids: list[str] | None = None
     onboarding_status: str | None = None
+    matrix_homeserver_url: str | None = None
+    matrix_access_token: str | None = None
+    matrix_user_id: str | None = None
+    matrix_sync_enabled: bool = False
 
 
 _USER_ROW_FIELDS.update(f.name for f in fields(UserRow))
@@ -378,3 +382,131 @@ def disconnect_user(user_id: str) -> None:
             (user_id,),
         )
         conn.commit()
+
+
+# --- Pending Replies (Chat) ---
+
+
+@dataclass
+class PendingReplyRow:
+    id: str
+    user_id: str
+    platform: str
+    room_id: str
+    sender_name: str
+    conversation_context: list | dict | None
+    proposed_reply: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+def create_pending_reply(
+    user_id: str,
+    platform: str,
+    room_id: str,
+    sender_name: str,
+    proposed_reply: str,
+    conversation_context: list | dict | None = None,
+) -> PendingReplyRow:
+    """Create a new pending reply for user review."""
+    import json as _json
+
+    context_json = _json.dumps(conversation_context) if conversation_context else None
+
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO pending_replies
+                (user_id, platform, room_id, sender_name, conversation_context, proposed_reply)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING *
+            """,
+            (user_id, platform, room_id, sender_name, context_json, proposed_reply),
+        )
+        row = cur.fetchone()
+        cols = [desc[0] for desc in cur.description]
+        conn.commit()
+        return PendingReplyRow(**dict(zip(cols, row)))
+
+
+def get_pending_replies(user_id: str, status: str = "pending") -> list[PendingReplyRow]:
+    """Get all pending replies for a user, filtered by status."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM pending_replies WHERE user_id = %s AND status = %s ORDER BY created_at DESC",
+            (user_id, status),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return []
+        cols = [desc[0] for desc in cur.description]
+        return [PendingReplyRow(**dict(zip(cols, row))) for row in rows]
+
+
+def get_pending_reply_by_id(reply_id: str) -> PendingReplyRow | None:
+    """Get a single pending reply by ID."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM pending_replies WHERE id = %s", (reply_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in cur.description]
+        return PendingReplyRow(**dict(zip(cols, row)))
+
+
+def approve_pending_reply(reply_id: str) -> PendingReplyRow | None:
+    """Mark a pending reply as approved."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE pending_replies SET status = 'approved', updated_at = now()
+            WHERE id = %s
+            RETURNING *
+            """,
+            (reply_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in cur.description]
+        conn.commit()
+        return PendingReplyRow(**dict(zip(cols, row)))
+
+
+def dismiss_pending_reply(reply_id: str) -> PendingReplyRow | None:
+    """Mark a pending reply as dismissed."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE pending_replies SET status = 'dismissed', updated_at = now()
+            WHERE id = %s
+            RETURNING *
+            """,
+            (reply_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in cur.description]
+        conn.commit()
+        return PendingReplyRow(**dict(zip(cols, row)))
+
+
+def update_pending_reply(reply_id: str, new_text: str) -> PendingReplyRow | None:
+    """Update the proposed reply text of a pending reply."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE pending_replies SET proposed_reply = %s, updated_at = now()
+            WHERE id = %s
+            RETURNING *
+            """,
+            (new_text, reply_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in cur.description]
+        conn.commit()
+        return PendingReplyRow(**dict(zip(cols, row)))

@@ -103,11 +103,56 @@ async def _watch_renewal_loop():
         await asyncio.sleep(_WATCH_RENEWAL_INTERVAL)
 
 
+async def _matrix_watcher_loop():
+    """Background loop: run Matrix sync for users with matrix_sync_enabled."""
+    await asyncio.sleep(10)  # let server finish starting
+    from scheduler.db import get_all_user_ids, get_user_by_id
+
+    while True:
+        try:
+            user_ids = await asyncio.to_thread(get_all_user_ids)
+            for uid in user_ids:
+                user = await asyncio.to_thread(get_user_by_id, uid)
+                if not user:
+                    continue
+                # Check if user has Matrix columns (added by migration 015)
+                homeserver = getattr(user, "matrix_homeserver_url", None)
+                access_token = getattr(user, "matrix_access_token", None)
+                matrix_user_id = getattr(user, "matrix_user_id", None)
+                sync_enabled = getattr(user, "matrix_sync_enabled", False)
+                if not (sync_enabled and homeserver and access_token and matrix_user_id):
+                    continue
+                if uid in _matrix_watcher_tasks and not _matrix_watcher_tasks[uid].done():
+                    continue
+
+                logger.info("matrix_watcher_loop: starting watcher for user=%s", uid)
+                from scheduler.matrix.watcher import MatrixWatcher
+
+                watcher = MatrixWatcher(
+                    user_id=uid,
+                    homeserver_url=homeserver,
+                    access_token=access_token,
+                    matrix_user_id=matrix_user_id,
+                )
+                _matrix_watcher_tasks[uid] = asyncio.create_task(watcher.start())
+        except Exception:
+            logger.exception("matrix_watcher_loop: failed")
+        await asyncio.sleep(60)  # check for new users every 60s
+
+
+_matrix_watcher_tasks: dict[str, asyncio.Task] = {}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(_watch_renewal_loop())
+    matrix_task = asyncio.create_task(_matrix_watcher_loop())
     yield
     task.cancel()
+    matrix_task.cancel()
+    for wt in _matrix_watcher_tasks.values():
+        wt.cancel()
+    _matrix_watcher_tasks.clear()
 
 
 app = FastAPI(title="Scheduler Control Plane", lifespan=lifespan)
@@ -1677,3 +1722,163 @@ def gmail_watch_renew():
 
     result = renew_all_watches()
     return result
+
+
+# --- Matrix / Chat API ---
+
+
+class MatrixSettingsPayload(BaseModel):
+    homeserver_url: str
+    access_token: str
+    matrix_user_id: str
+    sync_enabled: bool = True
+
+
+@app.post("/web/api/v1/settings/matrix")
+def web_settings_matrix(
+    payload: MatrixSettingsPayload,
+    user: dict = Depends(get_authenticated_user),
+):
+    """Save Matrix/Beeper credentials for a user."""
+    from scheduler.db import _conn
+
+    user_id = user["user_id"]
+
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE users SET
+                matrix_homeserver_url = %s,
+                matrix_access_token = %s,
+                matrix_user_id = %s,
+                matrix_sync_enabled = %s,
+                updated_at = now()
+            WHERE id = %s
+            """,
+            (
+                payload.homeserver_url,
+                payload.access_token,
+                payload.matrix_user_id,
+                payload.sync_enabled,
+                user_id,
+            ),
+        )
+        conn.commit()
+
+    logger.info("web_settings_matrix: saved credentials for user=%s", user_id)
+    return {"status": "saved"}
+
+
+@app.get("/web/api/v1/chat/pending")
+def web_chat_pending(user: dict = Depends(get_authenticated_user)):
+    """List pending chat replies for the authenticated user."""
+    from scheduler.db import get_pending_replies
+
+    replies = get_pending_replies(user["user_id"])
+    return [
+        {
+            "id": str(r.id),
+            "platform": r.platform,
+            "room_id": r.room_id,
+            "sender_name": r.sender_name,
+            "conversation_context": r.conversation_context,
+            "proposed_reply": r.proposed_reply,
+            "status": r.status,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+        }
+        for r in replies
+    ]
+
+
+@app.post("/web/api/v1/chat/pending/{reply_id}/approve")
+async def web_chat_approve(
+    reply_id: str,
+    user: dict = Depends(get_authenticated_user),
+):
+    """Approve a pending reply and send it via Matrix."""
+    from scheduler.db import approve_pending_reply, get_pending_reply_by_id, get_user_by_id
+
+    reply = get_pending_reply_by_id(reply_id)
+    if not reply or str(reply.user_id) != user["user_id"]:
+        raise HTTPException(status_code=404, detail="Pending reply not found")
+
+    if reply.status != "pending":
+        raise HTTPException(status_code=400, detail=f"Reply already {reply.status}")
+
+    # Send the message via Matrix
+    db_user = get_user_by_id(user["user_id"])
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    homeserver = getattr(db_user, "matrix_homeserver_url", None)
+    access_token = getattr(db_user, "matrix_access_token", None)
+    matrix_user_id = getattr(db_user, "matrix_user_id", None)
+
+    if not (homeserver and access_token and matrix_user_id):
+        raise HTTPException(status_code=400, detail="Matrix credentials not configured")
+
+    from scheduler.matrix.client import MatrixClient
+
+    client = MatrixClient(homeserver, access_token, matrix_user_id)
+    try:
+        event_id = await client.send_message(reply.room_id, reply.proposed_reply)
+    finally:
+        await client.disconnect()
+
+    if not event_id:
+        raise HTTPException(status_code=502, detail="Failed to send message via Matrix")
+
+    approved = approve_pending_reply(reply_id)
+    return {
+        "status": "approved",
+        "event_id": event_id,
+        "id": str(approved.id) if approved else reply_id,
+    }
+
+
+@app.post("/web/api/v1/chat/pending/{reply_id}/dismiss")
+def web_chat_dismiss(
+    reply_id: str,
+    user: dict = Depends(get_authenticated_user),
+):
+    """Dismiss a pending reply."""
+    from scheduler.db import dismiss_pending_reply, get_pending_reply_by_id
+
+    reply = get_pending_reply_by_id(reply_id)
+    if not reply or str(reply.user_id) != user["user_id"]:
+        raise HTTPException(status_code=404, detail="Pending reply not found")
+
+    if reply.status != "pending":
+        raise HTTPException(status_code=400, detail=f"Reply already {reply.status}")
+
+    dismissed = dismiss_pending_reply(reply_id)
+    return {"status": "dismissed", "id": str(dismissed.id) if dismissed else reply_id}
+
+
+class EditReplyPayload(BaseModel):
+    proposed_reply: str
+
+
+@app.put("/web/api/v1/chat/pending/{reply_id}")
+def web_chat_edit(
+    reply_id: str,
+    payload: EditReplyPayload,
+    user: dict = Depends(get_authenticated_user),
+):
+    """Edit the proposed reply text of a pending reply."""
+    from scheduler.db import get_pending_reply_by_id, update_pending_reply
+
+    reply = get_pending_reply_by_id(reply_id)
+    if not reply or str(reply.user_id) != user["user_id"]:
+        raise HTTPException(status_code=404, detail="Pending reply not found")
+
+    if reply.status != "pending":
+        raise HTTPException(status_code=400, detail=f"Reply already {reply.status}")
+
+    updated = update_pending_reply(reply_id, payload.proposed_reply)
+    return {
+        "status": "updated",
+        "id": str(updated.id) if updated else reply_id,
+        "proposed_reply": updated.proposed_reply if updated else payload.proposed_reply,
+    }

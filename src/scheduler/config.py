@@ -110,6 +110,18 @@ class Config:
             "POSTMARK_BOT_EMAIL", "bot@tryscheduled.com"
         )
     )
+    matrix_homeserver_url: str = field(
+        default_factory=lambda: os.environ.get("MATRIX_HOMESERVER_URL", "")
+    )
+    matrix_access_token: str = field(
+        default_factory=lambda: os.environ.get("MATRIX_ACCESS_TOKEN", "")
+    )
+    matrix_user_id: str = field(
+        default_factory=lambda: os.environ.get("MATRIX_USER_ID", "")
+    )
+    matrix_sync_enabled: bool = field(
+        default_factory=lambda: os.environ.get("MATRIX_SYNC_ENABLED", "false").lower() == "true"
+    )
 
 
 config = Config()
