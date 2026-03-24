@@ -159,7 +159,18 @@ def cmd_classify(args):
 
     results = []
     for msg, case in eval_targets:
-        c = classify_email(msg["subject"], msg["body"], msg["sender"])
+        thread_msgs = threads.get(msg["thread_id"], [])
+        msg_idx = next((i for i, m in enumerate(thread_msgs) if m["id"] == msg["id"]), len(thread_msgs))
+        prior = [
+            {"sender": m["sender"], "body": m["body"], "date": m.get("date", "")}
+            for m in thread_msgs[:msg_idx]
+        ]
+
+        c = classify_email(
+            msg["subject"], msg["body"], msg["sender"],
+            thread_messages=prior,
+            recipient=msg.get("recipient", ""), cc=msg.get("cc", ""),
+        )
 
         result = {
             "thread_id": msg["thread_id"],
@@ -249,7 +260,15 @@ def cmd_draft(args):
 
     results = []
     for trigger, thread_msgs, trigger_idx, case in eval_targets:
-        c = classify_email(trigger["subject"], trigger["body"], trigger["sender"])
+        prior = [
+            {"sender": m["sender"], "body": m["body"], "date": m.get("date", "")}
+            for m in thread_msgs[:trigger_idx]
+        ]
+        c = classify_email(
+            trigger["subject"], trigger["body"], trigger["sender"],
+            thread_messages=prior,
+            recipient=trigger.get("recipient", ""), cc=trigger.get("cc", ""),
+        )
         classification = {
             "intent": c.intent.value,
             "confidence": c.confidence,

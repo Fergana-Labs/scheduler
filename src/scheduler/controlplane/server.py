@@ -1371,7 +1371,26 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
                 logger.info("gmail_webhook: message %s is a mass email/newsletter, skipping", message_id)
                 continue
 
-            classification = classify_email(email.subject, email.body, email.sender)
+            # Fetch full thread for classifier context
+            thread_messages = []
+            try:
+                thread_emails = gmail.get_thread(email.thread_id)
+                for t_email in thread_emails:
+                    if t_email.id == email.id:
+                        break
+                    thread_messages.append({
+                        "sender": t_email.sender,
+                        "body": t_email.body,
+                        "date": t_email.date.isoformat(),
+                    })
+            except Exception:
+                logger.warning("gmail_webhook: failed to fetch thread %s for context, classifying without", email.thread_id)
+
+            classification = classify_email(
+                email.subject, email.body, email.sender,
+                thread_messages=thread_messages,
+                recipient=email.recipient, cc=email.cc,
+            )
 
             if classification.intent == SchedulingIntent.NOT_SCHEDULING:
                 logger.info("gmail_webhook: message %s is not scheduling-related, skipping", message_id)

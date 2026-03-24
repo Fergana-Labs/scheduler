@@ -28,9 +28,17 @@ def snapshot_thread(thread_id: str) -> dict:
             "snippet": m.snippet,
         })
 
-    # Classify the latest message
+    # Classify the latest message with full thread context
     latest = messages[-1]
-    classification = classify_email(latest.subject, latest.body, latest.sender)
+    prior = [
+        {"sender": m.sender, "body": m.body, "date": m.date.isoformat()}
+        for m in messages[:-1]
+    ]
+    classification = classify_email(
+        latest.subject, latest.body, latest.sender,
+        thread_messages=prior,
+        recipient=latest.recipient, cc=latest.cc,
+    )
 
     return {
         "thread_id": thread_id,

@@ -76,16 +76,25 @@ def _get_anthropic_client() -> Anthropic:
     return Anthropic(api_key=config.anthropic_api_key)
 
 
-def classify_email(subject: str, body: str, sender: str) -> ClassificationResult:
+def classify_email(
+    subject: str,
+    body: str,
+    sender: str,
+    thread_messages: list[dict] | None = None,
+    recipient: str = "",
+    cc: str = "",
+) -> ClassificationResult:
     """Classify whether an email is about scheduling a meeting.
-
-    Uses Claude to analyze the email content and determine if the sender
-    is asking the user to schedule something.
 
     Args:
         subject: Email subject line.
-        body: Email body text.
+        body: Email body text (the latest message to classify).
         sender: Sender's email address.
+        thread_messages: Prior messages in the thread (oldest first), each with
+            'sender', 'body', and optionally 'date' keys. Gives the classifier
+            full conversation context.
+        recipient: To field (who the email is addressed to).
+        cc: CC field.
 
     Returns:
         ClassificationResult with the intent and extracted details.
@@ -94,11 +103,11 @@ def classify_email(subject: str, body: str, sender: str) -> ClassificationResult
 
     system_prompt = (
         "You are a classifier for scheduling-related emails. "
-        "Given an email subject, body, and sender, you must determine whether "
-        "the email is about scheduling a meeting, and if so, extract structured details.\n\n"
-        "IMPORTANT: The email may contain quoted replies from earlier in the thread. "
-        "Only classify based on the NEW message from the sender — ignore any quoted text "
-        "from previous messages (lines starting with > or below a 'On ... wrote:' line).\n\n"
+        "Given an email subject, body, sender, and the prior thread history, "
+        "you must determine whether the email is about scheduling a meeting, "
+        "and if so, extract structured details.\n\n"
+        "Focus your classification on the LATEST message, but use the thread history "
+        "to understand context (e.g. what was previously discussed, proposed, or agreed to).\n\n"
         "Valid intents:\n"
         "- not_scheduling: Email is not about scheduling at all.\n"
         "- requesting_meeting: Someone wants to meet with the user.\n"
@@ -123,13 +132,36 @@ def classify_email(subject: str, body: str, sender: str) -> ClassificationResult
         "Multi-day events (conferences, retreats, offsites, summits, multi-day workshops, etc.) "
         "are NOT scheduling requests — classify them as \"not_scheduling\". We only handle "
         "single meetings/calls, not multi-day commitments.\n\n"
+        "Group announcements and broadcast emails are NOT scheduling requests — classify them "
+        "as \"not_scheduling\". Signs of a group announcement include: the email is addressed "
+        "to a group (\"Hi Founders\", \"Hi everyone\", \"Hi team\"), the user is BCC'd or not "
+        "in the To/CC fields, the sender is informing a group about an event rather than "
+        "personally requesting the user to meet, or the email is a newsletter/community update. "
+        "These are one-to-many communications, not personal scheduling requests.\n\n"
         "If the email is not about scheduling, set intent to \"not_scheduling\" and leave\n"
         "the other fields as your best-effort defaults."
     )
 
+    # Build thread history section
+    thread_section = ""
+    if thread_messages:
+        thread_section = "--- Thread history (oldest first) ---\n"
+        for msg in thread_messages:
+            date_str = msg.get("date", "")
+            date_line = f" ({date_str})" if date_str else ""
+            thread_section += f"From: {msg['sender']}{date_line}\n{msg['body']}\n\n"
+        thread_section += "--- End of thread history ---\n\n"
+
+    recipient_line = f"To: {recipient}\n" if recipient else ""
+    cc_line = f"CC: {cc}\n" if cc else ""
+
     user_content = (
         "Classify the following email for scheduling intent.\n\n"
+        f"{thread_section}"
+        f"LATEST MESSAGE (classify this):\n"
         f"Sender: {sender}\n"
+        f"{recipient_line}"
+        f"{cc_line}"
         f"Subject: {subject}\n\n"
         f"Body:\n{body}\n"
     )
