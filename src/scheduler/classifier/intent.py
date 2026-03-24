@@ -119,6 +119,9 @@ def classify_email(subject: str, body: str, sender: str) -> ClassificationResult
         "cold outreach, product/service pitches, partnership proposals, demo requests, or any email "
         "where the sender is trying to get a sales meeting. Do NOT flag replies to the user's own "
         "outreach as sales. If in doubt, set false.\n\n"
+        "Multi-day events (conferences, retreats, offsites, summits, multi-day workshops, etc.) "
+        "are NOT scheduling requests — classify them as \"not_scheduling\". We only handle "
+        "single meetings/calls, not multi-day commitments.\n\n"
         "If the email is not about scheduling, set intent to \"not_scheduling\" and leave\n"
         "the other fields as your best-effort defaults."
     )
