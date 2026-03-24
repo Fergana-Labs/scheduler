@@ -741,12 +741,6 @@ class CreateDraftRequest(BaseModel):
     cc: str = ""
     subject: str
     body: str
-    send_invite: bool = False
-    invite_attendee_email: str | None = None
-    invite_event_summary: str | None = None
-    invite_event_start: str | None = None
-    invite_event_end: str | None = None
-    invite_add_google_meet: bool = False
 
 
 class SendEmailRequest(BaseModel):
@@ -820,7 +814,7 @@ def gmail_message(message_id: str, session: dict = Depends(get_session)):
 @app.post("/api/v1/gmail/draft")
 def gmail_draft(req: CreateDraftRequest, session: dict = Depends(get_session)):
     gmail: GmailClient = session["gmail"]
-    from scheduler.db import create_pending_invite, get_user_by_id
+    from scheduler.db import get_user_by_id
 
     user = get_user_by_id(session["user_id"])
     body = req.body
@@ -834,25 +828,6 @@ def gmail_draft(req: CreateDraftRequest, session: dict = Depends(get_session)):
     draft_id = gmail.create_draft(
         thread_id=req.thread_id, to=req.to, subject=req.subject, body=body, content_type=content_type, cc=req.cc
     )
-
-    if req.send_invite:
-        if not all([
-            req.invite_attendee_email,
-            req.invite_event_summary,
-            req.invite_event_start,
-            req.invite_event_end,
-        ]):
-            raise HTTPException(status_code=400, detail="Missing invite fields")
-
-        create_pending_invite(
-            user_id=session["user_id"],
-            thread_id=req.thread_id,
-            attendee_email=req.invite_attendee_email,
-            event_summary=req.invite_event_summary,
-            event_start=datetime.fromisoformat(req.invite_event_start),
-            event_end=datetime.fromisoformat(req.invite_event_end),
-            add_google_meet=req.invite_add_google_meet,
-        )
 
     return {"draft_id": draft_id}
 
@@ -1317,57 +1292,9 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
         try:
             email = gmail.get_email(message_id)
 
-            # For messages sent by the user: check if this is a sent invite draft
+            # Skip messages sent by the user — we only process incoming emails
             if email.sender and email_address in email.sender:
-                from scheduler.db import delete_pending_invite, get_pending_invite_by_thread
-
-                invite = get_pending_invite_by_thread(user_id, email.thread_id)
-                if not invite:
-                    logger.info("gmail_webhook: message %s is from the user, skipping", message_id)
-                    continue
-
-                invite_age_hours = (datetime.now(timezone.utc) - invite.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 3600
-
-                # Skip stale invites (>24h old) — user likely forgot about them
-                if invite_age_hours > 24:
-                    logger.info(
-                        "gmail_webhook: pending invite for thread %s is %.1fh old, expired — deleting",
-                        email.thread_id,
-                        invite_age_hours,
-                    )
-                    delete_pending_invite(str(invite.id))
-                    continue
-
-                # Classify whether the sent message still confirms the meeting
-                from scheduler.classifier.intent import classify_sent_message_confirms_invite
-
-                confirms = classify_sent_message_confirms_invite(email.body, invite.event_summary)
-                if not confirms:
-                    logger.info(
-                        "gmail_webhook: message %s in thread %s does not confirm the meeting, deleting pending invite",
-                        message_id,
-                        email.thread_id,
-                    )
-                    delete_pending_invite(str(invite.id))
-                    continue
-
-                logger.info(
-                    "gmail_webhook: message %s confirms invite for thread %s, creating calendar event",
-                    message_id,
-                    email.thread_id,
-                )
-                try:
-                    event_id = calendar.create_invite_event(
-                        summary=invite.event_summary,
-                        start=invite.event_start,
-                        end=invite.event_end,
-                        attendee_email=invite.attendee_email,
-                        add_google_meet=invite.add_google_meet,
-                    )
-                    delete_pending_invite(str(invite.id))
-                    logger.info("gmail_webhook: created invite event %s for thread %s", event_id, email.thread_id)
-                except Exception:
-                    logger.exception("gmail_webhook: failed to create invite event for thread %s", email.thread_id)
+                logger.info("gmail_webhook: message %s is from the user, skipping", message_id)
                 continue
 
             # Skip emails from Scheduled's own sending addresses (e.g. reasoning emails)

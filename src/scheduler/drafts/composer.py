@@ -98,7 +98,7 @@ class LocalDraftBackend:
         body = args["body"]
         content_type = "plain"
 
-        from scheduler.db import create_pending_invite, get_user_by_id
+        from scheduler.db import get_user_by_id
 
         user = get_user_by_id(self._user_id)
         if user and user.stash_branding_enabled:
@@ -115,17 +115,6 @@ class LocalDraftBackend:
             content_type=content_type,
             cc=args.get("cc", ""),
         )
-
-        if args.get("send_invite"):
-            create_pending_invite(
-                user_id=self._user_id,
-                thread_id=args["thread_id"],
-                attendee_email=args["invite_attendee_email"],
-                event_summary=args["invite_event_summary"],
-                event_start=datetime.fromisoformat(args["invite_event_start"]),
-                event_end=datetime.fromisoformat(args["invite_event_end"]),
-                add_google_meet=args.get("invite_add_google_meet", False),
-            )
 
         return {"draft_id": draft_id}
 
@@ -270,22 +259,13 @@ class DraftComposer:
 
         @tool(
             "create_draft",
-            "Create a draft reply in Gmail with the composed response. "
-            "Set send_invite=true to automatically create a calendar invite when the user sends this draft. "
-            "When send_invite is true, you must also provide invite_attendee_email, invite_event_summary, "
-            "invite_event_start, and invite_event_end. Set invite_add_google_meet=true to attach a Google Meet link.",
+            "Create a draft reply in Gmail with the composed response.",
             {
                 "thread_id": str,
                 "to": str,
                 "cc": str,
                 "subject": str,
                 "body": str,
-                "send_invite": bool,
-                "invite_attendee_email": str,
-                "invite_event_summary": str,
-                "invite_event_start": str,
-                "invite_event_end": str,
-                "invite_add_google_meet": bool,
             },
         )
         async def create_draft(args):
@@ -338,7 +318,7 @@ class DraftComposer:
             "You are a scheduling draft composer.\n\n"
             + datetime_line
             + f"The user's timezone is {user_timezone}. All times you propose — including "
-            "invite_event_start/invite_event_end AND add_calendar_event start/end — MUST be in the "
+            "add_calendar_event start/end — MUST be in the "
             "user's local timezone with the offset included. "
             "For example, if the user is in America/Los_Angeles, 2pm is '2026-03-20T14:00:00-07:00', "
             "NOT '2026-03-20T21:00:00' (that would be 9pm local).\n\n"
@@ -374,27 +354,12 @@ class DraftComposer:
                 "creating a draft. The ONLY exception is group meetings (3+ participants including the user) — "
                 "for group meetings, use create_draft instead because the user may need to coordinate with "
                 "multiple people before committing. For 1-on-1 meetings, always use send_email.\n\n"
-                "When your reply proposes a specific meeting time, set send_invite=true on create_draft and "
-                "fill in the invite fields (invite_attendee_email, invite_event_summary, "
-                "invite_event_start, invite_event_end). This will automatically send a calendar invite when "
-                "the user sends the draft. When you set send_invite=true, mention in the email body that you're "
-                "sending a calendar invite (e.g. 'I've sent over a calendar invite as well.'). "
-                "If the meeting is virtual or no physical location is specified, set invite_add_google_meet=true "
-                "to attach a Google Meet link to the invite and mention the Meet link in your reply.\n\n"
                 "IMPORTANT: If the thread is already fully resolved (step 2), do NOT create a draft or send an email. "
                 "Simply stop.\n\n"
                 if self._autopilot
                 else
                 "Create a natural-sounding draft reply using create_draft. "
-                "When you are satisfied with the draft, call create_draft exactly once.\n"
-                "If your draft proposes a specific meeting time, set send_invite=true on create_draft "
-                "and fill in the invite fields (invite_attendee_email, invite_event_summary, "
-                "invite_event_start, invite_event_end). This will automatically send a calendar invite "
-                "when the user sends the draft. Only do this when a concrete time is being proposed. "
-                "When you set send_invite=true, mention in the email body that you're sending a calendar invite "
-                "(e.g. 'I've sent over a calendar invite as well.'). "
-                "If the meeting is virtual or no physical location is specified, set invite_add_google_meet=true "
-                "to attach a Google Meet link to the invite and mention the Meet link in your reply.\n\n"
+                "When you are satisfied with the draft, call create_draft exactly once.\n\n"
                 "IMPORTANT: If the thread is already fully resolved (step 2), do NOT call create_draft. "
                 "Simply stop without creating a draft.\n\n"
             )
