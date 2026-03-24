@@ -12,6 +12,10 @@ Scopes needed:
 import json
 import os
 
+# Google may return extra scopes (e.g. "openid") beyond what we requested.
+# oauthlib treats this scope mismatch as an error by default. Suppress it.
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -64,7 +68,13 @@ def run_oauth_flow() -> Credentials:
     }
     flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
 
-    creds = flow.run_local_server(port=8080, redirect_uri_trailing_slash=False)
+    # prompt="consent" forces Google to return a refresh_token even if the user
+    # previously authorized this app (otherwise Google omits it on re-auth).
+    creds = flow.run_local_server(
+        port=8080,
+        redirect_uri_trailing_slash=False,
+        prompt="consent",
+    )
     return creds
 
 

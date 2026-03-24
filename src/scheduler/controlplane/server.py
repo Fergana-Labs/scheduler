@@ -1064,7 +1064,7 @@ def _run_onboarding_all(user_id: str) -> None:
     from scheduler.guides.backends import LocalGuideBackend
     from scheduler.guides.preferences import run_preferences_agent
     from scheduler.guides.style import run_style_agent
-    from scheduler.onboarding.agent import _run_onboarding_async as _run_backfill
+    from scheduler.onboarding.agent import _run_backfill_async as _run_backfill
     from scheduler.onboarding.backends import LocalBackend
 
     creds = load_credentials(user_id)

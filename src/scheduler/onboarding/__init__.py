@@ -6,7 +6,7 @@ see scheduler.sandbox.onboarding.
 
 import anyio
 
-from scheduler.onboarding.agent import _run_onboarding_async as _run_backfill
+from scheduler.onboarding.agent import _run_backfill_async as _run_backfill
 from scheduler.onboarding.backends import LocalBackend
 
 from scheduler.auth.google_auth import get_credentials

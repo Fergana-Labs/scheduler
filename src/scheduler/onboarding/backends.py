@@ -13,7 +13,7 @@ from scheduler.calendar.client import CalendarClient, Event
 from scheduler.gmail.client import GmailClient
 
 
-class OnboardingBackend(Protocol):
+class BackfillBackend(Protocol):
     """Interface that both local and sandbox backends satisfy."""
 
     def search_emails(self, query: str, max_results: int = 50) -> dict: ...

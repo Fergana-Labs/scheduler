@@ -81,6 +81,31 @@ export E2B_TEMPLATE_ID=scheduler-agents
 
 If `E2B_TEMPLATE_ID` is unset, the code falls back to runtime provisioning inside a fresh sandbox.
 
+## Evals
+
+Eval fixtures and golden data live in a separate private repo because they contain real confidential data from Henry's personal email:
+
+```bash
+cd ~/projects
+git clone https://github.com/Fergana-Labs/scheduler-evals.git
+```
+
+The main repo has symlinks in `evals/` and `eval/fixtures/` pointing to `../scheduler-evals`. Once both repos are cloned side by side, everything just works.
+
+```bash
+# Record a fresh fixture
+python -m scheduler.eval record --out ../scheduler-evals/fixtures/baseline.json
+
+# Run classifier evals
+python -m scheduler.eval classify --fixture eval/fixtures/baseline.json
+
+# Run draft evals
+python -m scheduler.eval draft --fixture eval/fixtures/baseline.json
+
+# Run guide-writer evals
+python -m scheduler.eval guides --fixture eval/fixtures/baseline.json
+```
+
 ## License
 
 MIT

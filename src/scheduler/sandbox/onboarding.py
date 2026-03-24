@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 
 import anyio
 
-from scheduler.onboarding.agent import _run_onboarding_async as _run_backfill
+from scheduler.onboarding.agent import _run_backfill_async as _run_backfill
 from scheduler.guides.preferences import run_preferences_agent
 from scheduler.guides.style import run_style_agent
 from scheduler.sandbox.api_client import ControlPlaneClient

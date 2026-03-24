@@ -30,6 +30,7 @@ def _serialize_email(email) -> dict:
         "thread_id": email.thread_id,
         "sender": email.sender,
         "recipient": email.recipient,
+        "cc": email.cc,
         "subject": email.subject,
         "body": email.body,
         "date": email.date.isoformat(),
@@ -44,6 +45,7 @@ def _serialize_event(event) -> dict:
         "start": event.start.isoformat(),
         "end": event.end.isoformat(),
         "description": event.description,
+        "source": event.source,
     }
 
 

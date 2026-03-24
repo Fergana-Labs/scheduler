@@ -1,5 +1,4 @@
-"""Onboarding agent
-"""
+"""Calendar backfill agent — searches Gmail history and populates the stash calendar."""
 
 from __future__ import annotations
 
@@ -22,13 +21,13 @@ from claude_agent_sdk import (
 from scheduler.claude_runtime import is_api_error_result, nested_claude_session
 
 if TYPE_CHECKING:
-    from scheduler.onboarding.backends import OnboardingBackend
+    from scheduler.onboarding.backends import BackfillBackend
 
 
 logger = logging.getLogger(__name__)
 
 
-ONBOARDING_SYSTEM_PROMPT = """\
+BACKFILL_SYSTEM_PROMPT = """\
 You are an onboarding agent for a scheduling assistant. Your job is to search \
 through the user's Gmail history from the last {lookback_days} days and find \
 commitments — meetings, calls, dinners, events, etc. — that the user has \
@@ -61,7 +60,7 @@ the major commitments, stop.
 """
 
 
-def _build_tools(backend: OnboardingBackend):
+def _build_tools(backend: BackfillBackend):
     """Build Agent SDK tools backed by the given backend."""
 
     events_added = {"count": 0}
@@ -136,12 +135,12 @@ def _build_tools(backend: OnboardingBackend):
     )
 
 
-async def _run_onboarding_async(backend: OnboardingBackend, lookback_days: int):
-    """Async implementation of the onboarding agent."""
+async def _run_backfill_async(backend: BackfillBackend, lookback_days: int):
+    """Async implementation of the calendar backfill agent."""
     today = datetime.now()
     window_start = today - timedelta(days=lookback_days)
 
-    system_prompt = ONBOARDING_SYSTEM_PROMPT.format(
+    system_prompt = BACKFILL_SYSTEM_PROMPT.format(
         lookback_days=lookback_days,
         today=today.strftime("%Y-%m-%d"),
         window_start=window_start.strftime("%Y-%m-%d"),
@@ -180,6 +179,6 @@ async def _run_onboarding_async(backend: OnboardingBackend, lookback_days: int):
                         print(f"Agent summary: {message.result}")
 
 
-def run_onboarding_agent(backend: OnboardingBackend, lookback_days: int):
-    """Run the onboarding agent with the given backend."""
-    anyio.run(_run_onboarding_async, backend, lookback_days)
+def run_backfill_agent(backend: BackfillBackend, lookback_days: int):
+    """Run the calendar backfill agent with the given backend."""
+    anyio.run(_run_backfill_async, backend, lookback_days)

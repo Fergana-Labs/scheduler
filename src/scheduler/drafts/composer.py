@@ -322,7 +322,7 @@ class DraftComposer:
 
         return all_tools, draft_result
 
-    def compose_and_create_draft(self, email: Any, classification: "ClassificationResult" | dict) -> str | None:
+    def compose_and_create_draft(self, email: Any, classification: "ClassificationResult" | dict, current_datetime: str | None = None) -> str | None:
         system_prompt = self._build_system_prompt()
         tools, draft_result = self._build_tools()
         server = create_sdk_mcp_server("draft-tools", tools=tools)
@@ -330,9 +330,12 @@ class DraftComposer:
 
         user_timezone = self._backend.get_user_timezone()
 
+        datetime_line = f"The current date and time is {current_datetime}.\n\n" if current_datetime else ""
+
         prompt = (
             "You are a scheduling draft composer.\n\n"
-            f"The user's timezone is {user_timezone}. All times you propose and all "
+            + datetime_line
+            + f"The user's timezone is {user_timezone}. All times you propose and all "
             "invite_event_start/invite_event_end values MUST include this timezone offset. "
             "For example, if the user is in America/New_York, use '2026-03-20T15:00:00-04:00' "
             "not '2026-03-20T15:00:00'.\n\n"
