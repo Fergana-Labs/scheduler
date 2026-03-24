@@ -38,25 +38,23 @@ def _format_time(dt: datetime) -> str:
     return dt.strftime("%-I:%M %p")
 
 
-def send_reasoning_email(
-    user_email: str,
-    thread_id: str,
-    subject: str,
+def build_reasoning_body(
     classification: ClassificationResult,
-    gmail: GmailClient,
-    calendar: CalendarClient,
+    events: list,
     invite_proposal: dict | None = None,
-) -> None:
-    """Insert a reasoning message into the thread (no notification)."""
-    # Determine relevant dates from proposed_times
+) -> str:
+    """Build the reasoning email body. Pure function — no API calls.
+
+    Args:
+        classification: The classifier result for this thread.
+        events: Calendar events for the relevant date range. Each event
+            must have .start (datetime), .end (datetime), .summary (str).
+        invite_proposal: Optional dict with pending invite details to show.
+    """
     dates = _parse_dates(classification.proposed_times)
     day_start = min(dates).replace(hour=0, minute=0, second=0, microsecond=0)
     day_end = max(dates).replace(hour=23, minute=59, second=59, microsecond=0) + timedelta(seconds=1)
 
-    # Fetch calendar events for those days
-    events = calendar.get_all_events(day_start, day_end, include_primary=True)
-
-    # Build the email body
     date_label = day_start.strftime("%B %-d, %Y")
     if day_start.date() != (day_end - timedelta(seconds=1)).date():
         date_label = f"{day_start.strftime('%B %-d')} – {(day_end - timedelta(seconds=1)).strftime('%B %-d, %Y')}"
@@ -96,7 +94,7 @@ def send_reasoning_email(
             f"  before sending the invite.\n"
         )
 
-    body = (
+    return (
         f"Scheduled drafted a reply in this thread.\n"
         f"\n"
         f"Why: {classification.summary}\n"
@@ -108,7 +106,24 @@ def send_reasoning_email(
         f"— Scheduled"
     )
 
-    # Insert directly into Gmail — no notification triggered
+
+def send_reasoning_email(
+    user_email: str,
+    thread_id: str,
+    subject: str,
+    classification: ClassificationResult,
+    gmail: GmailClient,
+    calendar: CalendarClient,
+    invite_proposal: dict | None = None,
+) -> None:
+    """Insert a reasoning message into the thread (no notification)."""
+    dates = _parse_dates(classification.proposed_times)
+    day_start = min(dates).replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = max(dates).replace(hour=23, minute=59, second=59, microsecond=0) + timedelta(seconds=1)
+
+    events = calendar.get_all_events(day_start, day_end, include_primary=True)
+    body = build_reasoning_body(classification, events, invite_proposal=invite_proposal)
+
     msg_id = gmail.insert_message(
         thread_id=thread_id,
         to=user_email,

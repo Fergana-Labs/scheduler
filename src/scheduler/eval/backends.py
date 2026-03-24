@@ -210,7 +210,6 @@ class ReplayDraftBackend:
 
         self.captured_draft: dict | None = None
         self.captured_sent: dict | None = None
-        self.captured_events: list[dict] = []
 
     def load_guide(self, name: str) -> str | None:
         return self._guides.get(name)
@@ -231,10 +230,6 @@ class ReplayDraftBackend:
     def send_email(self, args: dict) -> dict:
         self.captured_sent = args
         return {"message_id": "dry-run-sent", "status": "captured"}
-
-    def add_calendar_event(self, args: dict) -> dict:
-        self.captured_events.append(args)
-        return {"event_id": "dry-run-event"}
 
 
 class ReplayBackfillBackend:

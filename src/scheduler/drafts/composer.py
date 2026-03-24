@@ -42,8 +42,6 @@ class DraftBackend(Protocol):
 
     def send_email(self, args: dict) -> dict: ...
 
-    def add_calendar_event(self, args: dict) -> dict: ...
-
 
 class LocalDraftBackend:
     """Draft backend that talks directly to Gmail/Calendar and local DB state."""
@@ -140,19 +138,6 @@ class LocalDraftBackend:
             cc=args.get("cc", ""),
         )
         return {"message_id": message_id, "status": "sent"}
-
-    def add_calendar_event(self, args: dict) -> dict:
-        from scheduler.calendar.client import Event
-
-        event = Event(
-            id=None,
-            summary=args["summary"],
-            start=datetime.fromisoformat(args["start"]),
-            end=datetime.fromisoformat(args["end"]),
-            description=args.get("description", ""),
-            source="gmail",
-        )
-        return {"event_id": self._calendar.add_event(event)}
 
 
 def _email_field(email: Any, key: str) -> Any:
@@ -337,8 +322,7 @@ class DraftComposer:
         prompt = (
             "You are a scheduling draft composer.\n\n"
             + datetime_line
-            + f"The user's timezone is {user_timezone}. All times you propose — including "
-            "add_calendar_event start/end — MUST be in the "
+            + f"The user's timezone is {user_timezone}. All times you propose MUST be in the "
             "user's local timezone with the offset included. "
             "For example, if the user is in America/Los_Angeles, 2pm is '2026-03-20T14:00:00-07:00', "
             "NOT '2026-03-20T21:00:00' (that would be 9pm local).\n\n"
@@ -349,8 +333,7 @@ class DraftComposer:
             "2. Check if the thread is already resolved before proceeding:\n"
             "   - If a time was already confirmed and a calendar invite exists, do NOT create a draft — just stop.\n"
             "   - If someone else already replied on the user's behalf, do NOT create a draft — just stop.\n"
-            "   - If a time was confirmed but no calendar invite was sent, create the event using "
-            "add_calendar_event and draft a confirmation reply.\n"
+            "   - If a time was confirmed but no calendar invite was sent, draft a confirmation reply.\n"
             "   - If a meeting was cancelled/rescheduled but the calendar still has the old event, note this discrepancy.\n"
             "3. Inspect the user's availability using get_calendar_events over a reasonable window "
             "(for example, the next 14 days).\n"

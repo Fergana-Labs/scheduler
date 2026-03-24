@@ -35,14 +35,6 @@ class ControlPlaneDraftBackend(DraftBackend):
     def send_email(self, args: dict) -> dict:
         return self._client.send_email(**args)
 
-    def add_calendar_event(self, args: dict) -> dict:
-        return self._client.add_event(
-            summary=args["summary"],
-            start=args["start"],
-            end=args["end"],
-            description=args.get("description", ""),
-        )
-
 
 def run_drafting() -> None:
     control_plane_url = os.environ["CONTROL_PLANE_URL"]

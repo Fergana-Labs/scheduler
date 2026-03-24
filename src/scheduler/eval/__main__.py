@@ -4,12 +4,13 @@ Usage:
     # Step 1: Dump inbox + calendar to a fixture (run once, no LLM calls)
     python -m scheduler.eval record --out fixture.json --thread-ids t1 t2 t3
 
-    # Step 2: Run all evals end-to-end (guides -> onboard -> classify -> draft)
+    # Step 2: Run all evals end-to-end (guides -> onboard -> classify -> draft -> reasoning)
     python -m scheduler.eval run --fixture fixture.json --out evals/results/run.json
 
     # Or run individual evals:
     python -m scheduler.eval guides --fixture fixture.json
     python -m scheduler.eval draft --fixture fixture.json --thread-ids t1
+    python -m scheduler.eval reasoning --fixture fixture.json --thread-ids t1
     python -m scheduler.eval classify --fixture fixture.json --thread-ids t1
     python -m scheduler.eval onboard --fixture fixture.json
 """
@@ -214,7 +215,6 @@ def run_draft_eval(fixture: dict, thread_ids: list[str] | None = None) -> list[d
             "classification": classification,
             "draft": backend.captured_draft,
             "sent": backend.captured_sent,
-            "calendar_events": backend.captured_events,
         }
 
         if case and "golden_response" in case:
@@ -228,6 +228,118 @@ def run_draft_eval(fixture: dict, thread_ids: list[str] | None = None) -> list[d
     with ThreadPoolExecutor(max_workers=len(eval_targets) or 1) as pool:
         futures = [
             pool.submit(_run_single_draft, trigger, thread_msgs, trigger_idx, case)
+            for trigger, thread_msgs, trigger_idx, case in eval_targets
+        ]
+        results = [f.result() for f in futures]
+
+    return results
+
+
+def run_reasoning_eval(fixture: dict, thread_ids: list[str] | None = None) -> list[dict]:
+    """Run reasoning email eval. Returns list of result dicts.
+
+    Reuses the same canonical draft eval cases — every thread that gets a
+    draft also gets a reasoning email in prod.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import timedelta, timezone as tz
+
+    from scheduler.calendar.client import Event
+    from scheduler.classifier.intent import classify_email
+    from scheduler.eval.backends import _filter_events
+    from scheduler.lifecycle.reasoning import _parse_dates, build_reasoning_body
+
+    threads: dict[str, list[dict]] = {}
+    for msg in fixture["messages"]:
+        threads.setdefault(msg["thread_id"], []).append(msg)
+
+    eval_targets: list[tuple[dict, list[dict], int, dict | None]] = []
+
+    if thread_ids:
+        for tid in thread_ids:
+            thread_msgs = threads.get(tid, [])
+            if not thread_msgs:
+                print(f"Thread {tid} not found in fixture, skipping", file=sys.stderr)
+                continue
+            eval_targets.append((thread_msgs[-1], thread_msgs, len(thread_msgs) - 1, None))
+    else:
+        canonical = _load_canonical_draft_evals()
+        if not canonical:
+            print("No canonical draft evals found and no thread_ids specified.", file=sys.stderr)
+            return []
+        for case in canonical:
+            trigger_idx = case["trigger_message_index"]
+            case_msgs = case["messages"]
+            if trigger_idx >= len(case_msgs):
+                continue
+            eval_targets.append((case_msgs[trigger_idx], case_msgs, trigger_idx, case))
+
+    def _run_single(trigger, thread_msgs, trigger_idx, case):
+        prior = [
+            {"sender": m["sender"], "body": m["body"], "date": m.get("date", "")}
+            for m in thread_msgs[:trigger_idx]
+        ]
+        c = classify_email(
+            trigger["subject"], trigger["body"], trigger["sender"],
+            thread_messages=prior,
+            recipient=trigger.get("recipient", ""), cc=trigger.get("cc", ""),
+        )
+        classification = {
+            "intent": c.intent.value,
+            "confidence": c.confidence,
+            "summary": c.summary,
+            "proposed_times": c.proposed_times,
+            "participants": c.participants,
+            "duration_minutes": c.duration_minutes,
+        }
+
+        dates = _parse_dates(c.proposed_times)
+        # Make dates timezone-aware (UTC) so they compare with fixture events
+        aware_dates = [
+            d.replace(tzinfo=tz.utc) if d.tzinfo is None else d
+            for d in dates
+        ]
+        day_start = min(aware_dates).replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = max(aware_dates).replace(hour=23, minute=59, second=59, microsecond=0) + timedelta(seconds=1)
+        fixture_events = _filter_events(
+            fixture.get("events", []),
+            day_start.isoformat(),
+            day_end.isoformat(),
+        )
+
+        # Convert fixture event dicts to Event objects for build_reasoning_body
+        events = [
+            Event(
+                id=ev.get("id"),
+                summary=ev.get("summary", ""),
+                start=datetime.fromisoformat(ev["start"]),
+                end=datetime.fromisoformat(ev["end"]),
+                description=ev.get("description", ""),
+                source=ev.get("source", ""),
+            )
+            for ev in fixture_events
+        ]
+
+        reasoning_body = build_reasoning_body(c, events)
+
+        eval_id = case["eval_id"] if case else trigger.get("thread_id", "")
+        print(f"  Reasoning done: {eval_id}", file=sys.stderr)
+
+        return {
+            "eval_id": eval_id,
+            "thread_id": trigger.get("thread_id", ""),
+            "subject": case.get("subject", "") if case else trigger.get("subject", ""),
+            "messages": thread_msgs,
+            "trigger_message_index": trigger_idx,
+            "user_email": case.get("user_email", "henry@ferganalabs.com") if case else "henry@ferganalabs.com",
+            "classification": classification,
+            "reasoning_body": reasoning_body,
+            "calendar_events_used": fixture_events,
+        }
+
+    with ThreadPoolExecutor(max_workers=len(eval_targets) or 1) as pool:
+        futures = [
+            pool.submit(_run_single, trigger, thread_msgs, trigger_idx, case)
             for trigger, thread_msgs, trigger_idx, case in eval_targets
         ]
         results = [f.result() for f in futures]
@@ -269,28 +381,46 @@ def cmd_run(args):
     else:
         print(f"  Classify done: {len(classify_results)} results", file=sys.stderr)
 
-    # Phase 2: draft evals with guides + calendar from phase 1 patched in
-    print("Phase 2: Running draft evals (with generated guides + calendar)...", file=sys.stderr)
+    # Phase 2: draft + reasoning evals in parallel (both use patched fixture)
+    print("Phase 2: Running draft + reasoning evals (with generated guides + calendar)...", file=sys.stderr)
     patched = {
         **fixture,
         "guides": {**fixture.get("guides", {}), **guides},
         "events": fixture.get("events", []) + onboard_events,
     }
-    draft_results = run_draft_eval(patched)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future_draft = pool.submit(run_draft_eval, patched)
+        future_reasoning = pool.submit(run_reasoning_eval, patched)
+        draft_results = future_draft.result()
+        reasoning_results = future_reasoning.result()
+
     drafted = sum(1 for r in draft_results if r.get("draft"))
     print(f"  Drafts: {drafted}/{len(draft_results)} produced", file=sys.stderr)
 
-    # Phase 3: LLM judge on draft evals
+    reasoned = sum(1 for r in reasoning_results if r.get("reasoning_body"))
+    print(f"  Reasoning: {reasoned}/{len(reasoning_results)} produced", file=sys.stderr)
+
+    # Phase 3: LLM judges on draft + reasoning evals
     judge_verdicts = []
-    if not getattr(args, "no_judge", False):
-        from scheduler.eval.judge import judge_draft_evals
-        print("Phase 3: Running LLM judge on draft evals...", file=sys.stderr)
-        judge_verdicts = judge_draft_evals(draft_results)
-        # Merge verdicts into draft results
+    reasoning_verdicts = []
+    if not args.no_judge:
+        from scheduler.eval.judge import judge_draft_evals, judge_reasoning_evals
+        print("Phase 3: Running LLM judges on draft + reasoning evals...", file=sys.stderr)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            future_draft_judge = pool.submit(judge_draft_evals, draft_results)
+            future_reasoning_judge = pool.submit(judge_reasoning_evals, reasoning_results)
+            judge_verdicts = future_draft_judge.result()
+            reasoning_verdicts = future_reasoning_judge.result()
+
         verdict_by_id = {v["eval_id"]: v for v in judge_verdicts if "eval_id" in v}
         for r in draft_results:
             if r.get("eval_id") in verdict_by_id:
                 r["judge"] = verdict_by_id[r["eval_id"]]
+
+        reasoning_verdict_by_id = {v["eval_id"]: v for v in reasoning_verdicts if "eval_id" in v}
+        for r in reasoning_results:
+            if r.get("eval_id") in reasoning_verdict_by_id:
+                r["judge"] = reasoning_verdict_by_id[r["eval_id"]]
 
     results = {
         "metadata": {
@@ -299,14 +429,17 @@ def cmd_run(args):
             "lookback_days": lookback_days,
             "n_classify": len(classify_results),
             "n_draft": len(draft_results),
+            "n_reasoning": len(reasoning_results),
             "n_onboard_events": len(onboard_events),
             "n_guides": len(guides),
             "n_judge": len(judge_verdicts),
+            "n_reasoning_judge": len(reasoning_verdicts),
         },
         "guides": guides,
         "onboard": onboard_events,
         "classify": classify_results,
         "draft": draft_results,
+        "reasoning": reasoning_results,
     }
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
@@ -458,7 +591,7 @@ def cmd_draft(args):
         for r in cases_with_golden:
             eval_id = r["eval_id"]
             judge = r.get("judge", {})
-            if judge and "verdict" in judge:
+            if "verdict" in judge:
                 verdict = judge["verdict"]
                 score = judge.get("score", "?")
                 max_score = judge.get("max_score", 5)
@@ -485,6 +618,52 @@ def cmd_draft(args):
             total_score = sum(r["judge"].get("score", 0) for r in judged)
             max_total = sum(r["judge"].get("max_score", 5) for r in judged)
             print(f"\n--- Judge: {passed}/{len(judged)} PASS, {total_score}/{max_total} criteria passed ---", file=sys.stderr)
+
+
+def cmd_reasoning(args):
+    """Run reasoning email eval against specific messages from the fixture."""
+    from scheduler.eval.backends import load_fixture
+
+    fixture = load_fixture(args.fixture)
+    results = run_reasoning_eval(fixture, thread_ids=args.thread_ids)
+
+    if not args.no_judge:
+        from scheduler.eval.judge import judge_reasoning_evals
+        verdicts = judge_reasoning_evals(results)
+        verdict_by_id = {v["eval_id"]: v for v in verdicts if "eval_id" in v}
+        for r in results:
+            if r.get("eval_id") in verdict_by_id:
+                r["judge"] = verdict_by_id[r["eval_id"]]
+
+    print(json.dumps(results, indent=2))
+
+    produced = [r for r in results if r.get("reasoning_body")]
+    print(f"\n--- Reasoning eval summary ({len(produced)} cases) ---", file=sys.stderr)
+    for r in produced:
+        eval_id = r["eval_id"]
+        judge = r.get("judge", {})
+        if "verdict" in judge:
+            verdict = judge["verdict"]
+            score = judge.get("score", "?")
+            max_score = judge.get("max_score", 4)
+            status = f"{'PASS' if verdict == 'PASS' else 'FAIL'}  {score}/{max_score}"
+            print(f"\n  {status}  {eval_id}", file=sys.stderr)
+            for cname, cval in judge.get("criteria", {}).items():
+                if not cval.get("pass", False):
+                    print(f"         FAIL {cname}: {cval.get('reason', '')}", file=sys.stderr)
+            if judge.get("summary"):
+                print(f"         {judge['summary']}", file=sys.stderr)
+        else:
+            body_preview = r["reasoning_body"][:120]
+            print(f"\n  {eval_id}:", file=sys.stderr)
+            print(f"    Body: {body_preview}", file=sys.stderr)
+
+    judged = [r for r in produced if "judge" in r]
+    if judged:
+        passed = sum(1 for r in judged if r["judge"].get("verdict") == "PASS")
+        total_score = sum(r["judge"].get("score", 0) for r in judged)
+        max_total = sum(r["judge"].get("max_score", 4) for r in judged)
+        print(f"\n--- Reasoning judge: {passed}/{len(judged)} PASS, {total_score}/{max_total} criteria passed ---", file=sys.stderr)
 
 
 def cmd_guides(args):
@@ -544,7 +723,7 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
 
     # run (unified)
-    run = sub.add_parser("run", help="Run all evals end-to-end: guides -> onboard -> classify -> draft")
+    run = sub.add_parser("run", help="Run all evals end-to-end: guides -> onboard -> classify -> draft + reasoning")
     run.add_argument("--fixture", required=True, help="Fixture file")
     run.add_argument("--out", default="evals/results/run.json", help="Output results JSON (default: evals/results/run.json)")
     run.add_argument("--lookback-days", type=int, help="Lookback window for onboarding (default: 60)")
@@ -574,6 +753,13 @@ def main():
     dft.add_argument("--thread-ids", nargs="*", help="Thread IDs (default: canonical evals)")
     dft.add_argument("--no-judge", action="store_true", help="Skip LLM judge on draft evals")
     dft.set_defaults(func=cmd_draft)
+
+    # reasoning
+    reas = sub.add_parser("reasoning", help="Run reasoning email eval on thread(s) from a fixture")
+    reas.add_argument("--fixture", required=True, help="Fixture file")
+    reas.add_argument("--thread-ids", nargs="*", help="Thread IDs (default: canonical draft evals)")
+    reas.add_argument("--no-judge", action="store_true", help="Skip LLM judge on reasoning evals")
+    reas.set_defaults(func=cmd_reasoning)
 
     # guides
     gd = sub.add_parser("guides", help="Run guide-writer agents against a fixture")

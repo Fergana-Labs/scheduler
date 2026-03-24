@@ -30,7 +30,6 @@ class EvalDraftBackend:
         self._guides = guides or {}
         self.drafts_created: list[dict] = []
         self.emails_sent: list[dict] = []
-        self.events_added: list[dict] = []
 
     def load_guide(self, name: str) -> str | None:
         return self._guides.get(name)
@@ -61,7 +60,3 @@ class EvalDraftBackend:
         self.emails_sent.append({**args, "message_id": msg_id})
         return {"message_id": msg_id, "status": "sent"}
 
-    def add_calendar_event(self, args: dict) -> dict:
-        event_id = f"eval-event-{len(self.events_added)}"
-        self.events_added.append({**args, "event_id": event_id})
-        return {"event_id": event_id}

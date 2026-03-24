@@ -1,7 +1,11 @@
-"""LLM-as-judge for draft composer evals.
+"""LLM-as-judge for draft composer and reasoning email evals.
 
-Evaluates generated drafts against golden responses on 5 behavioral
-dimensions: correctness, tone, sign-off, recipients, and timezone handling.
+Draft judge: evaluates generated drafts against golden responses on 5
+behavioral dimensions (correctness, tone, sign-off, recipients, timezone).
+
+Reasoning judge: evaluates reasoning emails on 4 structural dimensions
+(explanation, calendar_accuracy, date_relevance, format).
+
 Single Anthropic API call per eval case with structured JSON output.
 """
 
@@ -119,46 +123,43 @@ def _build_judge_prompt(result: dict) -> str:
     )
 
 
-def judge_draft(result: dict) -> dict:
-    """Judge a single draft eval result. Returns verdict dict."""
-    if "golden_response" not in result:
-        return {"skipped": True, "reason": "no golden response"}
-
+def _call_judge(system_prompt: str, prompt: str, criteria: list[str], eval_id: str) -> dict:
+    """Make a single judge API call and return a structured verdict dict."""
     client = Anthropic()
-    prompt = _build_judge_prompt(result)
-
     response = client.messages.create(
         model=JUDGE_MODEL,
         max_tokens=1024,
-        system=JUDGE_SYSTEM_PROMPT,
+        system=system_prompt,
         messages=[{"role": "user", "content": prompt}],
     )
 
     raw = response.content[0].text.strip()
-
-    # Parse JSON — handle possible markdown fences
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
     try:
         verdict = json.loads(raw)
     except json.JSONDecodeError:
-        return {
-            "error": "Failed to parse judge response",
-            "raw_response": raw,
-        }
+        return {"error": "Failed to parse judge response", "raw_response": raw}
 
-    criteria = ["correctness", "tone", "signoff", "recipients", "timezone"]
     passed = sum(1 for c in criteria if verdict.get(c, {}).get("pass", False))
-
     return {
-        "eval_id": result.get("eval_id", ""),
+        "eval_id": eval_id,
         "verdict": "PASS" if passed == len(criteria) else "FAIL",
         "score": passed,
         "max_score": len(criteria),
         "criteria": {c: verdict.get(c, {"pass": False, "reason": "missing"}) for c in criteria},
         "summary": verdict.get("summary", ""),
     }
+
+
+def judge_draft(result: dict) -> dict:
+    """Judge a single draft eval result. Returns verdict dict."""
+    if "golden_response" not in result:
+        return {"skipped": True, "reason": "no golden response"}
+
+    criteria = ["correctness", "tone", "signoff", "recipients", "timezone"]
+    return _call_judge(JUDGE_SYSTEM_PROMPT, _build_judge_prompt(result), criteria, result.get("eval_id", ""))
 
 
 def judge_draft_evals(results: list[dict]) -> list[dict]:
@@ -175,5 +176,129 @@ def judge_draft_evals(results: list[dict]) -> list[dict]:
 
     passed = sum(1 for v in verdicts if v.get("verdict") == "PASS")
     print(f"  Judge: {passed}/{len(verdicts)} PASS", file=sys.stderr)
+
+    return verdicts
+
+
+# ---------------------------------------------------------------------------
+# Reasoning email judge
+# ---------------------------------------------------------------------------
+
+REASONING_JUDGE_SYSTEM_PROMPT = """\
+You are an eval judge for an AI email scheduling assistant. You evaluate \
+"reasoning emails" — short messages inserted into an email thread to explain \
+why the assistant drafted a reply.
+
+You will receive:
+1. The email thread (conversation history)
+2. The classification (why the assistant decided to draft)
+3. The calendar events available for the relevant date(s)
+4. The generated reasoning email body
+
+Evaluate the reasoning email on these 4 criteria (each is binary pass/fail):
+
+**explanation** — Does the "Why" line clearly explain why a draft was created?
+- Should accurately reflect the scheduling situation in the thread
+- Should be specific (not generic like "scheduling request detected")
+- Should match the classification summary's intent
+
+**calendar_accuracy** — Is the calendar section correct?
+- Events listed should match the calendar events provided for those dates
+- Times should be formatted correctly (e.g., "9:00 AM – 10:00 AM: Meeting")
+- If no events exist, should say "No other meetings"
+- Should not fabricate events that weren't in the calendar data
+
+**date_relevance** — Does the email reference the correct date(s)?
+- The "Your meetings on [date]" header should match the dates from the \
+proposed times in the classification
+- Should not show events for unrelated dates
+
+**format** — Is the email properly structured?
+- Opens with "Scheduled drafted a reply in this thread."
+- Has a "Why:" section
+- Has a "Your meetings on [date]:" section
+- Ends with "— Scheduled"
+- Clean, scannable, no clutter
+
+Respond with ONLY a JSON object (no markdown, no explanation outside the JSON):
+{
+  "explanation": {"pass": true/false, "reason": "brief explanation"},
+  "calendar_accuracy": {"pass": true/false, "reason": "brief explanation"},
+  "date_relevance": {"pass": true/false, "reason": "brief explanation"},
+  "format": {"pass": true/false, "reason": "brief explanation"},
+  "summary": "1-sentence overall assessment"
+}
+"""
+
+
+def _build_reasoning_judge_prompt(result: dict) -> str:
+    """Build the user prompt for the reasoning judge."""
+    messages = result.get("messages", [])
+    trigger_idx = result.get("trigger_message_index", len(messages) - 1)
+
+    thread_lines = []
+    for i, msg in enumerate(messages):
+        marker = " ← TRIGGER" if i == trigger_idx else ""
+        thread_lines.append(
+            f"--- Message {i + 1}{marker} ---\n"
+            f"From: {msg.get('sender', '')}\n"
+            f"To: {msg.get('recipient', '')}\n"
+            f"Date: {msg.get('date', '')}\n"
+            f"Subject: {msg.get('subject', '')}\n\n"
+            f"{msg.get('body', '')}"
+        )
+    thread_text = "\n\n".join(thread_lines)
+
+    classification = result.get("classification", {})
+    classification_text = (
+        f"Intent: {classification.get('intent', '')}\n"
+        f"Summary: {classification.get('summary', '')}\n"
+        f"Proposed times: {classification.get('proposed_times', [])}\n"
+        f"Participants: {classification.get('participants', [])}"
+    )
+
+    events = result.get("calendar_events_used", [])
+    if events:
+        events_text = "\n".join(
+            f"  {ev.get('start', '')} – {ev.get('end', '')}: {ev.get('summary', '')}"
+            for ev in events
+        )
+    else:
+        events_text = "(no calendar events for this date range)"
+
+    reasoning_body = result.get("reasoning_body", "(no reasoning email generated)")
+
+    return (
+        f"## Email Thread\n\n{thread_text}\n\n"
+        f"## Classification\n\n{classification_text}\n\n"
+        f"## Calendar Events (ground truth for the relevant dates)\n\n{events_text}\n\n"
+        f"## Generated Reasoning Email\n\n{reasoning_body}\n\n"
+        f"Judge the reasoning email now."
+    )
+
+
+def judge_reasoning(result: dict) -> dict:
+    """Judge a single reasoning eval result. Returns verdict dict."""
+    if not result.get("reasoning_body"):
+        return {"skipped": True, "reason": "no reasoning body"}
+
+    criteria = ["explanation", "calendar_accuracy", "date_relevance", "format"]
+    return _call_judge(REASONING_JUDGE_SYSTEM_PROMPT, _build_reasoning_judge_prompt(result), criteria, result.get("eval_id", ""))
+
+
+def judge_reasoning_evals(results: list[dict]) -> list[dict]:
+    """Judge all reasoning eval results in parallel. Returns list of verdicts."""
+    judgeable = [r for r in results if r.get("reasoning_body")]
+    if not judgeable:
+        return []
+
+    print(f"  Judging {len(judgeable)} reasoning evals...", file=sys.stderr)
+
+    with ThreadPoolExecutor(max_workers=min(len(judgeable), 10)) as pool:
+        futures = [pool.submit(judge_reasoning, r) for r in judgeable]
+        verdicts = [f.result() for f in futures]
+
+    passed = sum(1 for v in verdicts if v.get("verdict") == "PASS")
+    print(f"  Reasoning judge: {passed}/{len(verdicts)} PASS", file=sys.stderr)
 
     return verdicts
