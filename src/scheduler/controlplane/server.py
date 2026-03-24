@@ -1367,7 +1367,9 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
             # Skip emails from Scheduled's own sending addresses (e.g. reasoning emails)
             sender_str = email.sender or ""
             if (config.postmark_from_email and config.postmark_from_email in sender_str) or \
-               (config.postmark_bot_email and config.postmark_bot_email in sender_str):
+               (config.postmark_bot_email and config.postmark_bot_email in sender_str) or \
+               "@tryscheduled.com" in sender_str or \
+               "scheduled@ferganalabs.com" in sender_str:
                 logger.info("gmail_webhook: message %s is from Scheduled, skipping", message_id)
                 continue
 

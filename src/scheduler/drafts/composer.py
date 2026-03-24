@@ -295,7 +295,9 @@ class DraftComposer:
 
         @tool(
             "add_calendar_event",
-            "Add an event to the user's stash calendar (e.g. when a time is confirmed but no invite exists).",
+            "Add an event to the user's stash calendar (e.g. when a time is confirmed but no invite exists). "
+            "IMPORTANT: start and end must include the timezone offset (e.g. '2026-04-01T14:00:00-07:00'), "
+            "not bare UTC times.",
             {"summary": str, "start": str, "end": str, "description": str},
         )
         async def add_calendar_event(args):
@@ -335,10 +337,11 @@ class DraftComposer:
         prompt = (
             "You are a scheduling draft composer.\n\n"
             + datetime_line
-            + f"The user's timezone is {user_timezone}. All times you propose and all "
-            "invite_event_start/invite_event_end values MUST include this timezone offset. "
-            "For example, if the user is in America/New_York, use '2026-03-20T15:00:00-04:00' "
-            "not '2026-03-20T15:00:00'.\n\n"
+            + f"The user's timezone is {user_timezone}. All times you propose — including "
+            "invite_event_start/invite_event_end AND add_calendar_event start/end — MUST be in the "
+            "user's local timezone with the offset included. "
+            "For example, if the user is in America/Los_Angeles, 2pm is '2026-03-20T14:00:00-07:00', "
+            "NOT '2026-03-20T21:00:00' (that would be 9pm local).\n\n"
             "You are given an incoming email and a structured classification of that email. "
             "Your job is to:\n"
             "1. Read the full email thread using read_thread. Pay attention to any times that "
