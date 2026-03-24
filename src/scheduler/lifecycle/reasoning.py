@@ -80,13 +80,18 @@ def send_reasoning_email(
         except (ValueError, OverflowError):
             time_label = f"{start_str} – {end_str}"
         meet_line = " (with Google Meet)" if invite_proposal.get("add_google_meet") else ""
+        attendees = invite_proposal.get("attendee_emails", [])
+        attendees_label = ", ".join(attendees) or "(none)"
+        location = invite_proposal.get("location", "")
+        location_line = f"  - Where: {location}\n" if location else ""
         invite_section = (
             f"\n"
             f"Calendar invite:\n"
             f"  When you send this draft, Scheduled will create a calendar invite:\n"
             f"  - What: {invite_proposal.get('event_summary', '')}\n"
-            f"  - With: {invite_proposal.get('attendee_email', '')}\n"
+            f"  - With: {attendees_label}\n"
             f"  - When: {time_label}{meet_line}\n"
+            f"{location_line}"
             f"  An agent will verify your sent message still confirms the meeting\n"
             f"  before sending the invite.\n"
         )

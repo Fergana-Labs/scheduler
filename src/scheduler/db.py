@@ -1,5 +1,6 @@
 """Database client for user credential storage."""
 
+import json
 from datetime import datetime, timezone
 from dataclasses import dataclass, fields
 
@@ -349,44 +350,55 @@ class PendingInviteRow:
     id: str
     user_id: str
     thread_id: str
-    attendee_email: str
+    attendee_emails: list[str]
     event_summary: str
     event_start: datetime
     event_end: datetime
     add_google_meet: bool
     created_at: datetime
+    location: str = ""
 
 
 def create_pending_invite(
     user_id: str,
     thread_id: str,
-    attendee_email: str,
+    attendee_emails: list[str],
     event_summary: str,
     event_start: datetime,
     event_end: datetime,
     add_google_meet: bool = False,
+    location: str = "",
 ) -> PendingInviteRow:
     """Create or overwrite a pending invite for a thread."""
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO pending_invites (user_id, thread_id, attendee_email, event_summary,
-                                         event_start, event_end, add_google_meet)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO pending_invites (user_id, thread_id, attendee_emails, event_summary,
+                                         event_start, event_end, add_google_meet, location)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (user_id, thread_id) DO UPDATE SET
-                attendee_email = EXCLUDED.attendee_email,
+                attendee_emails = EXCLUDED.attendee_emails,
                 event_summary = EXCLUDED.event_summary,
                 event_start = EXCLUDED.event_start,
                 event_end = EXCLUDED.event_end,
-                add_google_meet = EXCLUDED.add_google_meet
+                add_google_meet = EXCLUDED.add_google_meet,
+                location = EXCLUDED.location
             RETURNING *
             """,
-            (user_id, thread_id, attendee_email, event_summary, event_start, event_end, add_google_meet),
+            (user_id, thread_id, json.dumps(attendee_emails), event_summary,
+             event_start, event_end, add_google_meet, location),
         )
         row = cur.fetchone()
         cols = [desc[0] for desc in cur.description]
         conn.commit()
-        return PendingInviteRow(**dict(zip(cols, row)))
+        return _pending_invite_from_row(cols, row)
+
+
+def _pending_invite_from_row(cols, row) -> PendingInviteRow:
+    data = dict(zip(cols, row))
+    if isinstance(data.get("attendee_emails"), str):
+        data["attendee_emails"] = json.loads(data["attendee_emails"])
+    return PendingInviteRow(**data)
 
 
 def get_pending_invite_by_thread(user_id: str, thread_id: str) -> PendingInviteRow | None:
@@ -399,23 +411,24 @@ def get_pending_invite_by_thread(user_id: str, thread_id: str) -> PendingInviteR
         if not row:
             return None
         cols = [desc[0] for desc in cur.description]
-        return PendingInviteRow(**dict(zip(cols, row)))
+        return _pending_invite_from_row(cols, row)
 
 
 def update_pending_invite(
     invite_id: str,
-    attendee_email: str | None = None,
+    attendee_emails: list[str] | None = None,
     event_summary: str | None = None,
     event_start: datetime | None = None,
     event_end: datetime | None = None,
     add_google_meet: bool | None = None,
+    location: str | None = None,
 ) -> None:
     """Update only the provided fields on a pending invite."""
     sets: list[str] = []
     vals: list = []
-    if attendee_email is not None:
-        sets.append("attendee_email = %s")
-        vals.append(attendee_email)
+    if attendee_emails is not None:
+        sets.append("attendee_emails = %s")
+        vals.append(json.dumps(attendee_emails))
     if event_summary is not None:
         sets.append("event_summary = %s")
         vals.append(event_summary)
@@ -428,6 +441,9 @@ def update_pending_invite(
     if add_google_meet is not None:
         sets.append("add_google_meet = %s")
         vals.append(add_google_meet)
+    if location is not None:
+        sets.append("location = %s")
+        vals.append(location)
     if not sets:
         return
     vals.append(invite_id)

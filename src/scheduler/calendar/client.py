@@ -249,13 +249,14 @@ class CalendarClient:
         summary: str,
         start: datetime,
         end: datetime,
-        attendee_email: str,
+        attendee_emails: list[str],
         description: str = "",
+        location: str = "",
         add_google_meet: bool = False,
     ) -> str:
-        """Create an event on the PRIMARY calendar with an attendee.
+        """Create an event on the PRIMARY calendar with attendees.
 
-        Google Calendar automatically sends an invite email to the attendee.
+        Google Calendar automatically sends invite emails to all attendees.
         If add_google_meet is True, a Google Meet link is attached to the event.
         """
         service = self._get_service()
@@ -265,13 +266,16 @@ class CalendarClient:
             "start": self._event_dt_body(start),
             "end": self._event_dt_body(end),
             "description": description,
-            "attendees": [{"email": attendee_email}],
+            "attendees": [{"email": email} for email in attendee_emails],
         }
+
+        if location:
+            body["location"] = location
 
         if add_google_meet:
             body["conferenceData"] = {
                 "createRequest": {
-                    "requestId": f"meet-{start.isoformat()}-{attendee_email}",
+                    "requestId": f"meet-{start.isoformat()}-{attendee_emails[0]}",
                     "conferenceSolutionKey": {"type": "hangoutsMeet"},
                 },
             }

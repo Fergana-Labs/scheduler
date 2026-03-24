@@ -14,22 +14,24 @@ from scheduler.db import PendingInviteRow
 
 
 def _make_pending(
-    attendee="alice@example.com",
+    attendees=None,
     summary="Coffee chat",
     start="2026-03-26T14:00:00-07:00",
     end="2026-03-26T15:00:00-07:00",
     google_meet=False,
+    location="",
 ) -> PendingInviteRow:
     return PendingInviteRow(
         id="test-invite-id",
         user_id="test-user-id",
         thread_id="test-thread-id",
-        attendee_email=attendee,
+        attendee_emails=attendees or ["alice@example.com"],
         event_summary=summary,
         event_start=datetime.fromisoformat(start),
         event_end=datetime.fromisoformat(end),
         add_google_meet=google_meet,
         created_at=datetime.now(timezone.utc),
+        location=location,
     )
 
 
@@ -56,6 +58,7 @@ EVAL_CASES = [
         name="confirmation_with_location",
         sent_body="Perfect, let's do Thursday at 2pm. I'll be at the Blue Bottle on Valencia St.",
         expected_action="send",
+        pending=_make_pending(location="Blue Bottle on Valencia St."),
     ),
     VerificationEval(
         name="confirmation_mentions_invite",
@@ -73,6 +76,12 @@ EVAL_CASES = [
                 "date": "2026-03-25T10:00:00-07:00",
             },
         ],
+    ),
+    VerificationEval(
+        name="confirmation_group_meeting",
+        sent_body="Thursday at 2pm works for all of us. See you there!",
+        expected_action="send",
+        pending=_make_pending(attendees=["alice@example.com", "bob@example.com"]),
     ),
 
     # --- SKIP cases: message declines, cancels, or changes topic ---
@@ -134,6 +143,24 @@ EVAL_CASES = [
         sent_body="Thursday at 2pm is great. Could we make it 90 minutes? I have a lot to discuss.",
         expected_action="update",
     ),
+    VerificationEval(
+        name="location_change",
+        sent_body="Thursday at 2pm works! But let's meet at Philz Coffee on 24th instead.",
+        expected_action="update",
+        pending=_make_pending(location="Blue Bottle on Valencia St."),
+    ),
+    VerificationEval(
+        name="add_attendee",
+        sent_body="Thursday at 2pm is great. I'm also going to bring Bob — I've CC'd him.",
+        expected_action="update",
+        pending=_make_pending(attendees=["alice@example.com"]),
+    ),
+    VerificationEval(
+        name="add_location_to_no_location",
+        sent_body="Thursday at 2pm works. Let's meet at the WeWork on Market St.",
+        expected_action="update",
+        pending=_make_pending(location=""),
+    ),
 ]
 
 
@@ -157,11 +184,12 @@ def test_invite_verification(case: VerificationEval):
     if result.action == "update":
         updates = {
             k: v for k, v in {
-                "attendee": result.updated_attendee_email,
+                "attendees": result.updated_attendee_emails,
                 "summary": result.updated_event_summary,
                 "start": result.updated_event_start,
                 "end": result.updated_event_end,
                 "meet": result.updated_add_google_meet,
+                "location": result.updated_location,
             }.items() if v is not None
         }
         print(f"  updates: {updates}")

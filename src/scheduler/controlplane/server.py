@@ -1273,15 +1273,16 @@ def _handle_sent_message_for_invite(user_id: str, email, gmail: GmailClient, cal
     if result.action == "update":
         update_pending_invite(
             pending.id,
-            attendee_email=result.updated_attendee_email,
+            attendee_emails=result.updated_attendee_emails,
             event_summary=result.updated_event_summary,
             event_start=datetime.fromisoformat(result.updated_event_start) if result.updated_event_start else None,
             event_end=datetime.fromisoformat(result.updated_event_end) if result.updated_event_end else None,
             add_google_meet=result.updated_add_google_meet,
+            location=result.updated_location,
         )
         # Apply updates to pending directly to avoid a re-fetch
-        if result.updated_attendee_email:
-            pending.attendee_email = result.updated_attendee_email
+        if result.updated_attendee_emails:
+            pending.attendee_emails = result.updated_attendee_emails
         if result.updated_event_summary:
             pending.event_summary = result.updated_event_summary
         if result.updated_event_start:
@@ -1290,6 +1291,8 @@ def _handle_sent_message_for_invite(user_id: str, email, gmail: GmailClient, cal
             pending.event_end = datetime.fromisoformat(result.updated_event_end)
         if result.updated_add_google_meet is not None:
             pending.add_google_meet = result.updated_add_google_meet
+        if result.updated_location is not None:
+            pending.location = result.updated_location
 
     # action == "send" or "update" — create the calendar invite
     try:
@@ -1297,8 +1300,8 @@ def _handle_sent_message_for_invite(user_id: str, email, gmail: GmailClient, cal
             summary=pending.event_summary,
             start=pending.event_start,
             end=pending.event_end,
-            attendee_email=pending.attendee_email,
-            description="",
+            attendee_emails=pending.attendee_emails,
+            location=pending.location,
             add_google_meet=pending.add_google_meet,
         )
         logger.info("gmail_webhook: created invite event for thread %s", email.thread_id)
@@ -1447,11 +1450,12 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
                         create_pending_invite(
                             user_id=user_id,
                             thread_id=email.thread_id,
-                            attendee_email=invite_proposal["attendee_email"],
+                            attendee_emails=invite_proposal["attendee_emails"],
                             event_summary=invite_proposal["event_summary"],
                             event_start=datetime.fromisoformat(invite_proposal["event_start"]),
                             event_end=datetime.fromisoformat(invite_proposal["event_end"]),
                             add_google_meet=invite_proposal.get("add_google_meet", False),
+                            location=invite_proposal.get("location", ""),
                         )
                         logger.info("gmail_webhook: created pending invite for thread %s", email.thread_id)
                     except Exception:

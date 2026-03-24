@@ -292,11 +292,12 @@ class DraftComposer:
             "after the user sends the draft and an agent verifies the sent message still "
             "confirms the meeting. Use add_calendar_event only for personal reminders/holds.",
             {
-                "attendee_email": str,
+                "attendee_emails": list[str],
                 "event_summary": str,
                 "event_start": str,
                 "event_end": str,
                 "add_google_meet": bool,
+                "location": str,
             },
         )
         async def propose_invite(args):
