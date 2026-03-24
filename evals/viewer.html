@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scheduled — Eval Viewer</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&display=swap');
+
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #0f1114;
+    --surface: #181b20;
+    --surface-raised: #1f2329;
+    --surface-hover: #262b33;
+    --border: #2a2f38;
+    --border-subtle: #1e2228;
+    --text: #e0e4ea;
+    --text-muted: #7c8494;
+    --text-dim: #4e5563;
+    --accent: #e8a44a;
+    --accent-dim: rgba(232, 164, 74, 0.12);
+    --green: #4ade80;
+    --green-dim: rgba(74, 222, 128, 0.1);
+    --red: #f87171;
+    --red-dim: rgba(248, 113, 113, 0.1);
+    --blue: #60a5fa;
+    --blue-dim: rgba(96, 165, 250, 0.1);
+    --purple: #a78bfa;
+    --purple-dim: rgba(167, 139, 250, 0.1);
+    --trigger-glow: rgba(232, 164, 74, 0.06);
+    --trigger-border: rgba(232, 164, 74, 0.3);
+    --mono: 'JetBrains Mono', monospace;
+    --serif: 'Source Serif 4', Georgia, serif;
+    --radius: 8px;
+    --radius-lg: 12px;
+  }
+
+  html { font-size: 15px; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--serif);
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  /* ── Loader ── */
+  #loader {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    gap: 24px;
+    padding: 40px;
+  }
+  #loader h1 {
+    font-family: var(--mono);
+    font-size: 1.1rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    letter-spacing: 0.04em;
+  }
+  #loader .file-inputs {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  #loader label {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 24px 32px;
+    background: var(--surface);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-lg);
+    cursor: pointer;
+    transition: all 0.2s;
+    min-width: 260px;
+    text-align: center;
+  }
+  #loader label:hover { border-color: var(--accent); background: var(--surface-raised); }
+  #loader label.loaded { border-color: var(--green); border-style: solid; }
+  #loader label span.label-title {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  #loader label span.label-file {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+  }
+  #loader label span.label-status {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    color: var(--green);
+  }
+  #loader input[type="file"] { display: none; }
+  #loader .auto-load-hint {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin-top: 8px;
+  }
+
+  /* ── App shell ── */
+  #app { display: none; }
+  #app.visible { display: block; }
+
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(15, 17, 20, 0.85);
+    backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 16px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+  }
+  header .logo {
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+  }
+  header .stats {
+    display: flex;
+    gap: 20px;
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+  }
+  header .stats .stat-value { color: var(--text); font-weight: 600; }
+  header .stats .stat-green { color: var(--green); }
+  header .stats .stat-red { color: var(--red); }
+  header .filter-bar {
+    display: flex;
+    gap: 8px;
+  }
+  header .filter-btn {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    font-weight: 500;
+    padding: 5px 12px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  header .filter-btn:hover { border-color: var(--text-muted); color: var(--text); }
+  header .filter-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+
+  /* ── Eval cards ── */
+  .eval-list { padding: 24px 32px 80px; max-width: 1200px; margin: 0 auto; }
+
+  .eval-card {
+    background: var(--surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    margin-bottom: 20px;
+    overflow: hidden;
+    transition: border-color 0.2s;
+  }
+  .eval-card:hover { border-color: var(--border); }
+
+  .eval-card-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-subtle);
+    cursor: pointer;
+    user-select: none;
+  }
+  .eval-card-header:hover { background: var(--surface-raised); }
+
+  .eval-status {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .eval-status.pass { background: var(--green); box-shadow: 0 0 8px rgba(74, 222, 128, 0.3); }
+  .eval-status.fail { background: var(--red); box-shadow: 0 0 8px rgba(248, 113, 113, 0.3); }
+
+  .eval-id {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text);
+    flex-shrink: 0;
+  }
+
+  .eval-subject {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .eval-badges {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .badge {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 20px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  .badge-intent {
+    background: var(--purple-dim);
+    color: var(--purple);
+  }
+  .badge-confidence {
+    background: var(--blue-dim);
+    color: var(--blue);
+  }
+  .badge-invite {
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  .chevron {
+    color: var(--text-dim);
+    transition: transform 0.2s;
+    flex-shrink: 0;
+    font-size: 0.8rem;
+  }
+  .eval-card.open .chevron { transform: rotate(90deg); }
+
+  .eval-card-body {
+    display: none;
+    padding: 0 20px 20px;
+  }
+  .eval-card.open .eval-card-body { display: block; }
+
+  /* ── Thread timeline ── */
+  .section-label {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin: 20px 0 12px;
+  }
+
+  .thread-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .thread-msg {
+    padding: 14px 16px;
+    border-radius: var(--radius);
+    background: var(--surface-raised);
+    border: 1px solid transparent;
+    transition: all 0.15s;
+  }
+  .thread-msg.is-trigger {
+    background: var(--trigger-glow);
+    border-color: var(--trigger-border);
+    box-shadow: inset 0 0 0 1px rgba(232, 164, 74, 0.05);
+  }
+  .thread-msg.is-user {
+    margin-left: 40px;
+  }
+
+  .msg-header {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 6px;
+  }
+  .msg-sender {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .thread-msg.is-trigger .msg-sender { color: var(--accent); }
+  .msg-date {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    color: var(--text-dim);
+  }
+  .msg-trigger-label {
+    font-family: var(--mono);
+    font-size: 0.6rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-dim);
+    padding: 1px 8px;
+    border-radius: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .msg-body {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .msg-body::-webkit-scrollbar { width: 4px; }
+  .msg-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* ── Comparison panel ── */
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-top: 4px;
+  }
+  @media (max-width: 800px) {
+    .comparison { grid-template-columns: 1fr; }
+  }
+
+  .response-panel {
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .response-panel-header {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 10px 14px;
+  }
+  .response-panel.agent .response-panel-header {
+    background: var(--blue-dim);
+    color: var(--blue);
+  }
+  .response-panel.golden .response-panel-header {
+    background: var(--green-dim);
+    color: var(--green);
+  }
+  .response-panel.empty .response-panel-header {
+    background: var(--red-dim);
+    color: var(--red);
+  }
+  .response-panel-body {
+    background: var(--surface-raised);
+    padding: 16px;
+    font-size: 0.85rem;
+    line-height: 1.7;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-word;
+    min-height: 80px;
+    border: 1px solid var(--border-subtle);
+    border-top: none;
+    border-radius: 0 0 var(--radius) var(--radius);
+  }
+  .response-panel-body .no-draft {
+    color: var(--red);
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    font-style: italic;
+  }
+  .response-panel-body .meta {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  /* ── Classification detail ── */
+  .classification-detail {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 12px 16px;
+    background: var(--surface-raised);
+    border-radius: var(--radius);
+    margin-top: 16px;
+  }
+  .classification-detail .cd-item {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+  }
+  .cd-item .cd-label {
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 0.6rem;
+    display: block;
+    margin-bottom: 2px;
+  }
+  .cd-item .cd-value { color: var(--text-muted); }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+  /* ── Animations ── */
+  .eval-card {
+    animation: fadeUp 0.3s ease both;
+  }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+</style>
+</head>
+<body>
+
+<div id="loader">
+  <h1>SCHEDULED EVAL VIEWER</h1>
+  <div class="file-inputs">
+    <label id="label-results">
+      <span class="label-title">Results</span>
+      <span class="label-file">draft_results.json</span>
+      <input type="file" id="file-results" accept=".json">
+    </label>
+    <label id="label-evals">
+      <span class="label-title">Eval Cases</span>
+      <span class="label-file">draft_canonical_evals.json</span>
+      <input type="file" id="file-evals" accept=".json">
+    </label>
+  </div>
+  <div class="auto-load-hint">or place this file next to the JSON files and they'll load automatically</div>
+</div>
+
+<div id="app">
+  <header>
+    <div class="logo">SCHEDULED EVALS</div>
+    <div class="stats" id="stats"></div>
+    <div class="filter-bar" id="filters">
+      <button class="filter-btn active" data-filter="all">All</button>
+      <button class="filter-btn" data-filter="pass">Drafted</button>
+      <button class="filter-btn" data-filter="fail">No draft</button>
+    </div>
+  </header>
+  <div class="eval-list" id="eval-list"></div>
+</div>
+
+<script>
+let resultsData = null;
+let evalsData = null;
+
+// Try auto-loading relative paths
+async function tryAutoLoad() {
+  try {
+    const [r1, r2] = await Promise.all([
+      fetch('results/draft_results.json'),
+      fetch('draft_canonical_evals.json')
+    ]);
+    if (r1.ok && r2.ok) {
+      resultsData = await r1.json();
+      evalsData = await r2.json();
+      document.getElementById('label-results').classList.add('loaded');
+      document.getElementById('label-evals').classList.add('loaded');
+      render();
+    }
+  } catch (e) { /* silent */ }
+}
+
+// File input handlers
+document.getElementById('file-results').addEventListener('change', async (e) => {
+  const text = await e.target.files[0].text();
+  resultsData = JSON.parse(text);
+  document.getElementById('label-results').classList.add('loaded');
+  document.getElementById('label-results').querySelector('.label-file').textContent = e.target.files[0].name;
+  if (resultsData && evalsData) render();
+});
+
+document.getElementById('file-evals').addEventListener('change', async (e) => {
+  const text = await e.target.files[0].text();
+  evalsData = JSON.parse(text);
+  document.getElementById('label-evals').classList.add('loaded');
+  document.getElementById('label-evals').querySelector('.label-file').textContent = e.target.files[0].name;
+  if (resultsData && evalsData) render();
+});
+
+function extractName(sender) {
+  if (!sender) return 'Unknown';
+  const match = sender.match(/^([^<]+)</);
+  return match ? match[1].trim().replace(/"/g, '') : sender.split('@')[0];
+}
+
+function formatDate(dateStr) {
+  if (!dateStr) return '';
+  try {
+    const d = new Date(dateStr);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  } catch { return dateStr; }
+}
+
+function cleanBody(body) {
+  if (!body) return '';
+  return body.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+function isUserEmail(sender) {
+  const s = (sender || '').toLowerCase();
+  return s.includes('henry@ferganalabs.com') || s.includes('sam@ferganalabs.com');
+}
+
+function render() {
+  document.getElementById('loader').style.display = 'none';
+  document.getElementById('app').classList.add('visible');
+
+  const evalsById = {};
+  for (const ev of evalsData) evalsById[ev.eval_id] = ev;
+
+  const merged = resultsData.map(r => ({
+    result: r,
+    evalCase: evalsById[r.eval_id] || null
+  }));
+
+  // Stats
+  const total = merged.length;
+  const drafted = merged.filter(m => m.result.draft).length;
+  const noDraft = total - drafted;
+  document.getElementById('stats').innerHTML = `
+    <span><span class="stat-value">${total}</span> cases</span>
+    <span><span class="stat-value stat-green">${drafted}</span> drafted</span>
+    <span><span class="stat-value stat-red">${noDraft}</span> no draft</span>
+  `;
+
+  // Filters
+  let activeFilter = 'all';
+  document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeFilter = btn.dataset.filter;
+      applyFilter();
+    });
+  });
+
+  function applyFilter() {
+    document.querySelectorAll('.eval-card').forEach(card => {
+      const hasDraft = card.dataset.hasDraft === 'true';
+      if (activeFilter === 'all') card.style.display = '';
+      else if (activeFilter === 'pass') card.style.display = hasDraft ? '' : 'none';
+      else if (activeFilter === 'fail') card.style.display = hasDraft ? 'none' : '';
+    });
+  }
+
+  // Render cards
+  const list = document.getElementById('eval-list');
+  list.innerHTML = '';
+
+  merged.forEach((m, idx) => {
+    const { result, evalCase } = m;
+    const hasDraft = !!result.draft;
+    const card = document.createElement('div');
+    card.className = 'eval-card';
+    card.dataset.hasDraft = hasDraft;
+    card.style.animationDelay = `${idx * 0.04}s`;
+
+    const subject = evalCase ? evalCase.subject : result.thread_id;
+    const intent = result.classification.intent.replace(/_/g, ' ');
+    const confidence = Math.round(result.classification.confidence * 100);
+    const hasInvite = result.draft && result.draft.send_invite;
+
+    card.innerHTML = `
+      <div class="eval-card-header">
+        <div class="eval-status ${hasDraft ? 'pass' : 'fail'}"></div>
+        <span class="eval-id">${result.eval_id}</span>
+        <span class="eval-subject">${escapeHtml(subject)}</span>
+        <div class="eval-badges">
+          <span class="badge badge-intent">${intent}</span>
+          <span class="badge badge-confidence">${confidence}%</span>
+          ${hasInvite ? '<span class="badge badge-invite">invite</span>' : ''}
+        </div>
+        <span class="chevron">&#9654;</span>
+      </div>
+      <div class="eval-card-body">
+        ${renderThread(evalCase, result)}
+        ${renderClassification(result)}
+        <div class="section-label">Comparison</div>
+        <div class="comparison">
+          ${renderAgentDraft(result)}
+          ${renderGoldenResponse(result)}
+        </div>
+      </div>
+    `;
+
+    card.querySelector('.eval-card-header').addEventListener('click', () => {
+      card.classList.toggle('open');
+    });
+
+    list.appendChild(card);
+  });
+}
+
+function renderThread(evalCase, result) {
+  if (!evalCase || !evalCase.messages || !evalCase.messages.length) {
+    return '<div class="section-label">Thread</div><div style="color:var(--text-dim);font-family:var(--mono);font-size:0.75rem;padding:12px;">No thread data available</div>';
+  }
+
+  const triggerIdx = evalCase.trigger_message_index;
+  const msgs = evalCase.messages;
+
+  let html = '<div class="section-label">Email Thread</div><div class="thread-timeline">';
+  msgs.forEach((msg, i) => {
+    const isTrigger = i === triggerIdx;
+    const isUser = isUserEmail(msg.sender);
+    html += `
+      <div class="thread-msg ${isTrigger ? 'is-trigger' : ''} ${isUser ? 'is-user' : ''}">
+        <div class="msg-header">
+          <span class="msg-sender">${escapeHtml(extractName(msg.sender))}</span>
+          <span class="msg-date">${formatDate(msg.date)}</span>
+          ${isTrigger ? '<span class="msg-trigger-label">Trigger</span>' : ''}
+        </div>
+        <div class="msg-body">${escapeHtml(cleanBody(msg.body))}</div>
+      </div>
+    `;
+  });
+  html += '</div>';
+  return html;
+}
+
+function renderClassification(result) {
+  const c = result.classification;
+  return `
+    <div class="classification-detail">
+      <div class="cd-item">
+        <span class="cd-label">Summary</span>
+        <span class="cd-value">${escapeHtml(c.summary || '—')}</span>
+      </div>
+      ${c.proposed_times && c.proposed_times.length ? `
+        <div class="cd-item">
+          <span class="cd-label">Proposed Times</span>
+          <span class="cd-value">${c.proposed_times.map(escapeHtml).join(', ')}</span>
+        </div>
+      ` : ''}
+      ${c.duration_minutes ? `
+        <div class="cd-item">
+          <span class="cd-label">Duration</span>
+          <span class="cd-value">${c.duration_minutes} min</span>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderAgentDraft(result) {
+  if (!result.draft) {
+    return `
+      <div class="response-panel empty">
+        <div class="response-panel-header">Agent Draft</div>
+        <div class="response-panel-body"><span class="no-draft">No draft produced</span></div>
+      </div>
+    `;
+  }
+  const d = result.draft;
+  const meta = [
+    d.to ? `To: ${d.to}` : '',
+    d.cc ? `Cc: ${d.cc}` : '',
+    d.send_invite ? `Invite: ${d.invite_event_summary} (${d.invite_event_start})` : '',
+  ].filter(Boolean).join('\n');
+
+  return `
+    <div class="response-panel agent">
+      <div class="response-panel-header">Agent Draft</div>
+      <div class="response-panel-body">
+        ${meta ? `<div class="meta">${escapeHtml(meta)}</div>` : ''}
+        ${escapeHtml(cleanBody(d.body))}
+      </div>
+    </div>
+  `;
+}
+
+function renderGoldenResponse(result) {
+  if (!result.golden_response) {
+    return `
+      <div class="response-panel golden">
+        <div class="response-panel-header">Golden Response</div>
+        <div class="response-panel-body" style="color:var(--text-dim);font-style:italic;">No golden response</div>
+      </div>
+    `;
+  }
+  const g = result.golden_response;
+  const meta = [
+    g.recipient ? `To: ${g.recipient}` : '',
+    g.cc ? `Cc: ${g.cc}` : '',
+    g.date ? `Date: ${formatDate(g.date)}` : '',
+  ].filter(Boolean).join('\n');
+
+  return `
+    <div class="response-panel golden">
+      <div class="response-panel-header">Golden Response</div>
+      <div class="response-panel-body">
+        ${meta ? `<div class="meta">${escapeHtml(meta)}</div>` : ''}
+        ${escapeHtml(cleanBody(g.body))}
+      </div>
+    </div>
+  `;
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+tryAutoLoad();
+</script>
+</body>
+</html>
