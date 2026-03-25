@@ -704,7 +704,7 @@ def get_cohort_data(weeks: int = 8) -> dict:
         cohort_map: dict[str, dict] = {}
         all_activity_weeks: set[str] = set()
         for row in rows:
-            key = str(row["cohort_week"])
+            key = row["cohort_week"].isoformat() if hasattr(row["cohort_week"], "isoformat") else str(row["cohort_week"])
             if key not in cohort_map:
                 cohort_map[key] = {
                     "week": key,
@@ -842,7 +842,7 @@ def get_cohort_data_daily(days: int = 7) -> dict:
         cohort_map: dict[str, dict] = {}
         all_activity_days: set[str] = set()
         for row in rows:
-            key = str(row["cohort_day"])
+            key = row["cohort_day"].isoformat() if hasattr(row["cohort_day"], "isoformat") else str(row["cohort_day"])
             if key not in cohort_map:
                 cohort_map[key] = {
                     "day": key,
