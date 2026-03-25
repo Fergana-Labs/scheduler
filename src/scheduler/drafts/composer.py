@@ -296,9 +296,11 @@ class DraftComposer:
         @tool(
             "propose_invite",
             "Propose a calendar invite to be sent when the user sends this draft. "
-            "Use this for meetings with other people — the invite will only be created "
-            "after the user sends the draft and an agent verifies the sent message still "
-            "confirms the meeting. Use add_calendar_event only for personal reminders/holds.",
+            "ONLY use this when the draft is a final confirmation of a time that the other "
+            "party already agreed to. Do NOT use this when merely proposing times — the other "
+            "party may not be able to accept. The invite will only be created after the user "
+            "sends the draft and an agent verifies the sent message still confirms the meeting. "
+            "Use add_calendar_event for personal reminders/holds.",
             {
                 "attendee_emails": list[str],
                 "event_summary": str,
@@ -369,11 +371,12 @@ class DraftComposer:
             "Note if the user's calendar still has the old event that should be removed.\n"
             "   - If someone is confirming a time: draft a brief confirmation. Verify there is no "
             "calendar conflict at the confirmed time.\n"
-            "5. When your reply confirms or proposes a specific meeting time with another person, "
-            "call propose_invite to attach a calendar invite proposal. The invite will NOT be sent "
-            "immediately — it will only be created after the user sends the draft and an agent verifies "
-            "the final sent message still confirms the meeting. Use propose_invite for meetings with "
-            "other people. Only use add_calendar_event for personal calendar holds.\n"
+            "5. Only call propose_invite when your reply is a FINAL CONFIRMATION of a meeting time "
+            "that the other party already agreed to. Do NOT call propose_invite when you are merely "
+            "proposing or suggesting times — the other party hasn't accepted yet, so sending an invite "
+            "would be premature. The invite will NOT be sent immediately — it will only be created after "
+            "the user sends the draft and an agent verifies the sent message. "
+            "Use add_calendar_event for personal calendar holds.\n"
             "6. Consider location preferences when drafting replies. If the thread mentions an in-person "
             "meeting but no location, suggest one based on any observed location preferences. "
             "If a location is mentioned in the thread, acknowledge it in the reply.\n"
