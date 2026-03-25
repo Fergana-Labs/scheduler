@@ -732,6 +732,17 @@ def get_cohort_data(weeks: int = 8) -> dict:
             (max(c["by_offset"].keys()) for c in cohorts if c["by_offset"]),
             default=0,
         )
+        # Generate full week series from earliest cohort to now
+        if cohorts:
+            from datetime import timedelta
+            earliest = min(datetime.fromisoformat(c["week"]) for c in cohorts)
+            now_week = datetime.fromisoformat(
+                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+            )
+            week_cursor = earliest
+            while week_cursor <= now_week:
+                all_activity_weeks.add(week_cursor.isoformat())
+                week_cursor += timedelta(weeks=1)
         sorted_activity_weeks = sorted(all_activity_weeks)
 
         # Build retention arrays (by week offset) — week 0 = 100% by definition
