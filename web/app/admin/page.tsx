@@ -87,7 +87,9 @@ function formatWeek(iso: string): string {
 
 function pct(a: number, b: number): string {
   if (b === 0) return '—';
-  return `${((a / b) * 100).toFixed(1)}%`;
+  const val = (a / b) * 100;
+  if (val > 100) return '—'; // numerator > denominator means tracking started at different times
+  return `${val.toFixed(1)}%`;
 }
 
 // --- Components ---
@@ -151,37 +153,44 @@ function FunnelChart({ data }: { data: FunnelRow[] }) {
 
 function CohortSection() {
   const [period, setPeriod] = useState<'weekly' | 'daily'>('weekly');
-  const [weeklyData, setWeeklyData] = useState<CohortData | null>(null);
-  const [dailyData, setDailyData] = useState<CohortData | null>(null);
+  const [activeOnly, setActiveOnly] = useState(false);
+  const [data, setData] = useState<CohortData | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api<CohortData>('/web/api/v1/admin/cohorts').then(setWeeklyData).finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => {
-    if (period === 'daily' && !dailyData) {
-      setLoading(true);
-      api<CohortData>('/web/api/v1/admin/cohorts/daily').then(setDailyData).finally(() => setLoading(false));
-    }
-  }, [period, dailyData]);
-
-  const data = period === 'weekly' ? weeklyData : dailyData;
+    setLoading(true);
+    const suffix = activeOnly ? '&active_only=true' : '';
+    const url = period === 'weekly'
+      ? `/web/api/v1/admin/cohorts?weeks=8${suffix}`
+      : `/web/api/v1/admin/cohorts/daily?days=7${suffix}`;
+    api<CohortData>(url).then(setData).finally(() => setLoading(false));
+  }, [period, activeOnly]);
 
   return (
     <div>
-      <div className="mb-4 flex gap-1">
-        {(['weekly', 'daily'] as const).map((p) => (
-          <button
-            key={p}
-            onClick={() => setPeriod(p)}
-            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-              period === p ? 'bg-[#43614a] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-            }`}
-          >
-            {p === 'weekly' ? 'Weekly Cohorts' : 'Last 7 Days'}
-          </button>
-        ))}
+      <div className="mb-4 flex items-center gap-4">
+        <div className="flex gap-1">
+          {(['weekly', 'daily'] as const).map((p) => (
+            <button
+              key={p}
+              onClick={() => setPeriod(p)}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                period === p ? 'bg-[#43614a] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              {p === 'weekly' ? 'Weekly Cohorts' : 'Last 7 Days'}
+            </button>
+          ))}
+        </div>
+        <label className="flex items-center gap-1.5 text-xs text-gray-600">
+          <input
+            type="checkbox"
+            checked={activeOnly}
+            onChange={(e) => setActiveOnly(e.target.checked)}
+            className="rounded"
+          />
+          User actions only
+        </label>
       </div>
       {loading ? (
         <div className="flex justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-gray-400" /></div>

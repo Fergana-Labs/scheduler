@@ -1642,9 +1642,9 @@ def admin_funnel(weeks: int = 12, admin: dict = Depends(_require_admin)):
 
 
 @app.get("/web/api/v1/admin/cohorts")
-def admin_cohorts(weeks: int = 8, admin: dict = Depends(_require_admin)):
+def admin_cohorts(weeks: int = 8, active_only: bool = False, admin: dict = Depends(_require_admin)):
     from scheduler.db import get_cohort_data
-    result = get_cohort_data(weeks=weeks)
+    result = get_cohort_data(weeks=weeks, active_only=active_only)
     for c in result["cohorts"]:
         if isinstance(c.get("week"), datetime):
             c["week"] = c["week"].isoformat()
@@ -1652,9 +1652,9 @@ def admin_cohorts(weeks: int = 8, admin: dict = Depends(_require_admin)):
 
 
 @app.get("/web/api/v1/admin/cohorts/daily")
-def admin_cohorts_daily(days: int = 7, admin: dict = Depends(_require_admin)):
+def admin_cohorts_daily(days: int = 7, active_only: bool = False, admin: dict = Depends(_require_admin)):
     from scheduler.db import get_cohort_data_daily
-    result = get_cohort_data_daily(days=days)
+    result = get_cohort_data_daily(days=days, active_only=active_only)
     for c in result["cohorts"]:
         if isinstance(c.get("week"), datetime):
             c["week"] = c["week"].isoformat()

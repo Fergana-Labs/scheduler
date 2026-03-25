@@ -655,8 +655,13 @@ def get_funnel_data(weeks: int = 12) -> list[dict]:
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-def get_cohort_data(weeks: int = 8) -> dict:
+_ALL_EVENTS = ('user_created', 'onboarding_completed', 'draft_composed', 'draft_sent', 'email_classified', 'setting_changed')
+_USER_EVENTS = ('user_created', 'onboarding_completed', 'setting_changed', 'draft_sent')
+
+
+def get_cohort_data(weeks: int = 8, active_only: bool = False) -> dict:
     """Rich cohort data: retention by week offset, plus absolute-date series for emails/active/actions."""
+    events = _USER_EVENTS if active_only else _ALL_EVENTS
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -680,7 +685,7 @@ def get_cohort_data(weeks: int = 8) -> dict:
                     count(*) AS total_actions
                 FROM cohorts c
                 JOIN analytics_events ae ON ae.user_id = c.user_id
-                WHERE ae.event IN ('user_created', 'onboarding_completed', 'draft_composed', 'draft_sent', 'email_classified', 'setting_changed')
+                WHERE ae.event = ANY(%s)
                 GROUP BY c.cohort_week, activity_week, week_offset
             )
             SELECT
@@ -695,7 +700,7 @@ def get_cohort_data(weeks: int = 8) -> dict:
             LEFT JOIN weekly_activity wa ON wa.cohort_week = cs.cohort_week
             ORDER BY cs.cohort_week, wa.activity_week
             """,
-            (weeks,),
+            (weeks, list(events)),
         )
         cols = [desc[0] for desc in cur.description]
         rows = [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -728,10 +733,8 @@ def get_cohort_data(weeks: int = 8) -> dict:
                 }
 
         cohorts = sorted(cohort_map.values(), key=lambda c: c["week"])
-        max_offset = max(
-            (max(c["by_offset"].keys()) for c in cohorts if c["by_offset"]),
-            default=0,
-        )
+        # Use full range so all cohorts get a complete timeline
+        max_offset = weeks
         # Generate full week series from earliest cohort to now
         if cohorts:
             from datetime import timedelta
@@ -794,8 +797,9 @@ def get_cohort_data(weeks: int = 8) -> dict:
         }
 
 
-def get_cohort_data_daily(days: int = 7) -> dict:
+def get_cohort_data_daily(days: int = 7, active_only: bool = False) -> dict:
     """Same as get_cohort_data but cohorts are grouped by day and activity is daily."""
+    events = _USER_EVENTS if active_only else _ALL_EVENTS
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -819,7 +823,7 @@ def get_cohort_data_daily(days: int = 7) -> dict:
                     count(*) AS total_actions
                 FROM cohorts c
                 JOIN analytics_events ae ON ae.user_id = c.user_id
-                WHERE ae.event IN ('user_created', 'onboarding_completed', 'draft_composed', 'draft_sent', 'email_classified', 'setting_changed')
+                WHERE ae.event = ANY(%s)
                 GROUP BY c.cohort_day, activity_day, day_offset
             )
             SELECT
@@ -834,7 +838,7 @@ def get_cohort_data_daily(days: int = 7) -> dict:
             LEFT JOIN daily_activity da ON da.cohort_day = cs.cohort_day
             ORDER BY cs.cohort_day, da.activity_day
             """,
-            (days,),
+            (days, list(events)),
         )
         cols = [desc[0] for desc in cur.description]
         rows = [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -878,10 +882,8 @@ def get_cohort_data_daily(days: int = 7) -> dict:
                 cursor += timedelta(days=1)
         sorted_activity_days = sorted(all_activity_days)
 
-        max_offset = max(
-            (max(c["by_offset"].keys()) for c in cohorts if c["by_offset"]),
-            default=0,
-        )
+        # Use full range so all cohorts get a complete timeline
+        max_offset = days
 
         result_cohorts = []
         for c in cohorts:
