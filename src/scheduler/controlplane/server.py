@@ -886,24 +886,20 @@ def gmail_message(message_id: str, session: dict = Depends(get_session)):
 @app.post("/api/v1/gmail/draft")
 def gmail_draft(req: CreateDraftRequest, session: dict = Depends(get_session)):
     gmail: GmailClient = session["gmail"]
-    from scheduler.drafts.composer import _apply_footer
+    from scheduler.drafts.composer import _apply_footer, _create_scheduling_link_for_draft
 
     scheduling_link_url = req.scheduling_link_url
     if not scheduling_link_url:
-        # Auto-create an availability-mode scheduling link
-        from scheduler.db import get_user_by_id as _get_u
-        _u = _get_u(session["user_id"])
-        if _u and _u.scheduled_branding_enabled:
-            from scheduler.db import create_scheduling_link as _create_sl
-            try:
-                _sl = _create_sl(
-                    user_id=session["user_id"], mode="availability",
-                    attendee_email=req.to, event_summary=req.subject,
-                    thread_id=req.thread_id,
-                )
-                scheduling_link_url = f"{config.web_app_url}/schedule/{_sl.id}"
-            except Exception:
-                logger.debug("Failed to auto-create availability link in gmail_draft")
+        calendar: CalendarClient = session["calendar"]
+        user_tz = calendar.get_user_timezone()
+        scheduling_link_url = _create_scheduling_link_for_draft(
+            user_id=session["user_id"],
+            draft_body=req.body,
+            attendee_email=req.to,
+            thread_id=req.thread_id,
+            subject=req.subject,
+            user_timezone=user_tz,
+        )
 
     body, content_type = _apply_footer(req.body, session["user_id"], scheduling_link_url)
 
@@ -927,23 +923,20 @@ def gmail_draft(req: CreateDraftRequest, session: dict = Depends(get_session)):
 @app.post("/api/v1/gmail/send")
 def gmail_send(req: SendEmailRequest, session: dict = Depends(get_session)):
     gmail: GmailClient = session["gmail"]
-    from scheduler.drafts.composer import _apply_footer
+    from scheduler.drafts.composer import _apply_footer, _create_scheduling_link_for_draft
 
     scheduling_link_url = req.scheduling_link_url
     if not scheduling_link_url:
-        from scheduler.db import get_user_by_id as _get_u2
-        _u2 = _get_u2(session["user_id"])
-        if _u2 and _u2.scheduled_branding_enabled:
-            from scheduler.db import create_scheduling_link as _create_sl2
-            try:
-                _sl2 = _create_sl2(
-                    user_id=session["user_id"], mode="availability",
-                    attendee_email=req.to, event_summary=req.subject,
-                    thread_id=req.thread_id,
-                )
-                scheduling_link_url = f"{config.web_app_url}/schedule/{_sl2.id}"
-            except Exception:
-                logger.debug("Failed to auto-create availability link in gmail_send")
+        calendar: CalendarClient = session["calendar"]
+        user_tz = calendar.get_user_timezone()
+        scheduling_link_url = _create_scheduling_link_for_draft(
+            user_id=session["user_id"],
+            draft_body=req.body,
+            attendee_email=req.to,
+            thread_id=req.thread_id,
+            subject=req.subject,
+            user_timezone=user_tz,
+        )
 
     body, content_type = _apply_footer(req.body, session["user_id"], scheduling_link_url)
 

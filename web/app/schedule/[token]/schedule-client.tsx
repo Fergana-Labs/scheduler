@@ -24,7 +24,6 @@ interface SchedulingLinkData {
   location: string;
   add_google_meet: boolean;
   expires_at: string | null;
-  // For confirmed state
   confirmed_time_start?: string;
   confirmed_time_end?: string;
 }
@@ -46,7 +45,6 @@ type PageState =
 function generateSlots(
   windows: { date: string; start: string; end: string }[],
   durationMinutes: number,
-  hostTimezone: string,
 ) {
   const slots: { start: Date; end: Date; dateKey: string }[] = [];
   const now = new Date();
@@ -55,7 +53,6 @@ function generateSlots(
     const [startH, startM] = w.start.split(':').map(Number);
     const [endH, endM] = w.end.split(':').map(Number);
 
-    // Create date in the host's timezone
     const baseDate = new Date(`${w.date}T00:00:00`);
     let cursor = new Date(baseDate);
     cursor.setHours(startH, startM, 0, 0);
@@ -68,11 +65,7 @@ function generateSlots(
       const slotEnd = new Date(cursor.getTime() + durationMinutes * 60000);
 
       if (slotStart > now) {
-        slots.push({
-          start: slotStart,
-          end: slotEnd,
-          dateKey: w.date,
-        });
+        slots.push({ start: slotStart, end: slotEnd, dateKey: w.date });
       }
 
       cursor = new Date(cursor.getTime() + durationMinutes * 60000);
@@ -110,7 +103,7 @@ function groupByDate<T extends { dateKey: string }>(items: T[]) {
 
 // -- When2Meet Grid Helpers --
 
-function generateGridDates(days: number = 14): string[] {
+function generateGridDates(days: number = 7): string[] {
   const dates: string[] = [];
   const now = new Date();
   for (let i = 0; i < days; i++) {
@@ -146,7 +139,7 @@ function formatGridDate(dateStr: string) {
 
 function MarketingPanel() {
   return (
-    <div className="bg-gray-50 rounded-2xl p-8 flex flex-col items-center text-center">
+    <div className="bg-gray-50 rounded-2xl p-6 sm:p-8 flex flex-col items-center text-center">
       {/* Greyed-out calendar mock */}
       <div className="w-full max-w-xs mb-6">
         <div className="grid grid-cols-7 gap-1 opacity-30">
@@ -199,7 +192,7 @@ function AvailabilityGrid({
   onSubmit: (availability: { date: string; start: string; end: string }[]) => void;
   submitting: boolean;
 }) {
-  const dates = generateGridDates(14);
+  const dates = generateGridDates(7);
   const times = generateGridTimes();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [isDragging, setIsDragging] = useState(false);
@@ -208,28 +201,12 @@ function AvailabilityGrid({
 
   const cellKey = (date: string, time: string) => `${date}|${time}`;
 
-  const handleMouseDown = (date: string, time: string) => {
-    const key = cellKey(date, time);
-    setIsDragging(true);
-    if (selected.has(key)) {
-      setDragMode('deselect');
-      setSelected((prev) => {
-        const next = new Set(prev);
-        next.delete(key);
-        return next;
-      });
-    } else {
-      setDragMode('select');
-      setSelected((prev) => new Set(prev).add(key));
-    }
-  };
-
-  const handleMouseEnter = (date: string, time: string) => {
-    if (!isDragging) return;
+  const toggleCell = (date: string, time: string, mode?: 'select' | 'deselect') => {
     const key = cellKey(date, time);
     setSelected((prev) => {
       const next = new Set(prev);
-      if (dragMode === 'select') {
+      const shouldSelect = mode ? mode === 'select' : !prev.has(key);
+      if (shouldSelect) {
         next.add(key);
       } else {
         next.delete(key);
@@ -238,13 +215,60 @@ function AvailabilityGrid({
     });
   };
 
+  const handleMouseDown = (date: string, time: string) => {
+    const key = cellKey(date, time);
+    setIsDragging(true);
+    const mode = selected.has(key) ? 'deselect' : 'select';
+    setDragMode(mode);
+    toggleCell(date, time, mode);
+  };
+
+  const handleMouseEnter = (date: string, time: string) => {
+    if (!isDragging) return;
+    toggleCell(date, time, dragMode);
+  };
+
   const handleMouseUp = useCallback(() => {
     setIsDragging(false);
   }, []);
 
+  // Touch support
+  const getCellFromTouch = useCallback((e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    if (!touch) return null;
+    const el = document.elementFromPoint(touch.clientX, touch.clientY);
+    if (!el) return null;
+    const date = el.getAttribute('data-date');
+    const time = el.getAttribute('data-time');
+    if (date && time) return { date, time };
+    return null;
+  }, []);
+
+  const handleTouchStart = (date: string, time: string) => {
+    const key = cellKey(date, time);
+    setIsDragging(true);
+    const mode = selected.has(key) ? 'deselect' : 'select';
+    setDragMode(mode);
+    toggleCell(date, time, mode);
+  };
+
+  const handleTouchMove = useCallback(
+    (e: React.TouchEvent) => {
+      if (!isDragging) return;
+      e.preventDefault();
+      const cell = getCellFromTouch(e);
+      if (cell) toggleCell(cell.date, cell.time, dragMode);
+    },
+    [isDragging, dragMode, getCellFromTouch],
+  );
+
   useEffect(() => {
     window.addEventListener('mouseup', handleMouseUp);
-    return () => window.removeEventListener('mouseup', handleMouseUp);
+    window.addEventListener('touchend', handleMouseUp);
+    return () => {
+      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('touchend', handleMouseUp);
+    };
   }, [handleMouseUp]);
 
   const handleSubmit = () => {
@@ -269,17 +293,18 @@ function AvailabilityGrid({
     <div>
       <div
         ref={gridRef}
-        className="overflow-x-auto select-none"
+        className="overflow-x-auto select-none touch-none"
         onMouseLeave={() => setIsDragging(false)}
+        onTouchMove={handleTouchMove}
       >
-        <table className="border-collapse text-xs">
+        <table className="border-collapse text-xs w-full">
           <thead>
             <tr>
-              <th className="sticky left-0 bg-white z-10 px-2 py-1" />
+              <th className="sticky left-0 bg-white z-10 px-1 sm:px-2 py-1 w-12 sm:w-16" />
               {dates.map((d) => (
                 <th
                   key={d}
-                  className="px-1 py-1 text-gray-500 font-medium whitespace-nowrap min-w-[52px]"
+                  className="px-0.5 sm:px-1 py-1 text-gray-500 font-medium whitespace-nowrap text-[10px] sm:text-xs"
                 >
                   {formatGridDate(d)}
                 </th>
@@ -289,7 +314,7 @@ function AvailabilityGrid({
           <tbody>
             {times.map((time) => (
               <tr key={time}>
-                <td className="sticky left-0 bg-white z-10 px-2 py-0.5 text-gray-400 text-right whitespace-nowrap border-r border-gray-100">
+                <td className="sticky left-0 bg-white z-10 px-1 sm:px-2 py-0.5 text-gray-400 text-right whitespace-nowrap border-r border-gray-100 text-[10px] sm:text-xs">
                   {time.endsWith(':00') ? formatGridTime(time) : ''}
                 </td>
                 {dates.map((date) => {
@@ -298,14 +323,17 @@ function AvailabilityGrid({
                   return (
                     <td
                       key={key}
+                      data-date={date}
+                      data-time={time}
                       className={`border border-gray-100 cursor-pointer transition-colors ${
                         isSelected
                           ? 'bg-emerald-400 hover:bg-emerald-500'
                           : 'bg-white hover:bg-emerald-50'
                       }`}
-                      style={{ minWidth: 52, height: 20 }}
+                      style={{ minWidth: 40, height: 22 }}
                       onMouseDown={() => handleMouseDown(date, time)}
                       onMouseEnter={() => handleMouseEnter(date, time)}
+                      onTouchStart={() => handleTouchStart(date, time)}
                     />
                   );
                 })}
@@ -315,14 +343,14 @@ function AvailabilityGrid({
         </table>
       </div>
 
-      <div className="mt-4 flex items-center justify-between">
+      <div className="mt-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <p className="text-xs text-gray-400">
           Click and drag to select your available times
         </p>
         <button
           onClick={handleSubmit}
           disabled={selected.size === 0 || submitting}
-          className="inline-flex items-center gap-2 bg-black text-white px-5 py-2 rounded-lg text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-800 transition-colors"
+          className="inline-flex items-center gap-2 bg-black text-white px-5 py-2.5 rounded-lg text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-800 transition-colors w-full sm:w-auto justify-center"
         >
           {submitting ? (
             <Loader2 className="w-4 h-4 animate-spin" />
@@ -444,18 +472,32 @@ export default function SchedulePageClient({ token }: { token: string }) {
 
   return (
     <div className="min-h-screen bg-white font-[family-name:var(--font-geist-sans)]">
-      <div className="max-w-6xl mx-auto px-4 py-12">
+      {/* Header */}
+      <header className="border-b border-gray-100">
+        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center gap-2">
+          <a
+            href="https://tryscheduled.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xl font-bold text-gray-900 font-[family-name:var(--font-space-grotesk)] tracking-tight hover:text-gray-700 transition-colors"
+          >
+            Scheduled
+          </a>
+        </div>
+      </header>
+
+      <div className="max-w-6xl mx-auto px-4 py-8 sm:py-12">
         <div className="flex flex-col lg:flex-row gap-8">
           {/* Left panel */}
           <div className="flex-1 min-w-0">
             {state === 'loading' && (
-              <div className="flex items-center justify-center py-24">
+              <div className="flex items-center justify-center py-20 sm:py-24">
                 <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
               </div>
             )}
 
             {state === 'not_found' && (
-              <div className="text-center py-24">
+              <div className="text-center py-20 sm:py-24 px-4">
                 <AlertCircle className="w-12 h-12 text-gray-300 mx-auto mb-4" />
                 <h2 className="text-xl font-semibold text-gray-800 mb-2">
                   Link not found
@@ -467,7 +509,7 @@ export default function SchedulePageClient({ token }: { token: string }) {
             )}
 
             {state === 'expired' && (
-              <div className="text-center py-24">
+              <div className="text-center py-20 sm:py-24 px-4">
                 <Clock className="w-12 h-12 text-gray-300 mx-auto mb-4" />
                 <h2 className="text-xl font-semibold text-gray-800 mb-2">
                   Link expired
@@ -480,7 +522,7 @@ export default function SchedulePageClient({ token }: { token: string }) {
             )}
 
             {state === 'already_confirmed' && data && (
-              <div className="text-center py-24">
+              <div className="text-center py-20 sm:py-24 px-4">
                 <Check className="w-12 h-12 text-emerald-500 mx-auto mb-4" />
                 <h2 className="text-xl font-semibold text-gray-800 mb-2">
                   Already scheduled
@@ -502,7 +544,7 @@ export default function SchedulePageClient({ token }: { token: string }) {
             )}
 
             {state === 'already_submitted' && (
-              <div className="text-center py-24">
+              <div className="text-center py-20 sm:py-24 px-4">
                 <Check className="w-12 h-12 text-blue-500 mx-auto mb-4" />
                 <h2 className="text-xl font-semibold text-gray-800 mb-2">
                   Availability received
@@ -515,7 +557,7 @@ export default function SchedulePageClient({ token }: { token: string }) {
             )}
 
             {state === 'success' && data && (
-              <div className="text-center py-24">
+              <div className="text-center py-20 sm:py-24 px-4">
                 <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
                   <Check className="w-8 h-8 text-emerald-600" />
                 </div>
@@ -540,7 +582,7 @@ export default function SchedulePageClient({ token }: { token: string }) {
             )}
 
             {state === 'submitted' && data && (
-              <div className="text-center py-24">
+              <div className="text-center py-20 sm:py-24 px-4">
                 <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
                   <Check className="w-8 h-8 text-blue-600" />
                 </div>
@@ -554,7 +596,7 @@ export default function SchedulePageClient({ token }: { token: string }) {
             )}
 
             {state === 'error' && (
-              <div className="text-center py-24">
+              <div className="text-center py-20 sm:py-24 px-4">
                 <AlertCircle className="w-12 h-12 text-red-300 mx-auto mb-4" />
                 <h2 className="text-xl font-semibold text-gray-800 mb-2">
                   Something went wrong
@@ -565,15 +607,15 @@ export default function SchedulePageClient({ token }: { token: string }) {
 
             {(state === 'selecting' || state === 'confirming') && data && (
               <div>
-                {/* Header */}
+                {/* Meeting info header */}
                 <div className="mb-8">
-                  <h1 className="text-2xl font-bold text-gray-900 font-[family-name:var(--font-space-grotesk)] mb-1">
+                  <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 font-[family-name:var(--font-space-grotesk)] mb-1">
                     {data.host_name}
                   </h1>
-                  <h2 className="text-lg text-gray-600 mb-3">
+                  <h2 className="text-base sm:text-lg text-gray-600 mb-3">
                     {data.event_summary}
                   </h2>
-                  <div className="flex items-center gap-4 text-sm text-gray-400">
+                  <div className="flex flex-wrap items-center gap-3 sm:gap-4 text-sm text-gray-400">
                     <span className="inline-flex items-center gap-1">
                       <Clock className="w-3.5 h-3.5" />
                       {data.duration_minutes} min
@@ -608,7 +650,6 @@ export default function SchedulePageClient({ token }: { token: string }) {
                       const slots = generateSlots(
                         data.suggested_windows,
                         data.duration_minutes,
-                        data.timezone,
                       );
                       const grouped = groupByDate(slots);
 
@@ -641,10 +682,10 @@ export default function SchedulePageClient({ token }: { token: string }) {
                                         setError('');
                                       }}
                                       disabled={state === 'confirming'}
-                                      className={`px-3 py-2.5 rounded-lg border text-sm font-medium transition-all ${
+                                      className={`px-3 py-3 sm:py-2.5 rounded-lg border text-sm font-medium transition-all ${
                                         isSelected
                                           ? 'border-black bg-black text-white'
-                                          : 'border-gray-200 text-gray-700 hover:border-gray-400 hover:bg-gray-50'
+                                          : 'border-gray-200 text-gray-700 hover:border-gray-400 hover:bg-gray-50 active:bg-gray-100'
                                       } disabled:opacity-50`}
                                     >
                                       {formatTime(slot.start)} &ndash;{' '}
@@ -660,7 +701,7 @@ export default function SchedulePageClient({ token }: { token: string }) {
                     })()}
 
                     {selectedSlot && (
-                      <div className="mt-6 p-4 bg-gray-50 rounded-xl flex items-center justify-between">
+                      <div className="mt-6 p-4 bg-gray-50 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                         <div>
                           <p className="text-sm font-medium text-gray-800">
                             {selectedSlot.start.toLocaleDateString(undefined, {
@@ -677,7 +718,7 @@ export default function SchedulePageClient({ token }: { token: string }) {
                         <button
                           onClick={handleConfirm}
                           disabled={state === 'confirming'}
-                          className="inline-flex items-center gap-2 bg-black text-white px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors disabled:opacity-50"
+                          className="inline-flex items-center gap-2 bg-black text-white px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors disabled:opacity-50 w-full sm:w-auto justify-center"
                         >
                           {state === 'confirming' ? (
                             <Loader2 className="w-4 h-4 animate-spin" />

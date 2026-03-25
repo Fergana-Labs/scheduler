@@ -29,11 +29,111 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _analyze_draft_for_scheduling(
+    draft_body: str,
+    attendee_email: str,
+    user_timezone: str,
+) -> dict:
+    """Single LLM call to analyze a composed draft and extract scheduling info.
+
+    Returns a dict with:
+      - mode: "suggested" or "availability"
+      - suggested_windows: list of {date, start, end} if mode is "suggested"
+      - duration_minutes: int
+      - event_summary: str
+    """
+    from anthropic import Anthropic
+    from scheduler.config import config
+
+    if not config.anthropic_api_key:
+        return {"mode": "availability"}
+
+    client = Anthropic(api_key=config.anthropic_api_key)
+
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
+        system=(
+            "You analyze email drafts to extract scheduling information.\n\n"
+            "Given a draft email body, determine:\n"
+            "1. Does this draft propose specific meeting times? If yes, mode is \"suggested\". "
+            "If it's a general reply without time proposals, mode is \"availability\".\n"
+            "2. If \"suggested\": extract the available time windows as broad ranges. "
+            "For each proposed time, create a window that covers a reasonable range around it "
+            "(e.g., if proposing '2pm on Tuesday', create a window like 1pm-5pm on that date). "
+            "Times should be in the user's local timezone.\n"
+            "3. Estimate the meeting duration from context (default 30 minutes).\n"
+            "4. Extract a short event summary.\n\n"
+            f"The user's timezone is {user_timezone}.\n\n"
+            "Respond with ONLY a JSON object:\n"
+            "{\n"
+            '  "mode": "suggested" | "availability",\n'
+            '  "suggested_windows": [{"date": "YYYY-MM-DD", "start": "HH:MM", "end": "HH:MM"}],\n'
+            '  "duration_minutes": integer,\n'
+            '  "event_summary": "short summary"\n'
+            "}\n"
+            "suggested_windows should be empty [] if mode is \"availability\"."
+        ),
+        messages=[{"role": "user", "content": f"Draft email body:\n\n{draft_body}"}],
+    )
+
+    try:
+        text = response.content[0].text.strip()
+        # Handle markdown code blocks
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        result = json.loads(text)
+        return {
+            "mode": result.get("mode", "availability"),
+            "suggested_windows": result.get("suggested_windows", []),
+            "duration_minutes": result.get("duration_minutes", 30),
+            "event_summary": result.get("event_summary", "Meeting"),
+        }
+    except (json.JSONDecodeError, IndexError, KeyError):
+        logger.debug("Failed to parse scheduling analysis response", exc_info=True)
+        return {"mode": "availability"}
+
+
+def _create_scheduling_link_for_draft(
+    user_id: str,
+    draft_body: str,
+    attendee_email: str,
+    thread_id: str | None,
+    subject: str,
+    user_timezone: str,
+) -> str | None:
+    """Analyze a draft and create the appropriate scheduling link. Returns the link URL or None."""
+    from scheduler.db import get_user_by_id
+
+    user = get_user_by_id(user_id)
+    if not user or not user.scheduled_branding_enabled:
+        return None
+
+    from scheduler.config import config
+    from scheduler.db import create_scheduling_link as db_create
+
+    try:
+        analysis = _analyze_draft_for_scheduling(draft_body, attendee_email, user_timezone)
+
+        link = db_create(
+            user_id=user_id,
+            mode=analysis.get("mode", "availability"),
+            attendee_email=attendee_email,
+            event_summary=analysis.get("event_summary", subject or "Meeting"),
+            duration_minutes=analysis.get("duration_minutes", 30),
+            tz=user_timezone,
+            suggested_windows=analysis.get("suggested_windows", []),
+            thread_id=thread_id,
+        )
+        return f"{config.web_app_url}/schedule/{link.id}"
+    except Exception:
+        logger.debug("Failed to create scheduling link for draft", exc_info=True)
+        return None
+
+
 def _build_footer(user_id: str, scheduling_link_url: str | None = None) -> tuple[str, bool]:
     """Build the email footer HTML. Returns (footer_html, should_use_html).
 
-    If scheduling_link_url is provided, uses the "Find a time" footer.
-    If not, auto-creates an availability-mode scheduling link and uses that.
     Returns empty string if branding is disabled.
     """
     from scheduler.db import get_user_by_id
@@ -43,16 +143,17 @@ def _build_footer(user_id: str, scheduling_link_url: str | None = None) -> tuple
         return "", False
 
     display_name = user.display_name or user.email.split("@")[0]
+    capitalized_name = display_name.title()
 
     if not scheduling_link_url:
         return (
-            f'<br><br>sent by <a href="https://tryscheduled.com">Scheduled.</a>',
+            '<br><br>sent by <a href="https://tryscheduled.com">Scheduled.</a>',
             True,
         )
 
     return (
-        f'<br><br>Find a time automatically with {html.escape(display_name)} '
-        f'using <a href="{scheduling_link_url}">Scheduled</a>',
+        f'<br><br>Try <a href="{scheduling_link_url}">Scheduled</a> to find a time '
+        f'automatically with {html.escape(capitalized_name)}',
         True,
     )
 
@@ -82,8 +183,6 @@ class DraftBackend(Protocol):
     def create_draft(self, args: dict, scheduling_link_url: str | None = None) -> dict: ...
 
     def send_email(self, args: dict, scheduling_link_url: str | None = None) -> dict: ...
-
-    def create_scheduling_link(self, args: dict) -> dict: ...
 
 
 class LocalDraftBackend:
@@ -140,8 +239,15 @@ class LocalDraftBackend:
         body = args["body"]
 
         if not scheduling_link_url:
-            # Auto-create availability-mode scheduling link for the footer
-            scheduling_link_url = self._auto_create_availability_link(args)
+            user_tz = self._calendar.get_user_timezone()
+            scheduling_link_url = _create_scheduling_link_for_draft(
+                user_id=self._user_id,
+                draft_body=body,
+                attendee_email=args.get("to", ""),
+                thread_id=args.get("thread_id"),
+                subject=args.get("subject", "Meeting"),
+                user_timezone=user_tz,
+            )
 
         body, content_type = _apply_footer(body, self._user_id, scheduling_link_url)
 
@@ -170,7 +276,15 @@ class LocalDraftBackend:
         body = args["body"]
 
         if not scheduling_link_url:
-            scheduling_link_url = self._auto_create_availability_link(args)
+            user_tz = self._calendar.get_user_timezone()
+            scheduling_link_url = _create_scheduling_link_for_draft(
+                user_id=self._user_id,
+                draft_body=body,
+                attendee_email=args.get("to", ""),
+                thread_id=args.get("thread_id"),
+                subject=args.get("subject", "Meeting"),
+                user_timezone=user_tz,
+            )
 
         body, content_type = _apply_footer(body, self._user_id, scheduling_link_url)
 
@@ -195,50 +309,6 @@ class LocalDraftBackend:
         )
 
         return {"message_id": message_id, "status": "sent"}
-
-    def create_scheduling_link(self, args: dict) -> dict:
-        from scheduler.config import config
-        from scheduler.db import create_scheduling_link as db_create
-
-        link = db_create(
-            user_id=self._user_id,
-            mode="suggested",
-            attendee_email=args["attendee_email"],
-            event_summary=args.get("event_summary", "Meeting"),
-            duration_minutes=args.get("duration_minutes", 30),
-            tz=args.get("timezone", "America/New_York"),
-            suggested_windows=args.get("suggested_windows", []),
-            thread_id=args.get("thread_id"),
-            attendee_name=args.get("attendee_name"),
-            add_google_meet=args.get("add_google_meet", False),
-            location=args.get("location", ""),
-        )
-        url = f"{config.web_app_url}/schedule/{link.id}"
-        return {"link_id": str(link.id), "url": url}
-
-    def _auto_create_availability_link(self, args: dict) -> str | None:
-        """Auto-create an availability-mode scheduling link for the email footer."""
-        from scheduler.db import get_user_by_id
-
-        user = get_user_by_id(self._user_id)
-        if not user or not user.scheduled_branding_enabled:
-            return None
-
-        from scheduler.config import config
-        from scheduler.db import create_scheduling_link as db_create
-
-        try:
-            link = db_create(
-                user_id=self._user_id,
-                mode="availability",
-                attendee_email=args.get("to", ""),
-                event_summary=args.get("subject", "Meeting"),
-                thread_id=args.get("thread_id"),
-            )
-            return f"{config.web_app_url}/schedule/{link.id}"
-        except Exception:
-            logger.debug("Failed to auto-create availability link", exc_info=True)
-            return None
 
 
 def _email_field(email: Any, key: str) -> Any:
@@ -321,10 +391,9 @@ class DraftComposer:
 
         return "\n".join(parts)
 
-    def _build_tools(self) -> tuple[list, dict, dict, dict]:
+    def _build_tools(self) -> tuple[list, dict, dict]:
         draft_result: dict = {"draft_id": None}
         invite_proposal: dict = {"proposal": None}
-        scheduling_link_result: dict = {"link": None}
 
         backend = self._backend
 
@@ -359,9 +428,7 @@ class DraftComposer:
             },
         )
         async def create_draft(args):
-            link = scheduling_link_result.get("link")
-            scheduling_url = link["url"] if link else None
-            result = backend.create_draft(args, scheduling_link_url=scheduling_url)
+            result = backend.create_draft(args)
             draft_result["draft_id"] = result.get("draft_id")
             return {"content": [{"type": "text", "text": json.dumps(result)}]}
 
@@ -396,32 +463,6 @@ class DraftComposer:
         async def propose_invite(args):
             invite_proposal["proposal"] = args
             return {"content": [{"type": "text", "text": json.dumps({"status": "invite_proposed", **args})}]}
-
-        @tool(
-            "create_scheduling_link",
-            "Create a scheduling link with your available time windows for the recipient. "
-            "The recipient will see these windows and pick a specific time slot, and a calendar "
-            "invite will be sent automatically. Specify broad windows of availability "
-            "(e.g., 9am-12pm on Monday) and the meeting duration. The page will break these "
-            "into selectable slots. Call this AFTER checking calendar availability. "
-            "Suggest windows across multiple days when possible. "
-            "Do NOT call this when confirming an already-agreed time (use propose_invite instead).",
-            {
-                "attendee_email": str,
-                "attendee_name": str,
-                "event_summary": str,
-                "duration_minutes": int,
-                "timezone": str,
-                "suggested_windows": list,
-                "thread_id": str,
-                "add_google_meet": bool,
-                "location": str,
-            },
-        )
-        async def create_scheduling_link(args):
-            result = backend.create_scheduling_link(args)
-            scheduling_link_result["link"] = result
-            return {"content": [{"type": "text", "text": json.dumps(result)}]}
 
         @tool(
             "get_booking_page_times",
@@ -468,7 +509,7 @@ class DraftComposer:
 
         all_tools = [
             get_calendar_events, read_thread, create_draft, add_calendar_event,
-            propose_invite, create_scheduling_link, get_booking_page_times, book_meeting_slot,
+            propose_invite, get_booking_page_times, book_meeting_slot,
         ]
 
         if self._autopilot:
@@ -481,19 +522,17 @@ class DraftComposer:
                 {"thread_id": str, "to": str, "cc": str, "subject": str, "body": str},
             )
             async def send_email(args):
-                link = scheduling_link_result.get("link")
-                scheduling_url = link["url"] if link else None
-                result = backend.send_email(args, scheduling_link_url=scheduling_url)
+                result = backend.send_email(args)
                 draft_result["draft_id"] = f"sent:{result['message_id']}"
                 return {"content": [{"type": "text", "text": json.dumps(result)}]}
 
             all_tools.append(send_email)
 
-        return all_tools, draft_result, invite_proposal, scheduling_link_result
+        return all_tools, draft_result, invite_proposal
 
     def compose_and_create_draft(self, email: Any, classification: "ClassificationResult" | dict, current_datetime: str | None = None) -> dict:
         system_prompt = self._build_system_prompt()
-        tools, draft_result, invite_proposal, scheduling_link_result = self._build_tools()
+        tools, draft_result, invite_proposal = self._build_tools()
         server = create_sdk_mcp_server("draft-tools", tools=tools)
         classification_dict = _classification_dict(classification)
 
@@ -541,14 +580,7 @@ class DraftComposer:
             "7. Consider location preferences when drafting replies. If the thread mentions an in-person "
             "meeting but no location, suggest one based on any observed location preferences. "
             "If a location is mentioned in the thread, acknowledge it in the reply.\n"
-            "8. When proposing multiple time options in your draft, also call create_scheduling_link "
-            "with the available time windows BEFORE calling create_draft. This lets the recipient "
-            "pick a time with one click. Specify broad windows (e.g. 9am-12pm) and the meeting "
-            "duration — the recipient's page will break them into selectable slots. Each window "
-            "should be a dict with 'date' (YYYY-MM-DD), 'start' (HH:MM), and 'end' (HH:MM) in "
-            "the user's local timezone. Do NOT call create_scheduling_link when confirming an "
-            "already-agreed time (use propose_invite instead).\n"
-            "9. Create a natural-sounding reply. Do not use passive-aggressive phrases like "
+            "8. Create a natural-sounding reply. Do not use passive-aggressive phrases like "
             "\"as I mentioned\", \"per my last email\", or \"let's try this again\". "
             "Be warm and accommodating, not impatient. "
             + (
@@ -611,5 +643,4 @@ class DraftComposer:
         return {
             "draft_id": draft_result.get("draft_id") or None,
             "invite_proposal": invite_proposal.get("proposal"),
-            "scheduling_link": scheduling_link_result.get("link"),
         }
