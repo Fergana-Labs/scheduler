@@ -120,7 +120,10 @@ class CalendarClient:
         page_token = None
 
         while True:
-            result = service.calendarList().list(pageToken=page_token).execute()
+            result = service.calendarList().list(
+                pageToken=page_token,
+                showHidden=True,
+            ).execute()
             for item in result.get("items", []):
                 calendars.append({
                     "id": item["id"],
