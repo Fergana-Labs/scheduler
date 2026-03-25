@@ -149,7 +149,52 @@ function FunnelChart({ data }: { data: FunnelRow[] }) {
   );
 }
 
-function CohortCharts({ data }: { data: CohortData }) {
+function CohortSection() {
+  const [period, setPeriod] = useState<'weekly' | 'daily'>('weekly');
+  const [weeklyData, setWeeklyData] = useState<CohortData | null>(null);
+  const [dailyData, setDailyData] = useState<CohortData | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api<CohortData>('/web/api/v1/admin/cohorts').then(setWeeklyData).finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (period === 'daily' && !dailyData) {
+      setLoading(true);
+      api<CohortData>('/web/api/v1/admin/cohorts/daily').then(setDailyData).finally(() => setLoading(false));
+    }
+  }, [period, dailyData]);
+
+  const data = period === 'weekly' ? weeklyData : dailyData;
+
+  return (
+    <div>
+      <div className="mb-4 flex gap-1">
+        {(['weekly', 'daily'] as const).map((p) => (
+          <button
+            key={p}
+            onClick={() => setPeriod(p)}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              period === p ? 'bg-[#43614a] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            {p === 'weekly' ? 'Weekly Cohorts' : 'Last 7 Days'}
+          </button>
+        ))}
+      </div>
+      {loading ? (
+        <div className="flex justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-gray-400" /></div>
+      ) : data ? (
+        <CohortCharts data={data} periodLabel={period === 'weekly' ? 'W' : 'D'} />
+      ) : (
+        <p className="text-gray-500">No cohort data yet.</p>
+      )}
+    </div>
+  );
+}
+
+function CohortCharts({ data, periodLabel }: { data: CohortData; periodLabel: string }) {
   const { cohorts, max_weeks, emails_by_week, active_by_week } = data;
   if (cohorts.length === 0) {
     return <p className="text-gray-500">No cohort data yet.</p>;
@@ -160,28 +205,32 @@ function CohortCharts({ data }: { data: CohortData }) {
 
   // 1. Retention line chart (by week offset, starts at 100%)
   const retentionData = weekOffsets.map((offset) => {
-    const point: Record<string, unknown> = { week: `W${offset}` };
+    const point: Record<string, unknown> = { week: `${periodLabel}${offset}` };
     cohorts.forEach((c) => {
       point[formatWeek(c.week)] = c.retention[offset] ?? 0;
     });
     return point;
   });
 
+  // Map raw cohort week keys to formatted labels
+  const rawCohortKeys = cohorts.map((c) => c.week);
+  function remapCohortKeys(point: TimeSeriesPoint): Record<string, unknown> {
+    const out: Record<string, unknown> = { week: formatWeek(point.week as string) };
+    rawCohortKeys.forEach((raw, i) => {
+      out[cohortKeys[i]] = point[raw] ?? 0;
+    });
+    return out;
+  }
+
   // 2. Emails sent by absolute date (from backend)
-  const emailsData = emails_by_week.map((p) => ({
-    ...p,
-    week: formatWeek(p.week as string),
-  }));
+  const emailsData = emails_by_week.map(remapCohortKeys);
 
   // 3. Active users by absolute date (from backend)
-  const activeData = active_by_week.map((p) => ({
-    ...p,
-    week: formatWeek(p.week as string),
-  }));
+  const activeData = active_by_week.map(remapCohortKeys);
 
   // 4. Avg cumulative actions per user (by week offset)
   const lifetimeData = weekOffsets.map((offset) => {
-    const point: Record<string, unknown> = { week: `W${offset}` };
+    const point: Record<string, unknown> = { week: `${periodLabel}${offset}` };
     cohorts.forEach((c) => {
       point[formatWeek(c.week)] = c.lifetime_actions[offset] ?? 0;
     });
@@ -257,8 +306,20 @@ function CohortCharts({ data }: { data: CohortData }) {
   );
 }
 
+interface DraftStats {
+  total_drafts: number;
+  total_sent: number;
+  total_edited: number;
+  avg_edit_pct: number | null;
+  avg_chars_added: number | null;
+  avg_chars_removed: number | null;
+  total_autopilot: number;
+  autopilot_sent: number;
+}
+
 function DraftBrowser() {
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
+  const [stats, setStats] = useState<DraftStats | null>(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [emailSearch, setEmailSearch] = useState('');
@@ -267,6 +328,10 @@ function DraftBrowser() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const perPage = 20;
+
+  useEffect(() => {
+    api<DraftStats>('/web/api/v1/admin/drafts/stats').then(setStats).catch(() => {});
+  }, []);
 
   const fetchDrafts = useCallback(async () => {
     setLoading(true);
@@ -299,6 +364,34 @@ function DraftBrowser() {
 
   return (
     <div>
+      {stats && (
+        <div className="mb-6 flex flex-wrap gap-4">
+          <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-2.5">
+            <div className="text-xs text-gray-500">Total Drafts</div>
+            <div className="text-xl font-semibold">{stats.total_drafts}</div>
+          </div>
+          <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-2.5">
+            <div className="text-xs text-gray-500">Drafts Sent</div>
+            <div className="text-xl font-semibold">{stats.total_sent}</div>
+          </div>
+          <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-2.5">
+            <div className="text-xs text-gray-500">% Sent</div>
+            <div className="text-xl font-semibold">{stats.total_drafts > 0 ? `${((stats.total_sent / stats.total_drafts) * 100).toFixed(1)}%` : '—'}</div>
+          </div>
+          <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-2.5">
+            <div className="text-xs text-gray-500">Edited Before Send</div>
+            <div className="text-xl font-semibold">{stats.total_edited}</div>
+          </div>
+          <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-2.5">
+            <div className="text-xs text-gray-500">Avg Edit %</div>
+            <div className="text-xl font-semibold">{stats.avg_edit_pct !== null ? `${(stats.avg_edit_pct * 100).toFixed(1)}%` : '—'}</div>
+          </div>
+          <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-2.5">
+            <div className="text-xs text-gray-500">Autopilot Sent</div>
+            <div className="text-xl font-semibold">{stats.autopilot_sent} / {stats.total_autopilot}</div>
+          </div>
+        </div>
+      )}
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
@@ -469,7 +562,6 @@ function DraftBrowser() {
 export default function AdminDashboard() {
   const [tab, setTab] = useState<Tab>('funnel');
   const [funnelData, setFunnelData] = useState<FunnelRow[] | null>(null);
-  const [cohortData, setCohortData] = useState<CohortData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -478,12 +570,8 @@ export default function AdminDashboard() {
     async function init() {
       try {
         await api('/auth/me');
-        const [funnel, cohorts] = await Promise.all([
-          api<{ data: FunnelRow[] }>('/web/api/v1/admin/funnel'),
-          api<CohortData>('/web/api/v1/admin/cohorts'),
-        ]);
+        const funnel = await api<{ data: FunnelRow[] }>('/web/api/v1/admin/funnel');
         setFunnelData(funnel.data);
-        setCohortData(cohorts);
       } catch (err: unknown) {
         const status = err instanceof Error && 'status' in err ? (err as { status: number }).status : 0;
         if (status === 403) {
@@ -545,7 +633,7 @@ export default function AdminDashboard() {
       </div>
       <div className="mt-6">
         {tab === 'funnel' && funnelData && <FunnelChart data={funnelData} />}
-        {tab === 'cohorts' && cohortData && <CohortCharts data={cohortData} />}
+        {tab === 'cohorts' && <CohortSection />}
         {tab === 'drafts' && <DraftBrowser />}
       </div>
     </div>

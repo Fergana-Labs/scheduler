@@ -1651,6 +1651,22 @@ def admin_cohorts(weeks: int = 8, admin: dict = Depends(_require_admin)):
     return result
 
 
+@app.get("/web/api/v1/admin/cohorts/daily")
+def admin_cohorts_daily(days: int = 7, admin: dict = Depends(_require_admin)):
+    from scheduler.db import get_cohort_data_daily
+    result = get_cohort_data_daily(days=days)
+    for c in result["cohorts"]:
+        if isinstance(c.get("week"), datetime):
+            c["week"] = c["week"].isoformat()
+    return result
+
+
+@app.get("/web/api/v1/admin/drafts/stats")
+def admin_draft_stats(admin: dict = Depends(_require_admin)):
+    from scheduler.db import get_draft_stats
+    return get_draft_stats()
+
+
 @app.get("/web/api/v1/admin/drafts")
 def admin_drafts(
     page: int = 1,

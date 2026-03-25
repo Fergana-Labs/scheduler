@@ -794,6 +794,164 @@ def get_cohort_data(weeks: int = 8) -> dict:
         }
 
 
+def get_cohort_data_daily(days: int = 7) -> dict:
+    """Same as get_cohort_data but cohorts are grouped by day and activity is daily."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH cohorts AS (
+                SELECT id AS user_id, date_trunc('day', created_at) AS cohort_day
+                FROM users
+                WHERE created_at >= now() - make_interval(days => %s)
+            ),
+            cohort_sizes AS (
+                SELECT cohort_day, count(*) AS size
+                FROM cohorts
+                GROUP BY cohort_day
+            ),
+            daily_activity AS (
+                SELECT
+                    c.cohort_day,
+                    date_trunc('day', ae.created_at) AS activity_day,
+                    (date_trunc('day', ae.created_at)::date - c.cohort_day::date)::int AS day_offset,
+                    count(DISTINCT c.user_id) AS active_users,
+                    count(*) FILTER (WHERE ae.event = 'draft_sent') AS emails_sent,
+                    count(*) AS total_actions
+                FROM cohorts c
+                JOIN analytics_events ae ON ae.user_id = c.user_id
+                WHERE ae.event IN ('draft_composed', 'draft_sent', 'email_classified', 'setting_changed')
+                GROUP BY c.cohort_day, activity_day, day_offset
+            )
+            SELECT
+                cs.cohort_day,
+                cs.size,
+                da.activity_day,
+                da.day_offset,
+                COALESCE(da.active_users, 0) AS active_users,
+                COALESCE(da.emails_sent, 0) AS emails_sent,
+                COALESCE(da.total_actions, 0) AS total_actions
+            FROM cohort_sizes cs
+            LEFT JOIN daily_activity da ON da.cohort_day = cs.cohort_day
+            ORDER BY cs.cohort_day, da.activity_day
+            """,
+            (days,),
+        )
+        cols = [desc[0] for desc in cur.description]
+        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+        cohort_map: dict[str, dict] = {}
+        all_activity_days: set[str] = set()
+        for row in rows:
+            key = str(row["cohort_day"])
+            if key not in cohort_map:
+                cohort_map[key] = {
+                    "day": key,
+                    "size": row["size"],
+                    "by_offset": {},
+                    "by_date": {},
+                }
+            if row["day_offset"] is not None and row["day_offset"] >= 0:
+                cohort_map[key]["by_offset"][row["day_offset"]] = {
+                    "active_users": row["active_users"],
+                    "emails_sent": row["emails_sent"],
+                    "total_actions": row["total_actions"],
+                }
+            if row["activity_day"] is not None:
+                ad_key = row["activity_day"].isoformat()
+                all_activity_days.add(ad_key)
+                cohort_map[key]["by_date"][ad_key] = {
+                    "active_users": row["active_users"],
+                    "emails_sent": row["emails_sent"],
+                    "total_actions": row["total_actions"],
+                }
+
+        cohorts = sorted(cohort_map.values(), key=lambda c: c["day"])
+
+        # Fill in all days in range
+        if cohorts:
+            from datetime import timedelta
+            earliest = min(datetime.fromisoformat(c["day"]) for c in cohorts)
+            now_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            cursor = earliest
+            while cursor <= now_day:
+                all_activity_days.add(cursor.isoformat())
+                cursor += timedelta(days=1)
+        sorted_activity_days = sorted(all_activity_days)
+
+        max_offset = max(
+            (max(c["by_offset"].keys()) for c in cohorts if c["by_offset"]),
+            default=0,
+        )
+
+        result_cohorts = []
+        for c in cohorts:
+            size = c["size"]
+            retention = []
+            for i in range(int(max_offset) + 1):
+                if i == 0:
+                    retention.append(100.0)
+                else:
+                    w = c["by_offset"].get(i, {})
+                    active = w.get("active_users", 0)
+                    retention.append(round(active / size * 100, 1) if size > 0 else 0)
+            lifetime_actions = []
+            cumulative = 0
+            for i in range(int(max_offset) + 1):
+                cumulative += c["by_offset"].get(i, {}).get("total_actions", 0)
+                lifetime_actions.append(round(cumulative / size, 1) if size > 0 else 0)
+            result_cohorts.append({
+                "week": c["day"],  # keep "week" key for frontend compatibility
+                "size": size,
+                "retention": retention,
+                "lifetime_actions": lifetime_actions,
+            })
+
+        emails_by_day: list[dict] = []
+        active_by_day: list[dict] = []
+        for ad in sorted_activity_days:
+            email_point: dict = {"week": ad}
+            active_point: dict = {"week": ad}
+            for c in cohorts:
+                label = c["day"]
+                d = c["by_date"].get(ad, {})
+                email_point[label] = d.get("emails_sent", 0)
+                active_point[label] = d.get("active_users", 0)
+            emails_by_day.append(email_point)
+            active_by_day.append(active_point)
+
+        return {
+            "cohorts": result_cohorts,
+            "max_weeks": int(max_offset) + 1,
+            "emails_by_week": emails_by_day,
+            "active_by_week": active_by_day,
+        }
+
+
+def get_draft_stats() -> dict:
+    """Aggregate stats for the drafts tab."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT
+                count(*) AS total_drafts,
+                count(*) FILTER (WHERE sent_at IS NOT NULL) AS total_sent,
+                count(*) FILTER (WHERE was_edited = TRUE) AS total_edited,
+                round(avg(edit_distance_ratio) FILTER (WHERE sent_at IS NOT NULL)::numeric, 4) AS avg_edit_pct,
+                round(avg(chars_added) FILTER (WHERE sent_at IS NOT NULL)::numeric, 1) AS avg_chars_added,
+                round(avg(chars_removed) FILTER (WHERE sent_at IS NOT NULL)::numeric, 1) AS avg_chars_removed,
+                count(*) FILTER (WHERE was_autopilot = TRUE) AS total_autopilot,
+                count(*) FILTER (WHERE was_autopilot = TRUE AND sent_at IS NOT NULL) AS autopilot_sent
+            FROM composed_drafts
+        """)
+        row = cur.fetchone()
+        cols = [desc[0] for desc in cur.description]
+        result = dict(zip(cols, row))
+        # Convert Decimal to float for JSON
+        for k, v in result.items():
+            if v is not None and not isinstance(v, (int, float, str)):
+                result[k] = float(v)
+        return result
+
+
 def get_admin_drafts(
     page: int = 1,
     per_page: int = 20,
