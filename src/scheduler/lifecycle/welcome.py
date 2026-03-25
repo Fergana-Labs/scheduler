@@ -39,6 +39,101 @@ def _extract_text(response) -> str:
     return text.strip()
 
 
+def generate_welcome_email(
+    user_email: str,
+    scheduling_prefs: str,
+    email_style: str,
+    client: Anthropic | None = None,
+) -> dict:
+    """Generate a welcome email. Pure generation — no side effects.
+
+    Returns {"subject": "...", "body": "..."}.
+    """
+    if client is None:
+        client = _get_anthropic_client()
+
+    welcome_system = (
+        "You are writing a warm, personalized welcome email from Sam at Scheduled "
+        "(sam@tryscheduled.com) to a new user. The email should suggest hopping on a "
+        "quick chat to help them get the most out of Scheduled.\n\n"
+        "You have the user's scheduling preferences and email style guides below. "
+        "Reference specific details from their scheduling patterns to show the email "
+        "is personal — for example, mention their preferred meeting times, typical "
+        "meeting lengths, or communication style.\n\n"
+        "Keep it brief, friendly, and genuine — like a real person wrote it, not a template.\n\n"
+        f"## User's Scheduling Preferences\n{scheduling_prefs}\n\n"
+        f"## User's Email Style\n{email_style}\n\n"
+        "Respond with a JSON object only:\n"
+        '{"subject": "...", "body": "..."}\n'
+        "The body should be plain text (no HTML). Sign off as Sam."
+    )
+
+    resp = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
+        temperature=0.7,
+        system=welcome_system,
+        messages=[
+            {
+                "role": "user",
+                "content": f"Write a welcome email to {user_email}.",
+            }
+        ],
+    )
+    return json.loads(_extract_text(resp))
+
+
+def generate_draft_reply(
+    sender: str,
+    subject: str,
+    welcome_body: str,
+    email_style: str,
+    scheduling_prefs: str,
+    events_text: str,
+    client: Anthropic | None = None,
+) -> str:
+    """Generate an example draft reply to the welcome email. Pure generation — no side effects.
+
+    Returns the draft body as plain text.
+    """
+    if client is None:
+        client = _get_anthropic_client()
+
+    draft_system = (
+        "You are composing a draft email reply on behalf of a user. The reply should be "
+        "written in the user's own writing style (see their email style guide below) and "
+        "propose a specific free time for a chat based on their calendar and preferences.\n\n"
+        "The draft MUST start with this disclaimer on its own line:\n"
+        "[This is an example draft created by Scheduled to show how it works — feel free to edit or delete it]\n\n"
+        "After the disclaimer, write the actual reply. Keep it natural and brief — "
+        "match the user's tone and style exactly.\n\n"
+        f"## User's Email Style\n{email_style}\n\n"
+        f"## User's Scheduling Preferences\n{scheduling_prefs}\n\n"
+        f"## Calendar (next 14 days)\n{events_text}\n\n"
+        "Respond with the plain text body only (no JSON, no subject line). "
+        "The reply should propose a specific date and time that is free on the calendar."
+    )
+
+    resp = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
+        temperature=0.7,
+        system=draft_system,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f"Compose a reply to this email:\n\n"
+                    f"From: {sender}\n"
+                    f"Subject: {subject}\n\n"
+                    f"{welcome_body}"
+                ),
+            }
+        ],
+    )
+    return _extract_text(resp)
+
+
 def send_lifecycle_email(user_id: str) -> None:
     """Send a personalized welcome email and create an example draft reply.
 
@@ -72,36 +167,8 @@ def send_lifecycle_email(user_id: str) -> None:
     # (b) Generate welcome email via Anthropic
     client = _get_anthropic_client()
 
-    welcome_system = (
-        "You are writing a warm, personalized welcome email from Sam at Scheduled "
-        "(sam@tryscheduled.com) to a new user. The email should suggest hopping on a "
-        "quick chat to help them get the most out of Scheduled.\n\n"
-        "You have the user's scheduling preferences and email style guides below. "
-        "Reference specific details from their scheduling patterns to show the email "
-        "is personal — for example, mention their preferred meeting times, typical "
-        "meeting lengths, or communication style.\n\n"
-        "Keep it brief, friendly, and genuine — like a real person wrote it, not a template.\n\n"
-        f"## User's Scheduling Preferences\n{scheduling_prefs}\n\n"
-        f"## User's Email Style\n{email_style}\n\n"
-        "Respond with a JSON object only:\n"
-        '{"subject": "...", "body": "..."}\n'
-        "The body should be plain text (no HTML). Sign off as Sam."
-    )
-
     try:
-        resp = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            temperature=0.7,
-            system=welcome_system,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Write a welcome email to {user.email}.",
-                }
-            ],
-        )
-        welcome_data = json.loads(_extract_text(resp))
+        welcome_data = generate_welcome_email(user.email, scheduling_prefs, email_style, client)
         subject = welcome_data["subject"]
         welcome_body = welcome_data["body"]
     except Exception:
@@ -173,40 +240,11 @@ def send_lifecycle_email(user_id: str) -> None:
         events_text += f"- {ev.summary}: {ev.start.strftime('%a %b %d, %I:%M %p')} – {ev.end.strftime('%I:%M %p')}\n"
 
     # (f) Generate example draft reply
-    draft_system = (
-        "You are composing a draft email reply on behalf of a user. The reply should be "
-        "written in the user's own writing style (see their email style guide below) and "
-        "propose a specific free time for a chat based on their calendar and preferences.\n\n"
-        "The draft MUST start with this disclaimer on its own line:\n"
-        "[This is an example draft created by Scheduled to show how it works — feel free to edit or delete it]\n\n"
-        "After the disclaimer, write the actual reply. Keep it natural and brief — "
-        "match the user's tone and style exactly.\n\n"
-        f"## User's Email Style\n{email_style}\n\n"
-        f"## User's Scheduling Preferences\n{scheduling_prefs}\n\n"
-        f"## Calendar (next 14 days)\n{events_text}\n\n"
-        "Respond with the plain text body only (no JSON, no subject line). "
-        "The reply should propose a specific date and time that is free on the calendar."
-    )
-
     try:
-        resp = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            temperature=0.7,
-            system=draft_system,
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"Compose a reply to this email:\n\n"
-                        f"From: {sender}\n"
-                        f"Subject: {subject}\n\n"
-                        f"{welcome_body}"
-                    ),
-                }
-            ],
+        draft_body = generate_draft_reply(
+            sender, subject, welcome_body,
+            email_style, scheduling_prefs, events_text, client,
         )
-        draft_body = _extract_text(resp)
     except Exception:
         logger.exception("lifecycle: failed to generate draft reply for user=%s", user_id)
         return

@@ -13,6 +13,7 @@ Usage:
     python -m scheduler.eval reasoning --fixture fixture.json --thread-ids t1
     python -m scheduler.eval classify --fixture fixture.json --thread-ids t1
     python -m scheduler.eval onboard --fixture fixture.json
+    python -m scheduler.eval lifecycle --fixture fixture.json --runs 3
 """
 
 from __future__ import annotations
@@ -347,6 +348,71 @@ def run_reasoning_eval(fixture: dict, thread_ids: list[str] | None = None) -> li
     return results
 
 
+def run_lifecycle_eval(fixture: dict, n_runs: int = 3) -> list[dict]:
+    """Run the lifecycle (welcome email + draft reply) eval.
+
+    Generates `n_runs` independent welcome + draft pairs using the fixture's
+    guides and calendar. Each run is an independent sample so the judge can
+    catch intermittent creepiness.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from scheduler.lifecycle.welcome import generate_draft_reply, generate_welcome_email
+
+    scheduling_prefs = fixture.get("guides", {}).get("scheduling_preferences", "")
+    email_style = fixture.get("guides", {}).get("email_style", "")
+
+    if not scheduling_prefs or not email_style:
+        print("  Lifecycle: missing guides, skipping", file=sys.stderr)
+        return []
+
+    # Build events_text from fixture calendar (next 14 days from latest message date)
+    events = fixture.get("events", [])
+    events_text = "\n".join(
+        f"- {ev.get('summary', '')}: {ev.get('start', '')[:16]} – {ev.get('end', '')[:16]}"
+        for ev in events[:30]  # cap at 30 to keep prompt reasonable
+    ) or "No events in the next 14 days."
+
+    user_email = "henry@ferganalabs.com"
+    sender = "sam@tryscheduled.com"
+
+    def _run_single(run_idx: int) -> dict:
+        eval_id = f"lifecycle-run-{run_idx + 1}"
+        try:
+            welcome_data = generate_welcome_email(user_email, scheduling_prefs, email_style)
+            subject = welcome_data.get("subject", "")
+            welcome_body = welcome_data.get("body", "")
+        except Exception as e:
+            print(f"  {eval_id}: welcome email failed: {e}", file=sys.stderr)
+            return {"eval_id": eval_id, "error": f"welcome generation failed: {e}"}
+
+        try:
+            draft_body = generate_draft_reply(
+                sender, subject, welcome_body,
+                email_style, scheduling_prefs, events_text,
+            )
+        except Exception as e:
+            print(f"  {eval_id}: draft reply failed: {e}", file=sys.stderr)
+            draft_body = None
+
+        print(f"  {eval_id}: done", file=sys.stderr)
+        return {
+            "eval_id": eval_id,
+            "user_email": user_email,
+            "scheduling_prefs": scheduling_prefs,
+            "email_style": email_style,
+            "calendar_events": events[:30],
+            "welcome_email": {"subject": subject, "body": welcome_body},
+            "draft_reply": draft_body,
+        }
+
+    with ThreadPoolExecutor(max_workers=n_runs) as pool:
+        futures = [pool.submit(_run_single, i) for i in range(n_runs)]
+        results = [f.result() for f in futures]
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Unified run command
 # ---------------------------------------------------------------------------
@@ -381,18 +447,21 @@ def cmd_run(args):
     else:
         print(f"  Classify done: {len(classify_results)} results", file=sys.stderr)
 
-    # Phase 2: draft + reasoning evals in parallel (both use patched fixture)
-    print("Phase 2: Running draft + reasoning evals (with generated guides + calendar)...", file=sys.stderr)
+    # Phase 2: draft + reasoning + lifecycle evals in parallel (all use patched fixture)
+    print("Phase 2: Running draft + reasoning + lifecycle evals (with generated guides + calendar)...", file=sys.stderr)
     patched = {
         **fixture,
         "guides": {**fixture.get("guides", {}), **guides},
         "events": fixture.get("events", []) + onboard_events,
     }
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    n_lifecycle_runs = args.lifecycle_runs or 3
+    with ThreadPoolExecutor(max_workers=3) as pool:
         future_draft = pool.submit(run_draft_eval, patched)
         future_reasoning = pool.submit(run_reasoning_eval, patched)
+        future_lifecycle = pool.submit(run_lifecycle_eval, patched, n_lifecycle_runs)
         draft_results = future_draft.result()
         reasoning_results = future_reasoning.result()
+        lifecycle_results = future_lifecycle.result()
 
     drafted = sum(1 for r in draft_results if r.get("draft"))
     print(f"  Drafts: {drafted}/{len(draft_results)} produced", file=sys.stderr)
@@ -400,17 +469,23 @@ def cmd_run(args):
     reasoned = sum(1 for r in reasoning_results if r.get("reasoning_body"))
     print(f"  Reasoning: {reasoned}/{len(reasoning_results)} produced", file=sys.stderr)
 
-    # Phase 3: LLM judges on draft + reasoning evals
+    lifecycle_ok = sum(1 for r in lifecycle_results if r.get("welcome_email"))
+    print(f"  Lifecycle: {lifecycle_ok}/{len(lifecycle_results)} produced", file=sys.stderr)
+
+    # Phase 3: LLM judges on draft + reasoning + lifecycle evals
     judge_verdicts = []
     reasoning_verdicts = []
+    lifecycle_verdicts = []
     if not args.no_judge:
-        from scheduler.eval.judge import judge_draft_evals, judge_reasoning_evals
-        print("Phase 3: Running LLM judges on draft + reasoning evals...", file=sys.stderr)
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        from scheduler.eval.judge import judge_draft_evals, judge_lifecycle_evals, judge_reasoning_evals
+        print("Phase 3: Running LLM judges on draft + reasoning + lifecycle evals...", file=sys.stderr)
+        with ThreadPoolExecutor(max_workers=3) as pool:
             future_draft_judge = pool.submit(judge_draft_evals, draft_results)
             future_reasoning_judge = pool.submit(judge_reasoning_evals, reasoning_results)
+            future_lifecycle_judge = pool.submit(judge_lifecycle_evals, lifecycle_results)
             judge_verdicts = future_draft_judge.result()
             reasoning_verdicts = future_reasoning_judge.result()
+            lifecycle_verdicts = future_lifecycle_judge.result()
 
         verdict_by_id = {v["eval_id"]: v for v in judge_verdicts if "eval_id" in v}
         for r in draft_results:
@@ -422,6 +497,11 @@ def cmd_run(args):
             if r.get("eval_id") in reasoning_verdict_by_id:
                 r["judge"] = reasoning_verdict_by_id[r["eval_id"]]
 
+        lifecycle_verdict_by_id = {v["eval_id"]: v for v in lifecycle_verdicts if "eval_id" in v}
+        for r in lifecycle_results:
+            if r.get("eval_id") in lifecycle_verdict_by_id:
+                r["judge"] = lifecycle_verdict_by_id[r["eval_id"]]
+
     results = {
         "metadata": {
             "fixture": args.fixture,
@@ -430,16 +510,19 @@ def cmd_run(args):
             "n_classify": len(classify_results),
             "n_draft": len(draft_results),
             "n_reasoning": len(reasoning_results),
+            "n_lifecycle": len(lifecycle_results),
             "n_onboard_events": len(onboard_events),
             "n_guides": len(guides),
             "n_judge": len(judge_verdicts),
             "n_reasoning_judge": len(reasoning_verdicts),
+            "n_lifecycle_judge": len(lifecycle_verdicts),
         },
         "guides": guides,
         "onboard": onboard_events,
         "classify": classify_results,
         "draft": draft_results,
         "reasoning": reasoning_results,
+        "lifecycle": lifecycle_results,
     }
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
@@ -666,6 +749,60 @@ def cmd_reasoning(args):
         print(f"\n--- Reasoning judge: {passed}/{len(judged)} PASS, {total_score}/{max_total} criteria passed ---", file=sys.stderr)
 
 
+def cmd_lifecycle(args):
+    """Run lifecycle (welcome email + draft reply) eval against the fixture."""
+    from scheduler.eval.backends import load_fixture
+
+    fixture = load_fixture(args.fixture)
+    n_runs = args.runs or 3
+    results = run_lifecycle_eval(fixture, n_runs)
+
+    if not args.no_judge:
+        from scheduler.eval.judge import judge_lifecycle_evals
+        verdicts = judge_lifecycle_evals(results)
+        verdict_by_id = {v["eval_id"]: v for v in verdicts if "eval_id" in v}
+        for r in results:
+            if r.get("eval_id") in verdict_by_id:
+                r["judge"] = verdict_by_id[r["eval_id"]]
+
+    print(json.dumps(results, indent=2))
+
+    print(f"\n--- Lifecycle eval summary ({len(results)} runs) ---", file=sys.stderr)
+    for r in results:
+        eval_id = r.get("eval_id", "")
+        if "error" in r:
+            print(f"\n  ERROR  {eval_id}: {r['error']}", file=sys.stderr)
+            continue
+
+        welcome = r.get("welcome_email", {})
+        print(f"\n  {eval_id}:", file=sys.stderr)
+        print(f"    Welcome subject: {welcome.get('subject', '(none)')}", file=sys.stderr)
+        print(f"    Welcome body:    {welcome.get('body', '')[:100]}...", file=sys.stderr)
+
+        draft = r.get("draft_reply")
+        if draft:
+            print(f"    Draft reply:     {draft[:100]}...", file=sys.stderr)
+
+        judge = r.get("judge", {})
+        if "verdict" in judge:
+            verdict = judge["verdict"]
+            score = judge.get("score", "?")
+            max_score = judge.get("max_score", 4)
+            print(f"    Judge: {verdict}  {score}/{max_score}", file=sys.stderr)
+            for cname, cval in judge.get("criteria", {}).items():
+                if not cval.get("pass", False):
+                    print(f"      FAIL {cname}: {cval.get('reason', '')}", file=sys.stderr)
+            if judge.get("summary"):
+                print(f"      {judge['summary']}", file=sys.stderr)
+
+    judged = [r for r in results if "judge" in r]
+    if judged:
+        passed = sum(1 for r in judged if r["judge"].get("verdict") == "PASS")
+        total_score = sum(r["judge"].get("score", 0) for r in judged)
+        max_total = sum(r["judge"].get("max_score", 4) for r in judged)
+        print(f"\n--- Lifecycle judge: {passed}/{len(judged)} PASS, {total_score}/{max_total} criteria passed ---", file=sys.stderr)
+
+
 def cmd_guides(args):
     """Run guide-writer agents against the fixture."""
     from scheduler.eval.backends import load_fixture
@@ -728,6 +865,7 @@ def main():
     run.add_argument("--out", default="evals/results/run.json", help="Output results JSON (default: evals/results/run.json)")
     run.add_argument("--lookback-days", type=int, help="Lookback window for onboarding (default: 60)")
     run.add_argument("--no-judge", action="store_true", help="Skip LLM judge on draft evals")
+    run.add_argument("--lifecycle-runs", type=int, help="Number of lifecycle eval runs (default: 3)")
     run.set_defaults(func=cmd_run)
 
     # record
@@ -760,6 +898,13 @@ def main():
     reas.add_argument("--thread-ids", nargs="*", help="Thread IDs (default: canonical draft evals)")
     reas.add_argument("--no-judge", action="store_true", help="Skip LLM judge on reasoning evals")
     reas.set_defaults(func=cmd_reasoning)
+
+    # lifecycle
+    lc = sub.add_parser("lifecycle", help="Run lifecycle (welcome + draft reply) eval")
+    lc.add_argument("--fixture", required=True, help="Fixture file")
+    lc.add_argument("--runs", type=int, help="Number of independent runs (default: 3)")
+    lc.add_argument("--no-judge", action="store_true", help="Skip LLM judge on lifecycle evals")
+    lc.set_defaults(func=cmd_lifecycle)
 
     # guides
     gd = sub.add_parser("guides", help="Run guide-writer agents against a fixture")

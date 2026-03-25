@@ -1,10 +1,13 @@
-"""LLM-as-judge for draft composer and reasoning email evals.
+"""LLM-as-judge for draft composer, reasoning email, and lifecycle evals.
 
 Draft judge: evaluates generated drafts against golden responses on 5
 behavioral dimensions (correctness, tone, sign-off, recipients, timezone).
 
 Reasoning judge: evaluates reasoning emails on 4 structural dimensions
 (explanation, calendar_accuracy, date_relevance, format).
+
+Lifecycle judge: evaluates welcome emails and draft replies on 4 privacy
+dimensions (privacy, warmth, personalization, disclaimer).
 
 Single Anthropic API call per eval case with structured JSON output.
 """
@@ -300,5 +303,123 @@ def judge_reasoning_evals(results: list[dict]) -> list[dict]:
 
     passed = sum(1 for v in verdicts if v.get("verdict") == "PASS")
     print(f"  Reasoning judge: {passed}/{len(verdicts)} PASS", file=sys.stderr)
+
+    return verdicts
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle email judge
+# ---------------------------------------------------------------------------
+
+LIFECYCLE_JUDGE_SYSTEM_PROMPT = """\
+You are an eval judge for an AI email scheduling assistant. You evaluate \
+"lifecycle emails" — a welcome email sent to a new user and an example \
+draft reply generated on their behalf.
+
+The system has access to the user's scheduling preferences, email style, \
+and calendar. The goal is to feel personal WITHOUT being creepy or making \
+the user feel surveilled.
+
+You will receive:
+1. The user's scheduling preferences guide
+2. The user's email style guide
+3. The user's calendar events (what the system had access to)
+4. The generated welcome email (from "Sam at Scheduled")
+5. The generated draft reply (written as the user)
+
+Evaluate on these 4 criteria (each is binary pass/fail):
+
+**privacy** — Does the email avoid being creepy or surveillance-y?
+- Must NOT quote specific meeting names, attendee names, or calendar details
+- Must NOT say things like "I noticed you have a meeting with X" or \
+"your calendar shows..."
+- May reference GENERAL patterns ("you tend to prefer mornings") but not \
+specific events ("your 2pm with Sarah")
+- The draft reply may propose a specific free time, but should not explain \
+WHY that time is free (e.g., "you have nothing after 3pm")
+- Overall: a stranger reading this should not learn anything specific about \
+the user's calendar or contacts
+
+**warmth** — Is the tone warm, genuine, and human?
+- Should feel like a real person wrote it, not a template
+- Not overly formal or corporate
+- Not sycophantic or over-the-top enthusiastic
+- Brief and respectful of the user's time
+
+**personalization** — Does it feel tailored without being invasive?
+- References general scheduling style or communication preferences
+- Does not feel like a generic onboarding email
+- Strikes the right balance: personal enough to be useful, not so specific \
+it feels like the system is showing off what it knows
+
+**disclaimer** — Does the draft reply include the required disclaimer?
+- The draft reply MUST start with: "[This is an example draft created by \
+Scheduled to show how it works — feel free to edit or delete it]"
+- If no draft reply was generated, this criterion passes automatically
+
+Respond with ONLY a JSON object (no markdown, no explanation outside the JSON):
+{
+  "privacy": {"pass": true/false, "reason": "brief explanation"},
+  "warmth": {"pass": true/false, "reason": "brief explanation"},
+  "personalization": {"pass": true/false, "reason": "brief explanation"},
+  "disclaimer": {"pass": true/false, "reason": "brief explanation"},
+  "summary": "1-sentence overall assessment"
+}
+"""
+
+
+def _build_lifecycle_judge_prompt(result: dict) -> str:
+    """Build the user prompt for the lifecycle judge."""
+    scheduling_prefs = result.get("scheduling_prefs", "(not available)")
+    email_style = result.get("email_style", "(not available)")
+
+    events = result.get("calendar_events", [])
+    events_text = "\n".join(
+        f"  {ev.get('start', '')} – {ev.get('end', '')}: {ev.get('summary', '')}"
+        for ev in events
+    ) or "(no calendar events)"
+
+    welcome = result.get("welcome_email", {})
+    welcome_text = (
+        f"Subject: {welcome.get('subject', '(none)')}\n\n"
+        f"{welcome.get('body', '(no welcome email generated)')}"
+    )
+
+    draft_body = result.get("draft_reply", "(no draft reply generated)")
+
+    return (
+        f"## User's Scheduling Preferences (what the system knows)\n\n{scheduling_prefs}\n\n"
+        f"## User's Email Style (what the system knows)\n\n{email_style}\n\n"
+        f"## User's Calendar Events (what the system had access to)\n\n{events_text}\n\n"
+        f"## Generated Welcome Email\n\n{welcome_text}\n\n"
+        f"## Generated Draft Reply\n\n{draft_body}\n\n"
+        f"Judge the lifecycle emails now."
+    )
+
+
+def judge_lifecycle(result: dict) -> dict:
+    """Judge a single lifecycle eval result. Returns verdict dict."""
+    criteria = ["privacy", "warmth", "personalization", "disclaimer"]
+    return _call_judge(
+        LIFECYCLE_JUDGE_SYSTEM_PROMPT,
+        _build_lifecycle_judge_prompt(result),
+        criteria,
+        result.get("eval_id", ""),
+    )
+
+
+def judge_lifecycle_evals(results: list[dict]) -> list[dict]:
+    """Judge all lifecycle eval results in parallel. Returns list of verdicts."""
+    if not results:
+        return []
+
+    print(f"  Judging {len(results)} lifecycle evals...", file=sys.stderr)
+
+    with ThreadPoolExecutor(max_workers=min(len(results), 10)) as pool:
+        futures = [pool.submit(judge_lifecycle, r) for r in results]
+        verdicts = [f.result() for f in futures]
+
+    passed = sum(1 for v in verdicts if v.get("verdict") == "PASS")
+    print(f"  Lifecycle judge: {passed}/{len(verdicts)} PASS", file=sys.stderr)
 
     return verdicts
