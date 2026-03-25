@@ -11,6 +11,8 @@ from typing import Callable, Awaitable
 from nio import (
     AsyncClient,
     MatrixRoom,
+    RoomCreateResponse,
+    RoomMessageImage,
     RoomMessageText,
     SyncResponse,
 )
@@ -185,6 +187,91 @@ class MatrixClient:
                     return platform
 
         return "matrix"
+
+    async def get_or_create_dm(self, user_id: str) -> str | None:
+        """Get an existing DM room with a user, or create one.
+
+        Args:
+            user_id: The Matrix user ID to DM (e.g. @whatsappbot:matrix.example.com).
+
+        Returns:
+            The room_id, or None on failure.
+        """
+        # Check existing rooms for a DM with this user
+        for room_id, room in self._client.rooms.items():
+            members = list(room.users.keys()) if hasattr(room.users, 'keys') else list(room.users)
+            if len(members) == 2 and user_id in members:
+                return room_id
+
+        # Create a new DM
+        resp = await self._client.room_create(
+            is_direct=True,
+            invite=[user_id],
+        )
+        if isinstance(resp, RoomCreateResponse):
+            logger.info("matrix_client: created DM with %s, room_id=%s", user_id, resp.room_id)
+            return resp.room_id
+
+        logger.error("matrix_client: failed to create DM with %s: %s", user_id, resp)
+        return None
+
+    async def get_bot_responses(
+        self, room_id: str, after_timestamp: float = 0, limit: int = 10
+    ) -> list[dict]:
+        """Read recent messages from a bridge bot DM, including images.
+
+        Returns messages from the bot (not from self) as dicts with:
+        - type: "text" or "image"
+        - body: message text or image description
+        - url: mxc:// URL for images (can be converted to HTTP)
+        - timestamp: Unix timestamp in seconds
+
+        Args:
+            room_id: The DM room ID.
+            after_timestamp: Only return messages after this Unix timestamp.
+            limit: Max messages to fetch.
+        """
+        resp = await self._client.room_messages(room_id, start="", limit=limit)
+
+        results: list[dict] = []
+        if not hasattr(resp, "chunk"):
+            return results
+
+        for event in resp.chunk:
+            ts = event.server_timestamp / 1000
+            if ts <= after_timestamp:
+                continue
+            # Skip messages from self
+            if event.sender == self._user_id:
+                continue
+
+            if isinstance(event, RoomMessageText):
+                results.append({
+                    "type": "text",
+                    "body": event.body,
+                    "timestamp": ts,
+                })
+            elif isinstance(event, RoomMessageImage):
+                # Convert mxc:// URL to downloadable HTTP URL
+                mxc_url = event.url
+                http_url = None
+                if mxc_url and mxc_url.startswith("mxc://"):
+                    server_name, media_id = mxc_url[6:].split("/", 1)
+                    http_url = (
+                        f"{self._homeserver_url}/_matrix/media/v3/download/"
+                        f"{server_name}/{media_id}"
+                    )
+                results.append({
+                    "type": "image",
+                    "body": event.body or "image",
+                    "url": http_url,
+                    "mxc_url": mxc_url,
+                    "timestamp": ts,
+                })
+
+        # Return newest first
+        results.sort(key=lambda m: m["timestamp"], reverse=True)
+        return results
 
     async def disconnect(self) -> None:
         """Clean up the client connection."""

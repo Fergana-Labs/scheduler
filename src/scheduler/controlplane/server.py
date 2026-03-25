@@ -1724,6 +1724,231 @@ def gmail_watch_renew():
     return result
 
 
+# --- Bridge Login API ---
+
+# Platform -> bridge bot username mapping
+_BRIDGE_BOTS = {
+    "whatsapp": "whatsappbot",
+    "instagram": "instagrambot",
+    "facebook": "facebookbot",
+    "linkedin": "linkedinbot",
+    "signal": "signalbot",
+    "telegram": "telegrambot",
+    "discord": "discordbot",
+    "slack": "slackbot",
+}
+
+# Track login sessions: user_id -> {platform -> {room_id, started_at}}
+_bridge_login_sessions: dict[str, dict[str, dict]] = {}
+
+
+def _get_matrix_client_for_user(user: dict):
+    """Helper to create a MatrixClient from the authenticated user's DB credentials."""
+    from scheduler.db import get_user_by_id
+
+    db_user = get_user_by_id(user["user_id"])
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    homeserver = getattr(db_user, "matrix_homeserver_url", None)
+    access_token = getattr(db_user, "matrix_access_token", None)
+    matrix_user_id = getattr(db_user, "matrix_user_id", None)
+
+    if not (homeserver and access_token and matrix_user_id):
+        raise HTTPException(status_code=400, detail="Matrix credentials not configured")
+
+    from scheduler.matrix.client import MatrixClient
+
+    return MatrixClient(homeserver, access_token, matrix_user_id), db_user
+
+
+@app.post("/web/api/v1/bridges/{platform}/login")
+async def web_bridge_login(
+    platform: str,
+    user: dict = Depends(get_authenticated_user),
+):
+    """Initiate bridge login for a platform.
+
+    For WhatsApp/Signal: sends 'login qr' to the bridge bot, returns room_id to poll.
+    For Instagram/LinkedIn: accepts cookies in request body, sends to bridge bot.
+    """
+    bot_username = _BRIDGE_BOTS.get(platform)
+    if not bot_username:
+        raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
+
+    client, db_user = _get_matrix_client_for_user(user)
+    homeserver_domain = db_user.matrix_homeserver_url
+    # Extract domain from homeserver URL for bot user ID
+    matrix_user_id = getattr(db_user, "matrix_user_id", "")
+    domain = matrix_user_id.split(":")[1] if ":" in matrix_user_id else "localhost"
+    bot_user_id = f"@{bot_username}:{domain}"
+
+    try:
+        await client.connect()
+
+        room_id = await client.get_or_create_dm(bot_user_id)
+        if not room_id:
+            raise HTTPException(status_code=502, detail="Failed to create DM with bridge bot")
+
+        # Send login command based on platform
+        if platform in ("whatsapp", "signal"):
+            login_cmd = "login qr"
+        elif platform == "telegram":
+            login_cmd = "login"
+        else:
+            # Instagram, LinkedIn, Facebook, Discord, Slack — cookie-based
+            login_cmd = "login"
+
+        await client.send_message(room_id, login_cmd)
+
+        # Track the login session
+        user_id = user["user_id"]
+        _bridge_login_sessions.setdefault(user_id, {})[platform] = {
+            "room_id": room_id,
+            "started_at": time.time(),
+            "bot_user_id": bot_user_id,
+        }
+
+        logger.info("web_bridge_login: initiated %s login for user=%s, room=%s", platform, user_id, room_id)
+
+        # Wait briefly for bot to respond, then return initial response
+        await asyncio.sleep(3)
+        responses = await client.get_bot_responses(room_id, limit=5)
+
+        return {
+            "status": "login_initiated",
+            "platform": platform,
+            "room_id": room_id,
+            "bot_responses": responses,
+        }
+    finally:
+        await client.disconnect()
+
+
+class BridgeCookiePayload(BaseModel):
+    cookies: str  # cURL command or raw cookie JSON
+
+
+@app.post("/web/api/v1/bridges/{platform}/login/cookies")
+async def web_bridge_login_cookies(
+    platform: str,
+    payload: BridgeCookiePayload,
+    user: dict = Depends(get_authenticated_user),
+):
+    """Send cookies/cURL to a bridge bot for cookie-based login (Instagram, LinkedIn)."""
+    if platform not in ("instagram", "linkedin", "facebook"):
+        raise HTTPException(status_code=400, detail=f"Cookie login not applicable for {platform}")
+
+    user_id = user["user_id"]
+    session = _bridge_login_sessions.get(user_id, {}).get(platform)
+    if not session:
+        raise HTTPException(status_code=400, detail="No active login session. Call POST /bridges/{platform}/login first.")
+
+    room_id = session["room_id"]
+    client, _ = _get_matrix_client_for_user(user)
+
+    try:
+        await client.connect()
+        await client.send_message(room_id, payload.cookies)
+
+        # Wait for bot to process cookies
+        await asyncio.sleep(5)
+        responses = await client.get_bot_responses(room_id, after_timestamp=session["started_at"], limit=10)
+
+        return {
+            "status": "cookies_sent",
+            "platform": platform,
+            "bot_responses": responses,
+        }
+    finally:
+        await client.disconnect()
+
+
+@app.get("/web/api/v1/bridges/{platform}/status")
+async def web_bridge_status(
+    platform: str,
+    user: dict = Depends(get_authenticated_user),
+):
+    """Poll for bridge bot responses during login flow."""
+    user_id = user["user_id"]
+    session = _bridge_login_sessions.get(user_id, {}).get(platform)
+
+    if not session:
+        return {"status": "no_session", "platform": platform, "bot_responses": []}
+
+    room_id = session["room_id"]
+    client, _ = _get_matrix_client_for_user(user)
+
+    try:
+        await client.connect()
+        responses = await client.get_bot_responses(room_id, after_timestamp=session["started_at"], limit=10)
+
+        # Check if login succeeded by looking for success indicators in bot messages
+        connected = False
+        for r in responses:
+            if r["type"] == "text":
+                body_lower = r["body"].lower()
+                if any(kw in body_lower for kw in ["successfully", "logged in", "connected", "syncing"]):
+                    connected = True
+                    break
+
+        return {
+            "status": "connected" if connected else "pending",
+            "platform": platform,
+            "room_id": room_id,
+            "bot_responses": responses,
+        }
+    finally:
+        await client.disconnect()
+
+
+@app.get("/web/api/v1/bridges/status")
+async def web_bridges_status_all(user: dict = Depends(get_authenticated_user)):
+    """Get connection status for all platforms."""
+    client, db_user = _get_matrix_client_for_user(user)
+    matrix_user_id = getattr(db_user, "matrix_user_id", "")
+    domain = matrix_user_id.split(":")[1] if ":" in matrix_user_id else "localhost"
+
+    try:
+        await client.connect()
+
+        statuses = {}
+        for platform, bot_username in _BRIDGE_BOTS.items():
+            bot_user_id = f"@{bot_username}:{domain}"
+            # Check if we have a DM room with this bot
+            room_id = None
+            for rid, room in client._client.rooms.items():
+                members = list(room.users.keys()) if hasattr(room.users, 'keys') else list(room.users)
+                if bot_user_id in members:
+                    room_id = rid
+                    break
+
+            if room_id:
+                # Check recent messages for connection status
+                responses = await client.get_bot_responses(room_id, limit=5)
+                connected = False
+                for r in responses:
+                    if r["type"] == "text":
+                        body_lower = r["body"].lower()
+                        if any(kw in body_lower for kw in ["successfully", "logged in", "connected", "syncing"]):
+                            connected = True
+                            break
+                        if any(kw in body_lower for kw in ["disconnected", "logged out", "error", "failed"]):
+                            connected = False
+                            break
+
+                statuses[platform] = {
+                    "status": "connected" if connected else "unknown",
+                    "room_id": room_id,
+                }
+            else:
+                statuses[platform] = {"status": "not_configured"}
+
+        return statuses
+    finally:
+        await client.disconnect()
+
+
 # --- Matrix / Chat API ---
 
 
