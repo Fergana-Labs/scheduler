@@ -18,6 +18,8 @@ interface SchedulingLinkData {
   status: string;
   mode: 'suggested' | 'availability';
   host_name: string;
+  attendee_name: string | null;
+  attendee_email: string | null;
   event_summary: string;
   duration_minutes: number;
   timezone: string;
@@ -816,6 +818,11 @@ export default function SchedulePageClient({ token }: { token: string }) {
               <div>
                 {/* Meeting info header */}
                 <div className="mb-8">
+                  {data.attendee_name && (
+                    <p className="text-sm text-gray-500 mb-1">
+                      Hi {data.attendee_name},
+                    </p>
+                  )}
                   <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 font-[family-name:var(--font-space-grotesk)] mb-1">
                     {data.host_name}
                   </h1>

@@ -1075,10 +1075,15 @@ def get_scheduling_link_public(link_id: str):
     user = get_user_by_id(str(link.user_id))
     display_name = (user.display_name or user.email.split("@")[0]) if user else "Someone"
 
+    # Derive recipient display name from attendee_name or email
+    attendee_display = link.attendee_name or link.attendee_email.split("@")[0] if link.attendee_email else None
+
     return {
         "status": link.status,
         "mode": link.mode,
-        "host_name": display_name,
+        "host_name": display_name.title(),
+        "attendee_name": attendee_display.title() if attendee_display else None,
+        "attendee_email": link.attendee_email,
         "event_summary": link.event_summary,
         "duration_minutes": link.duration_minutes,
         "timezone": link.timezone,
