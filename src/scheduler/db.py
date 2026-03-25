@@ -481,6 +481,16 @@ def update_onboarding_status(user_id: str, status: str | None) -> None:
         conn.commit()
 
 
+def insert_page_event(event: str, properties: dict | None = None) -> None:
+    """Insert an anonymous page event (no user_id required)."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO page_events (event, properties) VALUES (%s, %s)",
+            (event, json.dumps(properties or {})),
+        )
+        conn.commit()
+
+
 def insert_analytics_event(user_id: str, event: str, properties: dict | None = None) -> None:
     """Insert a row into analytics_events."""
     with _conn() as conn, conn.cursor() as cur:
@@ -575,7 +585,7 @@ def cleanup_composed_drafts(days: int = 90) -> int:
 
 
 def get_funnel_data(weeks: int = 12) -> list[dict]:
-    """Weekly funnel: signups → onboarded → first draft sent."""
+    """Weekly funnel: page views → signup clicks → signups → onboarded → first draft sent."""
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -585,6 +595,20 @@ def get_funnel_data(weeks: int = 12) -> list[dict]:
                     date_trunc('week', now()),
                     '1 week'::interval
                 ) AS week
+            ),
+            page_views AS (
+                SELECT date_trunc('week', created_at) AS week, count(*) AS cnt
+                FROM page_events
+                WHERE event = 'landing_page_view'
+                  AND created_at >= now() - make_interval(weeks => %s)
+                GROUP BY 1
+            ),
+            signup_clicks AS (
+                SELECT date_trunc('week', created_at) AS week, count(*) AS cnt
+                FROM page_events
+                WHERE event = 'signup_click'
+                  AND created_at >= now() - make_interval(weeks => %s)
+                GROUP BY 1
             ),
             signups AS (
                 SELECT date_trunc('week', created_at) AS week, count(*) AS cnt
@@ -612,23 +636,27 @@ def get_funnel_data(weeks: int = 12) -> list[dict]:
             )
             SELECT
                 ws.week,
+                COALESCE(pv.cnt, 0) AS page_views,
+                COALESCE(sc.cnt, 0) AS signup_clicks,
                 COALESCE(s.cnt, 0) AS signups,
                 COALESCE(o.cnt, 0) AS onboarded,
                 COALESCE(f.cnt, 0) AS first_draft_sent
             FROM week_series ws
+            LEFT JOIN page_views pv ON pv.week = ws.week
+            LEFT JOIN signup_clicks sc ON sc.week = ws.week
             LEFT JOIN signups s ON s.week = ws.week
             LEFT JOIN onboarded o ON o.week = ws.week
             LEFT JOIN first_drafts f ON f.week = ws.week
             ORDER BY ws.week
             """,
-            (weeks, weeks, weeks, weeks),
+            (weeks, weeks, weeks, weeks, weeks, weeks),
         )
         cols = [desc[0] for desc in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-def get_retention_cohorts(weeks: int = 8) -> list[dict]:
-    """Retention cohort matrix: for each signup week, % of users with draft_composed in subsequent weeks."""
+def get_cohort_data(weeks: int = 8) -> dict:
+    """Rich cohort data: retention, emails sent, active users, and lifetime actions — all by week cohort and week offset."""
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -642,52 +670,82 @@ def get_retention_cohorts(weeks: int = 8) -> list[dict]:
                 FROM cohorts
                 GROUP BY cohort_week
             ),
-            activity AS (
+            weekly_activity AS (
                 SELECT
                     c.cohort_week,
-                    EXTRACT(EPOCH FROM date_trunc('week', ae.created_at) - c.cohort_week) / 604800 AS week_offset,
-                    count(DISTINCT c.user_id) AS active_users
+                    FLOOR(EXTRACT(EPOCH FROM date_trunc('week', ae.created_at) - c.cohort_week) / 604800)::int AS week_offset,
+                    count(DISTINCT c.user_id) AS active_users,
+                    count(*) FILTER (WHERE ae.event = 'draft_sent') AS emails_sent,
+                    count(*) AS total_actions
                 FROM cohorts c
                 JOIN analytics_events ae ON ae.user_id = c.user_id
-                WHERE ae.event = 'draft_composed'
+                WHERE ae.event IN ('draft_composed', 'draft_sent', 'email_classified', 'setting_changed')
                 GROUP BY c.cohort_week, week_offset
             )
             SELECT
                 cs.cohort_week,
                 cs.size,
-                a.week_offset,
-                a.active_users
+                wa.week_offset,
+                COALESCE(wa.active_users, 0) AS active_users,
+                COALESCE(wa.emails_sent, 0) AS emails_sent,
+                COALESCE(wa.total_actions, 0) AS total_actions
             FROM cohort_sizes cs
-            LEFT JOIN activity a ON a.cohort_week = cs.cohort_week
-            ORDER BY cs.cohort_week, a.week_offset
+            LEFT JOIN weekly_activity wa ON wa.cohort_week = cs.cohort_week
+            ORDER BY cs.cohort_week, wa.week_offset
             """,
             (weeks,),
         )
         cols = [desc[0] for desc in cur.description]
         rows = [dict(zip(cols, row)) for row in cur.fetchall()]
 
-        # Reshape into cohort objects with retention arrays
+        # Build per-cohort data
         cohort_map: dict[str, dict] = {}
         for row in rows:
             key = str(row["cohort_week"])
             if key not in cohort_map:
-                cohort_map[key] = {"week": key, "size": row["size"], "retention": {}}
-            if row["week_offset"] is not None:
-                offset = int(row["week_offset"])
-                if 0 <= offset <= weeks:
-                    cohort_map[key]["retention"][offset] = row["active_users"]
+                cohort_map[key] = {
+                    "week": key,
+                    "size": row["size"],
+                    "weekly": {},  # week_offset -> {active_users, emails_sent, total_actions}
+                }
+            if row["week_offset"] is not None and row["week_offset"] >= 0:
+                cohort_map[key]["weekly"][row["week_offset"]] = {
+                    "active_users": row["active_users"],
+                    "emails_sent": row["emails_sent"],
+                    "total_actions": row["total_actions"],
+                }
 
-        result = []
-        for cohort in sorted(cohort_map.values(), key=lambda c: c["week"]):
-            size = cohort["size"]
-            max_offset = max(cohort["retention"].keys()) if cohort["retention"] else 0
-            retention_pcts = []
-            for i in range(max_offset + 1):
-                active = cohort["retention"].get(i, 0)
-                retention_pcts.append(round(active / size * 100, 1) if size > 0 else 0)
-            cohort["retention"] = retention_pcts
-            result.append(cohort)
-        return result
+        cohorts = sorted(cohort_map.values(), key=lambda c: c["week"])
+        max_offset = max(
+            (max(c["weekly"].keys()) for c in cohorts if c["weekly"]),
+            default=0,
+        )
+
+        # Reshape into arrays for frontend charting
+        result_cohorts = []
+        for c in cohorts:
+            size = c["size"]
+            retention = []
+            emails_sent = []
+            active_users = []
+            total_actions = []
+            for i in range(int(max_offset) + 1):
+                w = c["weekly"].get(i, {})
+                active = w.get("active_users", 0)
+                retention.append(round(active / size * 100, 1) if size > 0 else 0)
+                emails_sent.append(w.get("emails_sent", 0))
+                active_users.append(active)
+                total_actions.append(w.get("total_actions", 0))
+            result_cohorts.append({
+                "week": c["week"],
+                "size": size,
+                "retention": retention,
+                "emails_sent": emails_sent,
+                "active_users": active_users,
+                "total_actions": total_actions,
+            })
+
+        return {"cohorts": result_cohorts, "max_weeks": int(max_offset) + 1}
 
 
 def get_admin_drafts(
@@ -723,7 +781,7 @@ def get_admin_drafts(
             SELECT cd.id, u.email AS user_email, cd.original_subject, cd.original_body,
                    cd.sent_body, cd.was_edited, cd.edit_distance_ratio,
                    cd.chars_added, cd.chars_removed, cd.was_autopilot,
-                   cd.composed_at, cd.sent_at
+                   cd.composed_at, cd.sent_at, cd.thread_context
             FROM composed_drafts cd
             JOIN users u ON u.id = cd.user_id
             {where_clause}

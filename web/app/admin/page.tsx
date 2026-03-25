@@ -1,11 +1,15 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { Fragment, useEffect, useState, useCallback } from 'react';
 import { Loader2, Search, ChevronDown, ChevronRight } from 'lucide-react';
 import { api, captureSessionFromURL, clearSession } from '@/lib/api';
 import {
   BarChart,
   Bar,
+  LineChart,
+  Line,
+  AreaChart,
+  Area,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -18,6 +22,8 @@ import {
 
 interface FunnelRow {
   week: string;
+  page_views: number;
+  signup_clicks: number;
   signups: number;
   onboarded: number;
   first_draft_sent: number;
@@ -27,6 +33,21 @@ interface CohortRow {
   week: string;
   size: number;
   retention: number[];
+  emails_sent: number[];
+  active_users: number[];
+  total_actions: number[];
+}
+
+interface CohortData {
+  cohorts: CohortRow[];
+  max_weeks: number;
+}
+
+interface ThreadMessage {
+  role?: string;
+  from?: string;
+  body?: string;
+  subject?: string;
 }
 
 interface DraftRow {
@@ -42,23 +63,26 @@ interface DraftRow {
   was_autopilot: boolean;
   composed_at: string;
   sent_at: string | null;
+  thread_context: ThreadMessage[];
 }
 
 type Tab = 'funnel' | 'cohorts' | 'drafts';
 
 // --- Helpers ---
 
+const COHORT_COLORS = [
+  '#43614a', '#6b9e76', '#a3d4ae', '#2d4a32', '#8bb896',
+  '#5c8a65', '#3a7048', '#7ec48a', '#4f7656', '#96c9a0',
+];
+
 function formatWeek(iso: string): string {
   const d = new Date(iso);
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-function retentionColor(pct: number): string {
-  if (pct >= 60) return 'bg-green-200 text-green-900';
-  if (pct >= 40) return 'bg-green-100 text-green-800';
-  if (pct >= 20) return 'bg-yellow-100 text-yellow-800';
-  if (pct > 0) return 'bg-orange-100 text-orange-800';
-  return 'bg-gray-50 text-gray-400';
+function pct(a: number, b: number): string {
+  if (b === 0) return '—';
+  return `${((a / b) * 100).toFixed(1)}%`;
 }
 
 // --- Components ---
@@ -66,39 +90,41 @@ function retentionColor(pct: number): string {
 function FunnelChart({ data }: { data: FunnelRow[] }) {
   const chartData = data.map((r) => ({
     week: formatWeek(r.week),
+    'Page Views': r.page_views,
+    'Signup Clicks': r.signup_clicks,
     Signups: r.signups,
     Onboarded: r.onboarded,
     'First Draft Sent': r.first_draft_sent,
   }));
 
-  // Compute overall conversion rates
   const totals = data.reduce(
     (acc, r) => ({
+      views: acc.views + r.page_views,
+      clicks: acc.clicks + r.signup_clicks,
       signups: acc.signups + r.signups,
       onboarded: acc.onboarded + r.onboarded,
       firstDraft: acc.firstDraft + r.first_draft_sent,
     }),
-    { signups: 0, onboarded: 0, firstDraft: 0 }
+    { views: 0, clicks: 0, signups: 0, onboarded: 0, firstDraft: 0 }
   );
 
-  const onboardRate = totals.signups > 0 ? ((totals.onboarded / totals.signups) * 100).toFixed(1) : '—';
-  const draftRate = totals.onboarded > 0 ? ((totals.firstDraft / totals.onboarded) * 100).toFixed(1) : '—';
+  const stats = [
+    { label: 'Page Views', value: totals.views },
+    { label: 'Views → Clicks', value: pct(totals.clicks, totals.views) },
+    { label: 'Clicks → Signups', value: pct(totals.signups, totals.clicks) },
+    { label: 'Signup → Onboarded', value: pct(totals.onboarded, totals.signups) },
+    { label: 'Onboarded → Draft', value: pct(totals.firstDraft, totals.onboarded) },
+  ];
 
   return (
     <div>
-      <div className="mb-6 flex gap-6">
-        <div className="rounded-lg border border-gray-200 bg-gray-50 px-5 py-3">
-          <div className="text-sm text-gray-500">Total Signups</div>
-          <div className="text-2xl font-semibold">{totals.signups}</div>
-        </div>
-        <div className="rounded-lg border border-gray-200 bg-gray-50 px-5 py-3">
-          <div className="text-sm text-gray-500">Signup &rarr; Onboarded</div>
-          <div className="text-2xl font-semibold">{onboardRate}%</div>
-        </div>
-        <div className="rounded-lg border border-gray-200 bg-gray-50 px-5 py-3">
-          <div className="text-sm text-gray-500">Onboarded &rarr; First Draft</div>
-          <div className="text-2xl font-semibold">{draftRate}%</div>
-        </div>
+      <div className="mb-6 flex flex-wrap gap-4">
+        {stats.map((s) => (
+          <div key={s.label} className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-2.5">
+            <div className="text-xs text-gray-500">{s.label}</div>
+            <div className="text-xl font-semibold">{s.value}</div>
+          </div>
+        ))}
       </div>
       <ResponsiveContainer width="100%" height={350}>
         <BarChart data={chartData}>
@@ -107,6 +133,8 @@ function FunnelChart({ data }: { data: FunnelRow[] }) {
           <YAxis allowDecimals={false} />
           <Tooltip />
           <Legend />
+          <Bar dataKey="Page Views" fill="#d1d5db" />
+          <Bar dataKey="Signup Clicks" fill="#9ca3af" />
           <Bar dataKey="Signups" fill="#43614a" />
           <Bar dataKey="Onboarded" fill="#6b9e76" />
           <Bar dataKey="First Draft Sent" fill="#a3d4ae" />
@@ -116,42 +144,122 @@ function FunnelChart({ data }: { data: FunnelRow[] }) {
   );
 }
 
-function CohortTable({ cohorts }: { cohorts: CohortRow[] }) {
-  const maxWeeks = Math.max(...cohorts.map((c) => c.retention.length), 0);
+function CohortCharts({ data }: { data: CohortData }) {
+  const { cohorts, max_weeks } = data;
+  if (cohorts.length === 0) {
+    return <p className="text-gray-500">No cohort data yet.</p>;
+  }
+
+  // Build time-series data: each point is a week_offset, each series is a cohort
+  const weekOffsets = Array.from({ length: max_weeks }, (_, i) => i);
+
+  // 1. Retention line chart (% retained per cohort)
+  const retentionData = weekOffsets.map((offset) => {
+    const point: Record<string, unknown> = { week: `W${offset}` };
+    cohorts.forEach((c) => {
+      point[formatWeek(c.week)] = c.retention[offset] ?? 0;
+    });
+    return point;
+  });
+
+  // 2. Stacked area: emails sent by cohort
+  const emailsData = weekOffsets.map((offset) => {
+    const point: Record<string, unknown> = { week: `W${offset}` };
+    cohorts.forEach((c) => {
+      point[formatWeek(c.week)] = c.emails_sent[offset] ?? 0;
+    });
+    return point;
+  });
+
+  // 3. Stacked area: active users by cohort
+  const activeData = weekOffsets.map((offset) => {
+    const point: Record<string, unknown> = { week: `W${offset}` };
+    cohorts.forEach((c) => {
+      point[formatWeek(c.week)] = c.active_users[offset] ?? 0;
+    });
+    return point;
+  });
+
+  // 4. Average lifetime actions per user by cohort (cumulative, averaged)
+  const lifetimeData = weekOffsets.map((offset) => {
+    const point: Record<string, unknown> = { week: `W${offset}` };
+    cohorts.forEach((c) => {
+      let cumulative = 0;
+      for (let i = 0; i <= offset; i++) {
+        cumulative += c.total_actions[i] ?? 0;
+      }
+      point[formatWeek(c.week)] = c.size > 0 ? Math.round((cumulative / c.size) * 10) / 10 : 0;
+    });
+    return point;
+  });
+
+  const cohortKeys = cohorts.map((c) => formatWeek(c.week));
 
   return (
-    <div className="overflow-x-auto">
-      <table className="min-w-full text-sm">
-        <thead>
-          <tr className="border-b border-gray-200">
-            <th className="px-3 py-2 text-left font-medium text-gray-600">Cohort</th>
-            <th className="px-3 py-2 text-right font-medium text-gray-600">Users</th>
-            {Array.from({ length: maxWeeks }, (_, i) => (
-              <th key={i} className="px-3 py-2 text-center font-medium text-gray-600">
-                W{i}
-              </th>
+    <div className="space-y-10">
+      <section>
+        <h3 className="mb-3 text-sm font-medium text-gray-700">User Retention by Week Cohort</h3>
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart data={retentionData}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="week" tick={{ fontSize: 12 }} />
+            <YAxis unit="%" />
+            <Tooltip />
+            <Legend />
+            {cohortKeys.map((key, i) => (
+              <Line key={key} type="monotone" dataKey={key} stroke={COHORT_COLORS[i % COHORT_COLORS.length]} strokeWidth={2} dot={false} />
             ))}
-          </tr>
-        </thead>
-        <tbody>
-          {cohorts.map((c) => (
-            <tr key={c.week} className="border-b border-gray-100">
-              <td className="px-3 py-2 font-medium text-gray-700">{formatWeek(c.week)}</td>
-              <td className="px-3 py-2 text-right text-gray-600">{c.size}</td>
-              {Array.from({ length: maxWeeks }, (_, i) => {
-                const pct = c.retention[i] ?? 0;
-                return (
-                  <td key={i} className="px-1 py-1 text-center">
-                    <span className={`inline-block min-w-[3rem] rounded px-2 py-1 text-xs font-medium ${retentionColor(pct)}`}>
-                      {pct > 0 ? `${pct}%` : '—'}
-                    </span>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+          </LineChart>
+        </ResponsiveContainer>
+      </section>
+
+      <section>
+        <h3 className="mb-3 text-sm font-medium text-gray-700">Total Emails Sent by Week Cohort</h3>
+        <ResponsiveContainer width="100%" height={300}>
+          <AreaChart data={emailsData}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="week" tick={{ fontSize: 12 }} />
+            <YAxis allowDecimals={false} />
+            <Tooltip />
+            <Legend />
+            {cohortKeys.map((key, i) => (
+              <Area key={key} type="monotone" dataKey={key} stackId="emails" fill={COHORT_COLORS[i % COHORT_COLORS.length]} stroke={COHORT_COLORS[i % COHORT_COLORS.length]} fillOpacity={0.6} />
+            ))}
+          </AreaChart>
+        </ResponsiveContainer>
+      </section>
+
+      <section>
+        <h3 className="mb-3 text-sm font-medium text-gray-700">Active Users by Week Cohort</h3>
+        <ResponsiveContainer width="100%" height={300}>
+          <AreaChart data={activeData}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="week" tick={{ fontSize: 12 }} />
+            <YAxis allowDecimals={false} />
+            <Tooltip />
+            <Legend />
+            {cohortKeys.map((key, i) => (
+              <Area key={key} type="monotone" dataKey={key} stackId="active" fill={COHORT_COLORS[i % COHORT_COLORS.length]} stroke={COHORT_COLORS[i % COHORT_COLORS.length]} fillOpacity={0.6} />
+            ))}
+          </AreaChart>
+        </ResponsiveContainer>
+      </section>
+
+      <section>
+        <h3 className="mb-3 text-sm font-medium text-gray-700">Avg Cumulative Actions per User by Week Cohort</h3>
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart data={lifetimeData}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="week" tick={{ fontSize: 12 }} />
+            <YAxis />
+            <Tooltip />
+            <Legend />
+            {cohortKeys.map((key, i) => (
+              <Line key={key} type="monotone" dataKey={key} stroke={COHORT_COLORS[i % COHORT_COLORS.length]} strokeWidth={2} dot={false} />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </section>
     </div>
   );
 }
@@ -251,9 +359,8 @@ function DraftBrowser() {
             </thead>
             <tbody>
               {drafts.map((d) => (
-                <>
+                <Fragment key={d.id}>
                   <tr
-                    key={d.id}
                     className="cursor-pointer border-b border-gray-100 hover:bg-gray-50"
                     onClick={() => setExpandedId(expandedId === d.id ? null : d.id)}
                   >
@@ -287,8 +394,28 @@ function DraftBrowser() {
                     <td className="px-3 py-2 text-gray-500">{d.sent_at ? new Date(d.sent_at).toLocaleDateString() : '—'}</td>
                   </tr>
                   {expandedId === d.id && (
-                    <tr key={`${d.id}-expanded`} className="border-b border-gray-100 bg-gray-50">
+                    <tr className="border-b border-gray-100 bg-gray-50">
                       <td colSpan={8} className="px-6 py-4">
+                        {/* Email thread context */}
+                        {d.thread_context && d.thread_context.length > 0 && (
+                          <div className="mb-4">
+                            <div className="mb-2 text-xs font-medium uppercase text-gray-500">Email Thread</div>
+                            <div className="space-y-2">
+                              {d.thread_context.map((msg, idx) => (
+                                <div key={idx} className="rounded border border-gray-200 bg-white p-3">
+                                  <div className="mb-1 flex items-center gap-2 text-xs text-gray-500">
+                                    <span className="font-medium text-gray-700">{msg.from || msg.role || 'Unknown'}</span>
+                                    {msg.subject && <span>&middot; {msg.subject}</span>}
+                                  </div>
+                                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap text-xs text-gray-600">
+                                    {msg.body || '(empty)'}
+                                  </pre>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {/* Draft vs sent comparison */}
                         <div className="grid gap-4 md:grid-cols-2">
                           <div>
                             <div className="mb-1 text-xs font-medium uppercase text-gray-500">Original Draft</div>
@@ -312,7 +439,7 @@ function DraftBrowser() {
                       </td>
                     </tr>
                   )}
-                </>
+                </Fragment>
               ))}
             </tbody>
           </table>
@@ -349,7 +476,7 @@ function DraftBrowser() {
 export default function AdminDashboard() {
   const [tab, setTab] = useState<Tab>('funnel');
   const [funnelData, setFunnelData] = useState<FunnelRow[] | null>(null);
-  const [cohortData, setCohortData] = useState<CohortRow[] | null>(null);
+  const [cohortData, setCohortData] = useState<CohortData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -360,10 +487,10 @@ export default function AdminDashboard() {
         await api('/auth/me');
         const [funnel, cohorts] = await Promise.all([
           api<{ data: FunnelRow[] }>('/web/api/v1/admin/funnel'),
-          api<{ cohorts: CohortRow[] }>('/web/api/v1/admin/cohorts'),
+          api<CohortData>('/web/api/v1/admin/cohorts'),
         ]);
         setFunnelData(funnel.data);
-        setCohortData(cohorts.cohorts);
+        setCohortData(cohorts);
       } catch (err: unknown) {
         const status = err instanceof Error && 'status' in err ? (err as { status: number }).status : 0;
         if (status === 403) {
@@ -425,7 +552,7 @@ export default function AdminDashboard() {
       </div>
       <div className="mt-6">
         {tab === 'funnel' && funnelData && <FunnelChart data={funnelData} />}
-        {tab === 'cohorts' && cohortData && <CohortTable cohorts={cohortData} />}
+        {tab === 'cohorts' && cohortData && <CohortCharts data={cohortData} />}
         {tab === 'drafts' && <DraftBrowser />}
       </div>
     </div>

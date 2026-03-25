@@ -3,6 +3,7 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { sendGAEvent } from '@next/third-parties/google';
 import { ArrowRight, Mail, MailOpen, Inbox, Send, Reply, Forward, Calendar, Clock, Bell, CalendarCheck, CalendarDays, Timer, Video, Users } from 'lucide-react';
+import { trackPageEvent } from '@/lib/analytics';
 
 const upperIcons = [Mail, MailOpen, Inbox, Send, Reply, Forward, Mail, Send, MailOpen, Inbox, Reply, Forward, Mail, MailOpen, Send, Reply, Forward, Inbox, Mail, Send];
 const lowerIcons = [Calendar, Clock, Bell, CalendarCheck, CalendarDays, Timer, Video, Users, Calendar, Clock, Bell, CalendarCheck, CalendarDays, Timer, Video, Users, Calendar, Clock, Bell, CalendarCheck];
@@ -237,7 +238,7 @@ export default function Hero() {
           <div className="mt-8 sm:mt-10">
             <a
               href={`${process.env.NEXT_PUBLIC_CONTROL_PLANE_URL}/auth/login?signup=1`}
-              onClick={() => sendGAEvent('event', 'signup_click', { event_category: 'engagement', event_label: 'hero_cta' })}
+              onClick={() => { sendGAEvent('event', 'signup_click', { event_category: 'engagement', event_label: 'hero_cta' }); trackPageEvent('signup_click'); }}
               className="inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-full bg-[#43614a] px-7 py-3.5 text-base font-medium text-white transition-all hover:bg-[#527559] sm:w-auto"
             >
               Get Started

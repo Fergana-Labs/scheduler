@@ -1609,6 +1609,23 @@ def web_track_event(req: TrackEventRequest, request: Request):
     return {"status": "ok"}
 
 
+_PAGE_EVENT_ALLOWLIST = {"landing_page_view", "signup_click"}
+
+
+@app.post("/web/api/v1/events/page")
+def web_page_event(req: TrackEventRequest):
+    """Unauthenticated endpoint for anonymous page events (landing page views, etc.)."""
+    if req.event not in _PAGE_EVENT_ALLOWLIST:
+        raise HTTPException(status_code=400, detail="Event not allowed")
+    from scheduler.db import insert_page_event
+    import threading
+    threading.Thread(
+        target=lambda: insert_page_event(req.event, req.properties),
+        daemon=True,
+    ).start()
+    return {"status": "ok"}
+
+
 # --- Admin API routes ---
 
 
@@ -1625,12 +1642,12 @@ def admin_funnel(weeks: int = 12, admin: dict = Depends(_require_admin)):
 
 @app.get("/web/api/v1/admin/cohorts")
 def admin_cohorts(weeks: int = 8, admin: dict = Depends(_require_admin)):
-    from scheduler.db import get_retention_cohorts
-    cohorts = get_retention_cohorts(weeks=weeks)
-    for c in cohorts:
+    from scheduler.db import get_cohort_data
+    result = get_cohort_data(weeks=weeks)
+    for c in result["cohorts"]:
         if isinstance(c.get("week"), datetime):
             c["week"] = c["week"].isoformat()
-    return {"cohorts": cohorts}
+    return result
 
 
 @app.get("/web/api/v1/admin/drafts")
