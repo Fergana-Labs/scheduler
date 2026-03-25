@@ -524,10 +524,10 @@ def store_composed_draft(
 
 
 def get_composed_draft_by_thread(user_id: str, thread_id: str) -> dict | None:
-    """Get the most recent composed draft for a user+thread pair."""
+    """Get the most recent unsent composed draft for a user+thread pair."""
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT * FROM composed_drafts WHERE user_id = %s AND thread_id = %s ORDER BY composed_at DESC LIMIT 1",
+            "SELECT * FROM composed_drafts WHERE user_id = %s AND thread_id = %s AND sent_at IS NULL ORDER BY composed_at DESC LIMIT 1",
             (user_id, thread_id),
         )
         row = cur.fetchone()
