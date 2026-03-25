@@ -1440,13 +1440,14 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
             try:
                 thread_emails = gmail.get_thread(email.thread_id)
                 for t_email in thread_emails:
-                    if t_email.id == email.id:
-                        break
                     thread_messages.append({
                         "sender": t_email.sender,
+                        "subject": t_email.subject,
                         "body": t_email.body,
                         "date": t_email.date.isoformat(),
                     })
+                    if t_email.id == email.id:
+                        break  # include the triggering email, then stop
             except Exception:
                 logger.warning("gmail_webhook: failed to fetch thread %s for context, classifying without", email.thread_id)
 
