@@ -9,6 +9,7 @@ import {
   Loader2,
   ExternalLink,
   ChevronRight,
+  ChevronLeft,
 } from 'lucide-react';
 
 const API_BASE = process.env.NEXT_PUBLIC_CONTROL_PLANE_URL;
@@ -181,6 +182,212 @@ function MarketingPanel() {
         Get Started Free
         <ExternalLink className="w-3.5 h-3.5" />
       </a>
+    </div>
+  );
+}
+
+function CalendarPicker({
+  windows,
+  durationMinutes,
+  hostName,
+  selectedSlot,
+  onSelectSlot,
+  onConfirm,
+  confirming,
+}: {
+  windows: { date: string; start: string; end: string }[];
+  durationMinutes: number;
+  hostName: string;
+  selectedSlot: { start: Date; end: Date } | null;
+  onSelectSlot: (slot: { start: Date; end: Date }) => void;
+  onConfirm: () => void;
+  confirming: boolean;
+}) {
+  const allSlots = generateSlots(windows, durationMinutes);
+  const availableDates = new Set(allSlots.map((s) => s.dateKey));
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [viewMonth, setViewMonth] = useState<Date>(() => {
+    // Start on the month of the first available date
+    if (allSlots.length > 0) {
+      return new Date(allSlots[0].start.getFullYear(), allSlots[0].start.getMonth(), 1);
+    }
+    return new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  });
+
+  // Build calendar grid for the current month
+  const year = viewMonth.getFullYear();
+  const month = viewMonth.getMonth();
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const monthLabel = viewMonth.toLocaleDateString(undefined, {
+    month: 'long',
+    year: 'numeric',
+  });
+
+  const calendarDays: (number | null)[] = [];
+  for (let i = 0; i < firstDay; i++) calendarDays.push(null);
+  for (let d = 1; d <= daysInMonth; d++) calendarDays.push(d);
+
+  const toDateKey = (day: number) => {
+    const m = (month + 1).toString().padStart(2, '0');
+    const d = day.toString().padStart(2, '0');
+    return `${year}-${m}-${d}`;
+  };
+
+  const slotsForDate = selectedDate
+    ? allSlots.filter((s) => s.dateKey === selectedDate)
+    : [];
+
+  if (allSlots.length === 0) {
+    return (
+      <p className="text-gray-500 py-8 text-center">
+        No available time slots. Please ask {hostName} for updated times.
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-col sm:flex-row gap-6">
+      {/* Calendar */}
+      <div className="sm:w-72 flex-shrink-0">
+        <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wide mb-4">
+          Select a date
+        </h3>
+        <div className="border border-gray-200 rounded-xl p-4">
+          {/* Month navigation */}
+          <div className="flex items-center justify-between mb-4">
+            <button
+              onClick={() => setViewMonth(new Date(year, month - 1, 1))}
+              className="p-1 hover:bg-gray-100 rounded transition-colors"
+            >
+              <ChevronLeft className="w-4 h-4 text-gray-600" />
+            </button>
+            <span className="text-sm font-semibold text-gray-800">
+              {monthLabel}
+            </span>
+            <button
+              onClick={() => setViewMonth(new Date(year, month + 1, 1))}
+              className="p-1 hover:bg-gray-100 rounded transition-colors"
+            >
+              <ChevronRight className="w-4 h-4 text-gray-600" />
+            </button>
+          </div>
+
+          {/* Day headers */}
+          <div className="grid grid-cols-7 gap-1 mb-1">
+            {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((d) => (
+              <div
+                key={d}
+                className="text-center text-xs font-medium text-gray-400 py-1"
+              >
+                {d}
+              </div>
+            ))}
+          </div>
+
+          {/* Days */}
+          <div className="grid grid-cols-7 gap-1">
+            {calendarDays.map((day, i) => {
+              if (day === null) {
+                return <div key={`empty-${i}`} />;
+              }
+              const dateKey = toDateKey(day);
+              const hasSlots = availableDates.has(dateKey);
+              const isSelected = selectedDate === dateKey;
+              const today = new Date();
+              const isPast =
+                new Date(year, month, day) <
+                new Date(today.getFullYear(), today.getMonth(), today.getDate());
+
+              return (
+                <button
+                  key={dateKey}
+                  onClick={() => hasSlots && !isPast && setSelectedDate(dateKey)}
+                  disabled={!hasSlots || isPast}
+                  className={`aspect-square rounded-lg flex items-center justify-center text-sm transition-all ${
+                    isSelected
+                      ? 'bg-black text-white font-semibold'
+                      : hasSlots && !isPast
+                        ? 'text-gray-900 font-medium hover:bg-gray-100 cursor-pointer'
+                        : 'text-gray-300 cursor-default'
+                  }`}
+                >
+                  {day}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Time slots for selected date */}
+      <div className="flex-1 min-w-0">
+        {!selectedDate ? (
+          <div className="flex items-center justify-center h-full min-h-[200px]">
+            <p className="text-gray-400 text-sm">
+              Select a date to see available times
+            </p>
+          </div>
+        ) : (
+          <div>
+            <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wide mb-4">
+              {formatDate(selectedDate)}
+            </h3>
+            <div className="space-y-2">
+              {slotsForDate.map((slot, i) => {
+                const isSelected =
+                  selectedSlot?.start.getTime() === slot.start.getTime();
+                return (
+                  <button
+                    key={i}
+                    onClick={() => onSelectSlot(slot)}
+                    disabled={confirming}
+                    className={`w-full px-4 py-3 rounded-lg border text-sm font-medium transition-all text-left ${
+                      isSelected
+                        ? 'border-black bg-black text-white'
+                        : 'border-gray-200 text-gray-700 hover:border-gray-400 hover:bg-gray-50 active:bg-gray-100'
+                    } disabled:opacity-50`}
+                  >
+                    {formatTime(slot.start)} &ndash; {formatTime(slot.end)}
+                  </button>
+                );
+              })}
+            </div>
+
+            {selectedSlot && selectedSlot.start >= new Date(`${selectedDate}T00:00:00`) && (
+              <div className="mt-6 p-4 bg-gray-50 rounded-xl">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">
+                      {selectedSlot.start.toLocaleDateString(undefined, {
+                        weekday: 'long',
+                        month: 'long',
+                        day: 'numeric',
+                      })}
+                    </p>
+                    <p className="text-sm text-gray-500">
+                      {formatTime(selectedSlot.start)} &ndash;{' '}
+                      {formatTime(selectedSlot.end)}
+                    </p>
+                  </div>
+                  <button
+                    onClick={onConfirm}
+                    disabled={confirming}
+                    className="inline-flex items-center gap-2 bg-black text-white px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors disabled:opacity-50 w-full sm:w-auto justify-center"
+                  >
+                    {confirming ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <ChevronRight className="w-4 h-4" />
+                    )}
+                    Confirm
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -640,96 +847,19 @@ export default function SchedulePageClient({ token }: { token: string }) {
                 )}
 
                 {data.mode === 'suggested' ? (
-                  /* -- Suggested Mode: Time Slot Picker -- */
-                  <div>
-                    <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wide mb-4">
-                      Select a time
-                    </h3>
-
-                    {(() => {
-                      const slots = generateSlots(
-                        data.suggested_windows,
-                        data.duration_minutes,
-                      );
-                      const grouped = groupByDate(slots);
-
-                      if (slots.length === 0) {
-                        return (
-                          <p className="text-gray-500 py-8 text-center">
-                            No available time slots. Please ask{' '}
-                            {data.host_name} for updated times.
-                          </p>
-                        );
-                      }
-
-                      return (
-                        <div className="space-y-6">
-                          {grouped.map(([dateKey, dateSlots]) => (
-                            <div key={dateKey}>
-                              <h4 className="text-sm font-medium text-gray-700 mb-2">
-                                {formatDate(dateKey)}
-                              </h4>
-                              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                                {dateSlots.map((slot, i) => {
-                                  const isSelected =
-                                    selectedSlot?.start.getTime() ===
-                                    slot.start.getTime();
-                                  return (
-                                    <button
-                                      key={i}
-                                      onClick={() => {
-                                        setSelectedSlot(slot);
-                                        setError('');
-                                      }}
-                                      disabled={state === 'confirming'}
-                                      className={`px-3 py-3 sm:py-2.5 rounded-lg border text-sm font-medium transition-all ${
-                                        isSelected
-                                          ? 'border-black bg-black text-white'
-                                          : 'border-gray-200 text-gray-700 hover:border-gray-400 hover:bg-gray-50 active:bg-gray-100'
-                                      } disabled:opacity-50`}
-                                    >
-                                      {formatTime(slot.start)} &ndash;{' '}
-                                      {formatTime(slot.end)}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      );
-                    })()}
-
-                    {selectedSlot && (
-                      <div className="mt-6 p-4 bg-gray-50 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-medium text-gray-800">
-                            {selectedSlot.start.toLocaleDateString(undefined, {
-                              weekday: 'long',
-                              month: 'long',
-                              day: 'numeric',
-                            })}
-                          </p>
-                          <p className="text-sm text-gray-500">
-                            {formatTime(selectedSlot.start)} &ndash;{' '}
-                            {formatTime(selectedSlot.end)}
-                          </p>
-                        </div>
-                        <button
-                          onClick={handleConfirm}
-                          disabled={state === 'confirming'}
-                          className="inline-flex items-center gap-2 bg-black text-white px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors disabled:opacity-50 w-full sm:w-auto justify-center"
-                        >
-                          {state === 'confirming' ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <ChevronRight className="w-4 h-4" />
-                          )}
-                          Confirm
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                  /* -- Suggested Mode: Calendar + Time Slot Picker -- */
+                  <CalendarPicker
+                    windows={data.suggested_windows}
+                    durationMinutes={data.duration_minutes}
+                    hostName={data.host_name}
+                    selectedSlot={selectedSlot}
+                    onSelectSlot={(slot) => {
+                      setSelectedSlot(slot);
+                      setError('');
+                    }}
+                    onConfirm={handleConfirm}
+                    confirming={state === 'confirming'}
+                  />
                 ) : (
                   /* -- Availability Mode: When2Meet Grid -- */
                   <div>
