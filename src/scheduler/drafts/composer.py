@@ -152,7 +152,7 @@ def _build_footer(user_id: str, scheduling_link_url: str | None = None) -> tuple
         )
 
     return (
-        f'<br><br><a href="{scheduling_link_url}">Click here</a> to find a time '
+        f'<br><br>Use <a href="{scheduling_link_url}">Scheduled</a> to find a time '
         f'automatically with {html.escape(capitalized_name)}',
         True,
     )
