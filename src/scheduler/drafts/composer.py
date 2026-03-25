@@ -314,7 +314,53 @@ class DraftComposer:
             invite_proposal["proposal"] = args
             return {"content": [{"type": "text", "text": json.dumps({"status": "invite_proposed", **args})}]}
 
-        all_tools = [get_calendar_events, read_thread, create_draft, add_calendar_event, propose_invite]
+        @tool(
+            "get_booking_page_times",
+            "Get available time slots from an external booking page (Calendly, Cal.com). "
+            "Use this when someone shares a booking link and you need to see what times "
+            "are available before choosing one. Returns a list of times like ['9:00am', '10:30am'].",
+            {"url": str, "date": str},
+        )
+        async def get_booking_page_times(args):
+            from datetime import date as date_type
+
+            from scheduler.booking import get_available_times
+
+            target = date_type.fromisoformat(args["date"])
+            result = await get_available_times(args["url"], target)
+            payload = {"times": result.times, "date": str(result.date)}
+            if result.error_detail:
+                payload["error"] = result.error_detail
+            return {"content": [{"type": "text", "text": json.dumps(payload)}]}
+
+        @tool(
+            "book_meeting_slot",
+            "Book a specific time slot on an external booking page (Calendly, Cal.com). "
+            "Use get_booking_page_times first to see available slots, then use this to "
+            "book one. Only use after checking the user's own calendar for conflicts.",
+            {"url": str, "date": str, "time": str, "name": str, "email": str, "title": str},
+        )
+        async def book_meeting_slot(args):
+            from datetime import date as date_type
+
+            from scheduler.booking import book_slot
+
+            target = date_type.fromisoformat(args["date"])
+            result = await book_slot(
+                args["url"], target, args["time"],
+                args["name"], args["email"], title=args.get("title", ""),
+            )
+            payload = {"status": result.status.value}
+            if result.confirmation_message:
+                payload["confirmation"] = result.confirmation_message
+            if result.error_detail:
+                payload["error"] = result.error_detail
+            return {"content": [{"type": "text", "text": json.dumps(payload)}]}
+
+        all_tools = [
+            get_calendar_events, read_thread, create_draft, add_calendar_event,
+            propose_invite, get_booking_page_times, book_meeting_slot,
+        ]
 
         if self._autopilot:
 
@@ -377,10 +423,14 @@ class DraftComposer:
             "would be premature. The invite will NOT be sent immediately — it will only be created after "
             "the user sends the draft and an agent verifies the sent message. "
             "Use add_calendar_event for personal calendar holds.\n"
-            "6. Consider location preferences when drafting replies. If the thread mentions an in-person "
+            "6. If the email contains a booking link (Calendly, Cal.com), use get_booking_page_times "
+            "to see what slots are available on that page, then cross-reference with the user's "
+            "calendar. If a good slot exists, use book_meeting_slot to book it, then draft a "
+            "confirmation reply. If no slot works, draft a reply explaining the conflict.\n"
+            "7. Consider location preferences when drafting replies. If the thread mentions an in-person "
             "meeting but no location, suggest one based on any observed location preferences. "
             "If a location is mentioned in the thread, acknowledge it in the reply.\n"
-            "7. Create a natural-sounding reply. Do not use passive-aggressive phrases like "
+            "8. Create a natural-sounding reply. Do not use passive-aggressive phrases like "
             "\"as I mentioned\", \"per my last email\", or \"let's try this again\". "
             "Be warm and accommodating, not impatient. "
             + (
