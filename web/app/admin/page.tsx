@@ -71,7 +71,7 @@ interface DraftRow {
   thread_context: ThreadMessage[];
 }
 
-type Tab = 'funnel' | 'cohorts' | 'drafts';
+type Tab = 'funnel' | 'cohorts' | 'drafts' | 'definitions';
 
 // --- Helpers ---
 
@@ -557,6 +557,79 @@ function DraftBrowser() {
   );
 }
 
+function Definitions() {
+  return (
+    <div className="space-y-8 text-sm text-gray-700 leading-relaxed">
+      <section>
+        <h3 className="text-base font-semibold text-gray-800 mb-3">Funnel</h3>
+        <p className="mb-3">Shows weekly conversion from landing page visit through activation. Each bar represents one calendar week.</p>
+        <dl className="space-y-2">
+          <div><dt className="font-medium inline">Page Views</dt> <dd className="inline">— Number of times the landing page was loaded. Tracked anonymously via the <code className="rounded bg-gray-100 px-1 text-xs">page_events</code> table (no user ID required). One page load = one event, includes repeat visits.</dd></div>
+          <div><dt className="font-medium inline">Signup Clicks</dt> <dd className="inline">— Number of times the &quot;Get Started&quot; CTA button was clicked on the landing page. Also tracked anonymously. Does not deduplicate — a user clicking twice counts as two.</dd></div>
+          <div><dt className="font-medium inline">Signups</dt> <dd className="inline">— New user accounts created, from <code className="rounded bg-gray-100 px-1 text-xs">users.created_at</code>. Counted by the week the account was created, regardless of auth method (Google OAuth or Auth0).</dd></div>
+          <div><dt className="font-medium inline">Onboarded</dt> <dd className="inline">— Distinct users who completed onboarding (Gmail connected, calendar synced, guides generated). Counted from <code className="rounded bg-gray-100 px-1 text-xs">onboarding_completed</code> events in <code className="rounded bg-gray-100 px-1 text-xs">analytics_events</code>.</dd></div>
+          <div><dt className="font-medium inline">First Draft Sent</dt> <dd className="inline">— Users who sent their first composed draft. Uses the earliest <code className="rounded bg-gray-100 px-1 text-xs">draft_sent</code> event per user, grouped by the week that first send occurred.</dd></div>
+        </dl>
+        <div className="mt-3 rounded border border-gray-200 bg-gray-50 p-3 text-xs text-gray-500">
+          <strong>Conversion rates</strong> in the summary cards are computed over the entire time range (not per-week). E.g., &quot;Clicks → Signups&quot; = total signups / total signup clicks across all visible weeks.
+        </div>
+      </section>
+
+      <section>
+        <h3 className="text-base font-semibold text-gray-800 mb-3">Cohorts</h3>
+        <p className="mb-3">Users grouped by signup date. &quot;Weekly Cohorts&quot; groups by the Monday of signup week. &quot;Last 7 Days&quot; groups by exact signup date with daily granularity.</p>
+        <dl className="space-y-2">
+          <div><dt className="font-medium inline">Cohort Size</dt> <dd className="inline">— Total users who signed up in that period, from <code className="rounded bg-gray-100 px-1 text-xs">users.created_at</code>.</dd></div>
+          <div><dt className="font-medium inline">Active User</dt> <dd className="inline">— A user with at least one <code className="rounded bg-gray-100 px-1 text-xs">draft_composed</code>, <code className="rounded bg-gray-100 px-1 text-xs">draft_sent</code>, <code className="rounded bg-gray-100 px-1 text-xs">email_classified</code>, or <code className="rounded bg-gray-100 px-1 text-xs">setting_changed</code> event in that time bucket. Activity is system-driven — if an email arrives and gets classified, the user counts as active even without opening the dashboard.</dd></div>
+        </dl>
+
+        <h4 className="font-medium text-gray-800 mt-4 mb-2">Charts</h4>
+        <dl className="space-y-2">
+          <div><dt className="font-medium inline">User Retention</dt> <dd className="inline">— Percentage of the cohort that was active in each subsequent period (W0, W1, ... or D0, D1, ...). W0/D0 is always 100% by definition (the user existed). X-axis is time since signup, not calendar date.</dd></div>
+          <div><dt className="font-medium inline">Total Emails Sent</dt> <dd className="inline">— Count of <code className="rounded bg-gray-100 px-1 text-xs">draft_sent</code> events per cohort, plotted on a calendar date x-axis. Stacked area — each layer is one cohort.</dd></div>
+          <div><dt className="font-medium inline">Active Users</dt> <dd className="inline">— Distinct users with any qualifying event per cohort, plotted on calendar dates. Stacked area.</dd></div>
+          <div><dt className="font-medium inline">Avg Cumulative Actions per User</dt> <dd className="inline">— Running total of all qualifying events, divided by <strong>cohort size</strong> (not active users). This means inactive users drag the average down. A cohort of 5 where 1 user has 3 actions shows 0.6, not 3.0. X-axis is time since signup.</dd></div>
+        </dl>
+      </section>
+
+      <section>
+        <h3 className="text-base font-semibold text-gray-800 mb-3">Drafts</h3>
+        <p className="mb-3">Browse all composed drafts with their thread context, original/sent body comparison, and edit metrics.</p>
+
+        <h4 className="font-medium text-gray-800 mt-4 mb-2">Summary Stats</h4>
+        <dl className="space-y-2">
+          <div><dt className="font-medium inline">Total Drafts</dt> <dd className="inline">— All rows in <code className="rounded bg-gray-100 px-1 text-xs">composed_drafts</code>. Includes both sent and unsent.</dd></div>
+          <div><dt className="font-medium inline">Drafts Sent</dt> <dd className="inline">— Drafts where <code className="rounded bg-gray-100 px-1 text-xs">sent_at</code> is not null. Matched when the user sends any email in the same Gmail thread — the system detects the send via Gmail webhook and links it to the most recent unsent draft for that thread.</dd></div>
+          <div><dt className="font-medium inline">% Sent</dt> <dd className="inline">— Drafts Sent / Total Drafts. Measures how often users actually use the drafts we compose.</dd></div>
+          <div><dt className="font-medium inline">Edited Before Send</dt> <dd className="inline">— Drafts where the sent body differs from the original by more than 2% (after whitespace normalization). Uses Python&apos;s <code className="rounded bg-gray-100 px-1 text-xs">difflib.SequenceMatcher</code> ratio.</dd></div>
+          <div><dt className="font-medium inline">Avg Edit %</dt> <dd className="inline">— Average <code className="rounded bg-gray-100 px-1 text-xs">edit_distance_ratio</code> across all sent drafts. 0% = sent exactly as composed, 100% = completely rewritten. Computed as <code className="rounded bg-gray-100 px-1 text-xs">1 - SequenceMatcher.ratio()</code> on whitespace-normalized text.</dd></div>
+          <div><dt className="font-medium inline">Autopilot Sent</dt> <dd className="inline">— Drafts composed in autopilot mode (sent directly without creating a draft). Format: sent / total autopilot drafts.</dd></div>
+        </dl>
+
+        <h4 className="font-medium text-gray-800 mt-4 mb-2">Per-Draft Fields</h4>
+        <dl className="space-y-2">
+          <div><dt className="font-medium inline">Edited</dt> <dd className="inline">— Yes/No based on the 2% threshold after whitespace normalization.</dd></div>
+          <div><dt className="font-medium inline">Edit %</dt> <dd className="inline">— <code className="rounded bg-gray-100 px-1 text-xs">edit_distance_ratio * 100</code>. Only shown for sent drafts.</dd></div>
+          <div><dt className="font-medium inline">Autopilot</dt> <dd className="inline">— Whether the draft was composed and sent automatically without user review.</dd></div>
+          <div><dt className="font-medium inline">Email Thread</dt> <dd className="inline">— Anonymized thread context stored at composition time. PII (names, emails, companies) is stripped via Claude Haiku before storage. Only includes messages up to and including the triggering email.</dd></div>
+          <div><dt className="font-medium inline">+N added / -N removed</dt> <dd className="inline">— Character-level diff between original and sent body. Computed from <code className="rounded bg-gray-100 px-1 text-xs">difflib.SequenceMatcher.get_opcodes()</code>.</dd></div>
+        </dl>
+      </section>
+
+      <section>
+        <h3 className="text-base font-semibold text-gray-800 mb-3">Data Sources</h3>
+        <dl className="space-y-2">
+          <div><dt className="font-medium inline"><code className="rounded bg-gray-100 px-1 text-xs">analytics_events</code></dt> <dd className="inline">— Generic event log. Requires <code className="rounded bg-gray-100 px-1 text-xs">user_id</code>. Events: <code className="rounded bg-gray-100 px-1 text-xs">user_created</code>, <code className="rounded bg-gray-100 px-1 text-xs">email_classified</code>, <code className="rounded bg-gray-100 px-1 text-xs">draft_composed</code>, <code className="rounded bg-gray-100 px-1 text-xs">draft_sent</code>, <code className="rounded bg-gray-100 px-1 text-xs">onboarding_completed</code>, <code className="rounded bg-gray-100 px-1 text-xs">onboarding_failed</code>, <code className="rounded bg-gray-100 px-1 text-xs">setting_changed</code>. Retained for 90 days.</dd></div>
+          <div><dt className="font-medium inline"><code className="rounded bg-gray-100 px-1 text-xs">composed_drafts</code></dt> <dd className="inline">— One row per composed draft. Stores anonymized thread context, original and sent body, edit metrics. Retained for 90 days.</dd></div>
+          <div><dt className="font-medium inline"><code className="rounded bg-gray-100 px-1 text-xs">page_events</code></dt> <dd className="inline">— Anonymous page-level events (no user ID). Only allows <code className="rounded bg-gray-100 px-1 text-xs">landing_page_view</code> and <code className="rounded bg-gray-100 px-1 text-xs">signup_click</code> via allowlist.</dd></div>
+          <div><dt className="font-medium inline"><code className="rounded bg-gray-100 px-1 text-xs">users</code></dt> <dd className="inline">— User accounts. <code className="rounded bg-gray-100 px-1 text-xs">created_at</code> used for cohort grouping and signup counts.</dd></div>
+          <div><dt className="font-medium inline">Google Analytics (GA4)</dt> <dd className="inline">— Tracks anonymous page views and UTM attribution on the marketing site. Separate from the admin dashboard — view in the GA4 console.</dd></div>
+        </dl>
+      </section>
+    </div>
+  );
+}
+
 // --- Main Page ---
 
 export default function AdminDashboard() {
@@ -611,6 +684,7 @@ export default function AdminDashboard() {
     { key: 'funnel', label: 'Funnel' },
     { key: 'cohorts', label: 'Cohorts' },
     { key: 'drafts', label: 'Drafts' },
+    { key: 'definitions', label: 'Definitions' },
   ];
 
   return (
@@ -635,6 +709,7 @@ export default function AdminDashboard() {
         {tab === 'funnel' && funnelData && <FunnelChart data={funnelData} />}
         {tab === 'cohorts' && <CohortSection />}
         {tab === 'drafts' && <DraftBrowser />}
+        {tab === 'definitions' && <Definitions />}
       </div>
     </div>
   );
