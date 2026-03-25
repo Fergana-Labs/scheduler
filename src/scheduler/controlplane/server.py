@@ -219,6 +219,13 @@ get_web_session = get_authenticated_user
 get_web_user = get_authenticated_user
 
 
+def _require_admin(user: dict = Depends(get_authenticated_user)) -> dict:
+    """Require authenticated user to be in the ADMIN_EMAILS allowlist."""
+    if user["email"].lower() not in config.admin_emails:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
 # --- Auth0 routes ---
 
 
@@ -314,6 +321,11 @@ def auth0_callback(code: str | None = None, error: str | None = None):
             # Brand new user
             user = create_user_from_auth0(email, auth0_sub)
             logger.info("auth0_callback: created new user=%s for auth0_sub=%s", user.id, auth0_sub)
+            from scheduler import analytics
+            analytics.track(str(user.id), "user_created", {
+                "method": "auth0",
+                "email_domain": email.split("@")[1] if "@" in email else "",
+            })
 
     from starlette.background import BackgroundTask
 
@@ -602,12 +614,18 @@ def auth_google_callback(code: str | None = None, state: str | None = None, erro
             from datetime import timedelta
             expires_at = datetime.now() + timedelta(seconds=expires_in)
 
-        user = upsert_user(
+        user, is_new = upsert_user(
             email=email,
             google_refresh_token=refresh_token,
             google_access_token=access_token,
             access_token_expires_at=expires_at,
         )
+        if is_new:
+            from scheduler import analytics
+            analytics.track(str(user.id), "user_created", {
+                "method": "google",
+                "email_domain": email.split("@")[1] if "@" in email else "",
+            })
     else:
         # Sign-in flow: no refresh token, look up existing user
         user = get_user_by_email(email)
@@ -1589,6 +1607,52 @@ def web_track_event(req: TrackEventRequest, request: Request):
     from scheduler import analytics
     analytics.track(session["user_id"], req.event, req.properties)
     return {"status": "ok"}
+
+
+# --- Admin API routes ---
+
+
+@app.get("/web/api/v1/admin/funnel")
+def admin_funnel(weeks: int = 12, admin: dict = Depends(_require_admin)):
+    from scheduler.db import get_funnel_data
+    data = get_funnel_data(weeks=weeks)
+    # Serialize datetimes to ISO strings
+    for row in data:
+        if row.get("week"):
+            row["week"] = row["week"].isoformat()
+    return {"data": data}
+
+
+@app.get("/web/api/v1/admin/cohorts")
+def admin_cohorts(weeks: int = 8, admin: dict = Depends(_require_admin)):
+    from scheduler.db import get_retention_cohorts
+    cohorts = get_retention_cohorts(weeks=weeks)
+    for c in cohorts:
+        if isinstance(c.get("week"), datetime):
+            c["week"] = c["week"].isoformat()
+    return {"cohorts": cohorts}
+
+
+@app.get("/web/api/v1/admin/drafts")
+def admin_drafts(
+    page: int = 1,
+    per_page: int = 20,
+    email: str | None = None,
+    edited_only: bool = False,
+    autopilot_only: bool = False,
+    admin: dict = Depends(_require_admin),
+):
+    from scheduler.db import get_admin_drafts
+    drafts, total = get_admin_drafts(
+        page=page, per_page=per_page, email_search=email,
+        edited_only=edited_only, autopilot_only=autopilot_only,
+    )
+    # Serialize datetimes
+    for d in drafts:
+        for key in ("composed_at", "sent_at"):
+            if d.get(key) and isinstance(d[key], datetime):
+                d[key] = d[key].isoformat()
+    return {"drafts": drafts, "total": total, "page": page, "per_page": per_page}
 
 
 @app.get("/web/api/v1/onboarding/status")

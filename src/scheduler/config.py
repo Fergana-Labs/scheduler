@@ -110,6 +110,11 @@ class Config:
             "POSTMARK_BOT_EMAIL", "bot@tryscheduled.com"
         )
     )
+    admin_emails: list[str] = field(
+        default_factory=lambda: [
+            e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()
+        ]
+    )
 
 
 config = Config()

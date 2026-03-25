@@ -78,7 +78,8 @@ def upsert_user(
     google_access_token: str | None = None,
     access_token_expires_at: datetime | None = None,
     scheduled_calendar_id: str | None = None,
-) -> UserRow:
+) -> tuple[UserRow, bool]:
+    """Upsert a user. Returns (user, is_new) where is_new is True for fresh inserts."""
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -91,7 +92,7 @@ def upsert_user(
                 access_token_expires_at = EXCLUDED.access_token_expires_at,
                 scheduled_calendar_id = COALESCE(EXCLUDED.scheduled_calendar_id, users.scheduled_calendar_id),
                 updated_at = now()
-            RETURNING *
+            RETURNING *, (xmax = 0) AS is_new
             """,
             (email, google_refresh_token, google_access_token,
              access_token_expires_at, scheduled_calendar_id),
@@ -99,7 +100,11 @@ def upsert_user(
         row = cur.fetchone()
         cols = [desc[0] for desc in cur.description]
         conn.commit()
-        return _row_to_user(cols, row)
+        col_val = dict(zip(cols, row))
+        is_new = col_val.pop("is_new", False)
+        filtered_cols = [c for c in cols if c != "is_new"]
+        filtered_row = [v for c, v in zip(cols, row) if c != "is_new"]
+        return _row_to_user(filtered_cols, filtered_row), is_new
 
 
 def update_user_tokens(
@@ -567,6 +572,169 @@ def cleanup_composed_drafts(days: int = 90) -> int:
         count = cur.rowcount
         conn.commit()
         return count
+
+
+def get_funnel_data(weeks: int = 12) -> list[dict]:
+    """Weekly funnel: signups → onboarded → first draft sent."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH week_series AS (
+                SELECT generate_series(
+                    date_trunc('week', now() - make_interval(weeks => %s)),
+                    date_trunc('week', now()),
+                    '1 week'::interval
+                ) AS week
+            ),
+            signups AS (
+                SELECT date_trunc('week', created_at) AS week, count(*) AS cnt
+                FROM users
+                WHERE created_at >= now() - make_interval(weeks => %s)
+                GROUP BY 1
+            ),
+            onboarded AS (
+                SELECT date_trunc('week', created_at) AS week, count(DISTINCT user_id) AS cnt
+                FROM analytics_events
+                WHERE event = 'onboarding_completed'
+                  AND created_at >= now() - make_interval(weeks => %s)
+                GROUP BY 1
+            ),
+            first_drafts AS (
+                SELECT date_trunc('week', min_sent) AS week, count(*) AS cnt
+                FROM (
+                    SELECT user_id, min(created_at) AS min_sent
+                    FROM analytics_events
+                    WHERE event = 'draft_sent'
+                      AND created_at >= now() - make_interval(weeks => %s)
+                    GROUP BY user_id
+                ) sub
+                GROUP BY 1
+            )
+            SELECT
+                ws.week,
+                COALESCE(s.cnt, 0) AS signups,
+                COALESCE(o.cnt, 0) AS onboarded,
+                COALESCE(f.cnt, 0) AS first_draft_sent
+            FROM week_series ws
+            LEFT JOIN signups s ON s.week = ws.week
+            LEFT JOIN onboarded o ON o.week = ws.week
+            LEFT JOIN first_drafts f ON f.week = ws.week
+            ORDER BY ws.week
+            """,
+            (weeks, weeks, weeks, weeks),
+        )
+        cols = [desc[0] for desc in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def get_retention_cohorts(weeks: int = 8) -> list[dict]:
+    """Retention cohort matrix: for each signup week, % of users with draft_composed in subsequent weeks."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH cohorts AS (
+                SELECT id AS user_id, date_trunc('week', created_at) AS cohort_week
+                FROM users
+                WHERE created_at >= now() - make_interval(weeks => %s)
+            ),
+            cohort_sizes AS (
+                SELECT cohort_week, count(*) AS size
+                FROM cohorts
+                GROUP BY cohort_week
+            ),
+            activity AS (
+                SELECT
+                    c.cohort_week,
+                    EXTRACT(EPOCH FROM date_trunc('week', ae.created_at) - c.cohort_week) / 604800 AS week_offset,
+                    count(DISTINCT c.user_id) AS active_users
+                FROM cohorts c
+                JOIN analytics_events ae ON ae.user_id = c.user_id
+                WHERE ae.event = 'draft_composed'
+                GROUP BY c.cohort_week, week_offset
+            )
+            SELECT
+                cs.cohort_week,
+                cs.size,
+                a.week_offset,
+                a.active_users
+            FROM cohort_sizes cs
+            LEFT JOIN activity a ON a.cohort_week = cs.cohort_week
+            ORDER BY cs.cohort_week, a.week_offset
+            """,
+            (weeks,),
+        )
+        cols = [desc[0] for desc in cur.description]
+        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+        # Reshape into cohort objects with retention arrays
+        cohort_map: dict[str, dict] = {}
+        for row in rows:
+            key = str(row["cohort_week"])
+            if key not in cohort_map:
+                cohort_map[key] = {"week": key, "size": row["size"], "retention": {}}
+            if row["week_offset"] is not None:
+                offset = int(row["week_offset"])
+                if 0 <= offset <= weeks:
+                    cohort_map[key]["retention"][offset] = row["active_users"]
+
+        result = []
+        for cohort in sorted(cohort_map.values(), key=lambda c: c["week"]):
+            size = cohort["size"]
+            max_offset = max(cohort["retention"].keys()) if cohort["retention"] else 0
+            retention_pcts = []
+            for i in range(max_offset + 1):
+                active = cohort["retention"].get(i, 0)
+                retention_pcts.append(round(active / size * 100, 1) if size > 0 else 0)
+            cohort["retention"] = retention_pcts
+            result.append(cohort)
+        return result
+
+
+def get_admin_drafts(
+    page: int = 1,
+    per_page: int = 20,
+    email_search: str | None = None,
+    edited_only: bool = False,
+    autopilot_only: bool = False,
+) -> tuple[list[dict], int]:
+    """Paginated composed_drafts with user email, for admin browsing."""
+    conditions = []
+    params: list = []
+
+    if email_search:
+        conditions.append("u.email ILIKE %s")
+        params.append(f"%{email_search}%")
+    if edited_only:
+        conditions.append("cd.was_edited = TRUE")
+    if autopilot_only:
+        conditions.append("cd.was_autopilot = TRUE")
+
+    where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT count(*) FROM composed_drafts cd JOIN users u ON u.id = cd.user_id {where_clause}",
+            params,
+        )
+        total = cur.fetchone()[0]
+
+        cur.execute(
+            f"""
+            SELECT cd.id, u.email AS user_email, cd.original_subject, cd.original_body,
+                   cd.sent_body, cd.was_edited, cd.edit_distance_ratio,
+                   cd.chars_added, cd.chars_removed, cd.was_autopilot,
+                   cd.composed_at, cd.sent_at
+            FROM composed_drafts cd
+            JOIN users u ON u.id = cd.user_id
+            {where_clause}
+            ORDER BY cd.composed_at DESC
+            LIMIT %s OFFSET %s
+            """,
+            params + [per_page, (page - 1) * per_page],
+        )
+        cols = [desc[0] for desc in cur.description]
+        drafts = [dict(zip(cols, row)) for row in cur.fetchall()]
+        return drafts, total
 
 
 def disconnect_user(user_id: str) -> None:

@@ -1,6 +1,9 @@
 import type { Metadata } from 'next';
+import { GoogleAnalytics } from '@next/third-parties/google';
 import { Geist, Geist_Mono, Space_Grotesk, Playfair_Display } from 'next/font/google';
 import './globals.css';
+
+const gaId = process.env.NEXT_PUBLIC_GA_ID;
 
 const geistSans = Geist({
   variable: '--font-geist-sans',
@@ -80,6 +83,7 @@ export default function RootLayout({
         <main className="bg-white">
           {children}
         </main>
+        {gaId && <GoogleAnalytics gaId={gaId} />}
       </body>
     </html>
   );
