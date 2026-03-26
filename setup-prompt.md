@@ -111,10 +111,7 @@ gcloud services enable \
 ```bash
 gcloud firestore databases create --location=us-central1 --type=firestore-native
 
-WEBHOOK_TOKEN=$(openssl rand -hex 16)
 ```
-
-Note: Pub/Sub topic and subscription are NOT created in the user's project. Gmail push notifications go through a shared forwarder service (because Gmail requires the Pub/Sub topic to be in the same project as the OAuth client).
 
 ---
 
@@ -139,8 +136,6 @@ GCP_REGION=us-central1,\
 GOOGLE_CLIENT_ID=1098804761920-k7qgt7gvhf10pub9sisviu11puk7j4rk.apps.googleusercontent.com,\
 GOOGLE_CLIENT_SECRET=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,\
 SESSION_SECRET=$SESSION_SECRET,\
-GMAIL_PUBSUB_TOPIC=projects/stash-desktop/topics/gmail-push,\
-GMAIL_WEBHOOK_TOKEN=$WEBHOOK_TOKEN,\
 CONTROL_PLANE_PUBLIC_URL=PLACEHOLDER"
 
 CLOUD_RUN_URL=$(gcloud run services describe scheduler --region=us-central1 --format='value(status.url)')
@@ -154,11 +149,6 @@ WEB_APP_URL=$CLOUD_RUN_URL,\
 GOOGLE_REDIRECT_URI=$CLOUD_RUN_URL,\
 GOOGLE_WEB_REDIRECT_URI=$CLOUD_RUN_URL"
 
-# Register this instance's webhook URL with the Gmail forwarder
-curl -s -X POST \
-  "https://us-central1-stash-desktop.cloudfunctions.net/gmail-register" \
-  -H "Content-Type: application/json" \
-  -d "{\"email\": \"$ACCOUNT_EMAIL\", \"webhook_url\": \"$CLOUD_RUN_URL/webhooks/gmail\", \"webhook_token\": \"$WEBHOOK_TOKEN\"}"
 ```
 
 ---
@@ -347,24 +337,22 @@ OAUTH_SCRIPT
 
 ---
 
-## Phase 8: Register Gmail Watch
+## Phase 8: Initialize Gmail Polling
 
-Tell Gmail to send push notifications when new emails arrive. This uses the OAuth token stored in Firestore.
+Set the Gmail history ID baseline so the polling loop knows where to start checking for new messages.
 
 ```bash
-# Register Gmail watch using the user's OAuth token
-python3 << 'WATCH_SCRIPT'
+python3 << 'HISTORY_SCRIPT'
 import json, os, urllib.request
 
 project_id = os.environ.get("PROJECT_ID", "MISSING")
 access_token = os.popen("gcloud auth print-access-token").read().strip()
 
-# First, get the user's OAuth token from Firestore
+# Get the user's OAuth token from Firestore
 firestore_url = f"https://firestore.googleapis.com/v1/projects/{project_id}/databases/(default)/documents/users"
 req = urllib.request.Request(firestore_url, headers={"Authorization": f"Bearer {access_token}"})
 resp = json.loads(urllib.request.urlopen(req).read())
 
-# Find the user document
 user_doc = resp.get("documents", [{}])[0]
 fields = user_doc.get("fields", {})
 user_email = fields.get("email", {}).get("stringValue", "")
@@ -387,25 +375,18 @@ creds = Credentials(
 )
 creds.refresh(Request())
 
-# Call Gmail watch API
+# Get current Gmail history ID
 import googleapiclient.discovery
 gmail = googleapiclient.discovery.build("gmail", "v1", credentials=creds)
-watch_response = gmail.users().watch(
-    userId="me",
-    body={
-        "topicName": "projects/stash-desktop/topics/gmail-push",
-        "labelIds": ["INBOX"],
-    },
-).execute()
+profile = gmail.users().getProfile(userId="me").execute()
+history_id = str(profile["historyId"])
 
-print(f"Gmail watch registered for {user_email}")
-print(f"History ID: {watch_response.get('historyId')}")
-print(f"Expiration: {watch_response.get('expiration')}")
+print(f"Gmail history ID for {user_email}: {history_id}")
 
-# Update the history ID in Firestore
+# Save to Firestore
 doc_name = user_doc.get("name", "")
 update_url = f"https://firestore.googleapis.com/v1/{doc_name}?updateMask.fieldPaths=gmail_history_id"
-update_doc = {"fields": {"gmail_history_id": {"stringValue": str(watch_response.get("historyId", ""))}}}
+update_doc = {"fields": {"gmail_history_id": {"stringValue": history_id}}}
 req = urllib.request.Request(
     update_url,
     data=json.dumps(update_doc).encode(),
@@ -413,8 +394,8 @@ req = urllib.request.Request(
     method="PATCH",
 )
 urllib.request.urlopen(req)
-print("History ID saved to Firestore.")
-WATCH_SCRIPT
+print("History ID saved — polling will start from here.")
+HISTORY_SCRIPT
 ```
 
 ---

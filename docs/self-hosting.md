@@ -32,12 +32,10 @@ cp .env.example .env
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SCHEDULER_DEPLOYMENT_MODE` | `self_hosted` | Auth mode (`self_hosted` or `auth0`) |
-| `GMAIL_PUBSUB_TOPIC` | | Pub/Sub topic for Gmail push notifications |
-| `GMAIL_WEBHOOK_TOKEN` | | Shared secret for webhook verification |
 | `WEB_APP_URL` | `http://localhost:3000` | Frontend URL for CORS/redirects |
 | `SCHEDULED_CALENDAR_NAME` | `Scheduled Calendar` | Name of the Google Calendar to create |
 | `ONBOARDING_LOOKBACK_DAYS` | `60` | How far back onboarding scans Gmail |
-| `WATCHER_POLL_INTERVAL` | `60` | Email watcher polling interval (seconds) |
+| `WATCHER_POLL_INTERVAL` | `300` | Gmail polling interval in seconds (default 5 min) |
 | `AGENT_RUNTIME` | `local` | `local` or `e2b` (cloud sandbox) |
 
 ## 2. Google Cloud setup
@@ -54,22 +52,9 @@ cp .env.example .env
    - Your production control plane URL (if deploying)
 7. Copy the Client ID and Client Secret to your `.env`
 
-### Set up Gmail push notifications (optional but recommended)
+### Gmail polling
 
-Without Pub/Sub, the watcher polls Gmail on an interval. With Pub/Sub, you get real-time push notifications.
-
-1. Enable the **Cloud Pub/Sub API** in your Google Cloud project
-2. Create a Pub/Sub topic (e.g., `projects/your-project/topics/gmail-push`)
-3. Grant `gmail-api-push@system.gserviceaccount.com` the **Pub/Sub Publisher** role on the topic
-4. Create a push subscription pointing to your control plane:
-   ```
-   https://your-host/webhooks/gmail?token=YOUR_WEBHOOK_TOKEN
-   ```
-5. Set in `.env`:
-   ```
-   GMAIL_PUBSUB_TOPIC=projects/your-project/topics/gmail-push
-   GMAIL_WEBHOOK_TOKEN=your-random-secret
-   ```
+The control plane polls Gmail for new messages every `WATCHER_POLL_INTERVAL` seconds (default: 300s / 5 minutes). No Pub/Sub setup is needed — polling uses the Gmail History API to efficiently detect new messages.
 
 ## 3. Database setup
 

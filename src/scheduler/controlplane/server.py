@@ -33,26 +33,8 @@ from scheduler.gmail.client import GmailClient
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-_WATCH_RENEWAL_INTERVAL = 12 * 3600  # 12 hours
 _onboarding_status: dict[str, dict] = {}  # user_id -> {"status": ..., "error": ...}
 _onboarding_lock = threading.Lock()
-_UNKNOWN_GMAIL_WEBHOOK_TTL = 300  # 5 minutes
-_unknown_gmail_webhook_emails: dict[str, float] = {}
-
-
-def _is_cached_unknown_gmail_webhook_email(email_address: str) -> bool:
-    now = time.time()
-    expires_at = _unknown_gmail_webhook_emails.get(email_address)
-    if expires_at is None:
-        return False
-    if expires_at <= now:
-        del _unknown_gmail_webhook_emails[email_address]
-        return False
-    return True
-
-
-def _cache_unknown_gmail_webhook_email(email_address: str) -> None:
-    _unknown_gmail_webhook_emails[email_address] = time.time() + _UNKNOWN_GMAIL_WEBHOOK_TTL
 
 
 def _is_gmail_404(exc: Exception) -> bool:
@@ -60,27 +42,51 @@ def _is_gmail_404(exc: Exception) -> bool:
     return isinstance(exc, HttpError) and exc.resp.status == 404
 
 
-async def _watch_renewal_loop():
-    """Background loop: renew Gmail watches and clean up old processed messages."""
-    await asyncio.sleep(60)  # let server finish starting
+async def _gmail_poll_loop():
+    """Background loop: poll Gmail for new messages and clean up old records."""
+    await asyncio.sleep(10)  # let server finish starting
+
+    last_cleanup_at = 0.0  # 0 = never, triggers cleanup on first iteration
+
     while True:
         try:
-            from scheduler.db import cleanup_processed_messages
-            from scheduler.gmail.watch import renew_all_watches
+            from scheduler.db import get_all_user_ids, get_user_by_id
 
-            result = await asyncio.to_thread(renew_all_watches)
-            logger.info("watch_renewal_loop: %s", result)
-            deleted = await asyncio.to_thread(cleanup_processed_messages)
-            if deleted:
-                logger.info("watch_renewal_loop: cleaned up %d old processed_messages rows", deleted)
+            user_ids = await asyncio.to_thread(get_all_user_ids)
+            for user_id in user_ids:
+                try:
+                    user = await asyncio.to_thread(get_user_by_id, user_id)
+                    if not user or not user.google_refresh_token:
+                        continue
+                    if not user.system_enabled:
+                        continue
+                    if not user.gmail_history_id:
+                        continue
+                    await asyncio.to_thread(
+                        _process_new_messages, str(user.id), user.email
+                    )
+                except Exception:
+                    logger.exception("gmail_poll: failed for user=%s", user_id)
         except Exception:
-            logger.exception("watch_renewal_loop: failed")
-        await asyncio.sleep(_WATCH_RENEWAL_INTERVAL)
+            logger.exception("gmail_poll: failed to list users")
+
+        # Periodic cleanup (every hour, not every poll cycle)
+        if time.time() - last_cleanup_at >= 3600:
+            last_cleanup_at = time.time()
+            try:
+                from scheduler.db import cleanup_processed_messages
+                deleted = await asyncio.to_thread(cleanup_processed_messages)
+                if deleted:
+                    logger.info("gmail_poll: cleaned up %d old processed_messages rows", deleted)
+            except Exception:
+                logger.exception("gmail_poll: cleanup failed")
+
+        await asyncio.sleep(config.watcher_poll_interval)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(_watch_renewal_loop())
+    task = asyncio.create_task(_gmail_poll_loop())
     yield
     task.cancel()
 
@@ -248,8 +254,8 @@ def auth_google_connect_callback(
     token_param = f"token={auth_token}" if auth_token else ""
 
     if is_onboarded:
-        logger.info("google_connect: returning user=%s, renewing gmail watch", user_id)
-        background = BackgroundTask(_renew_gmail_watch, user_id)
+        logger.info("google_connect: returning user=%s, initializing gmail history", user_id)
+        background = BackgroundTask(_initialize_gmail_history, user_id)
         redirect_url = f"{config.web_app_url}/settings?{token_param}"
     else:
         logger.info("google_connect: starting onboarding for user=%s", user_id)
@@ -393,8 +399,8 @@ def auth_google_callback(code: str | None = None, state: str | None = None, erro
     from starlette.background import BackgroundTask
 
     if is_onboarded:
-        logger.info("sign-in: returning user=%s, renewing gmail watch", user.id)
-        background = BackgroundTask(_renew_gmail_watch, str(user.id))
+        logger.info("sign-in: returning user=%s, initializing gmail history", user.id)
+        background = BackgroundTask(_initialize_gmail_history, str(user.id))
         redirect_url = f"{config.web_app_url}/settings"
     else:
         logger.info("onboarding: starting all agents for user=%s after OAuth", user.id)
@@ -814,21 +820,24 @@ def _is_onboarded(user_id: str, *, scheduled_calendar_id: str | None = None) -> 
     return has_guides and scheduled_calendar_id is not None
 
 
-def _renew_gmail_watch(user_id: str) -> None:
-    """Background task: renew Gmail watch for a returning user."""
-    from scheduler.gmail.watch import setup_gmail_watch
+def _initialize_gmail_history(user_id: str) -> None:
+    """Background task: set the Gmail history ID baseline for a returning user."""
+    from scheduler.db import update_gmail_history_id
 
     try:
-        setup_gmail_watch(user_id)
-        logger.info("sign-in: gmail watch renewed for user=%s", user_id)
+        creds = load_credentials(user_id)
+        gmail = GmailClient(creds)
+        history_id = gmail.get_current_history_id()
+        update_gmail_history_id(user_id, history_id)
+        logger.info("sign-in: gmail history initialized for user=%s", user_id)
     except Exception:
-        logger.exception("sign-in: failed to renew gmail watch for user=%s", user_id)
+        logger.exception("sign-in: failed to initialize gmail history for user=%s", user_id)
 
 
 def _run_onboarding_all(user_id: str) -> None:
-    """Run backfill + both guide-writer agents for a user, then set up Gmail watch."""
+    """Run backfill + both guide-writer agents for a user, then initialize Gmail polling."""
     import anyio
-    from scheduler.gmail.watch import setup_gmail_watch
+    from scheduler.db import update_gmail_history_id
     from scheduler.guides.backends import LocalGuideBackend
     from scheduler.guides.preferences import run_preferences_agent
     from scheduler.guides.style import run_style_agent
@@ -854,11 +863,13 @@ def _run_onboarding_all(user_id: str) -> None:
 
     anyio.run(_run)
 
+    # Set history ID baseline so polling picks up new emails
     try:
-        setup_gmail_watch(user_id)
-        logger.info("onboarding: gmail watch set up for user=%s", user_id)
+        history_id = gmail.get_current_history_id()
+        update_gmail_history_id(user_id, history_id)
+        logger.info("onboarding: gmail history initialized for user=%s", user_id)
     except Exception:
-        logger.exception("onboarding: failed to set up gmail watch for user=%s", user_id)
+        logger.exception("onboarding: failed to initialize gmail history for user=%s", user_id)
 
 
 def _run_onboarding(user_id: str) -> None:
@@ -937,7 +948,7 @@ def _handle_sent_message_for_invite(user_id: str, email, gmail: GmailClient, cal
     if not pending:
         return
 
-    logger.info("gmail_webhook: sent message in thread %s has pending invite, verifying", email.thread_id)
+    logger.info("gmail_poll: sent message in thread %s has pending invite, verifying", email.thread_id)
 
     thread_messages = []
     try:
@@ -946,7 +957,7 @@ def _handle_sent_message_for_invite(user_id: str, email, gmail: GmailClient, cal
                 break
             thread_messages.append({"sender": t_email.sender, "body": t_email.body, "date": t_email.date.isoformat()})
     except Exception:
-        logger.warning("gmail_webhook: failed to fetch thread for invite verification")
+        logger.warning("gmail_poll: failed to fetch thread for invite verification")
 
     result = verify_sent_message_for_invite(
         sent_message_body=email.body,
@@ -955,11 +966,11 @@ def _handle_sent_message_for_invite(user_id: str, email, gmail: GmailClient, cal
         pending_invite=pending,
     )
 
-    logger.info("gmail_webhook: invite verification: action=%s reason=%s", result.action, result.reason)
+    logger.info("gmail_poll: invite verification: action=%s reason=%s", result.action, result.reason)
 
     if result.action == "skip":
         delete_pending_invite(pending.id)
-        logger.info("gmail_webhook: deleted pending invite %s (skipped)", pending.id)
+        logger.info("gmail_poll: deleted pending invite %s (skipped)", pending.id)
         return
 
     if result.action == "update":
@@ -995,26 +1006,23 @@ def _handle_sent_message_for_invite(user_id: str, email, gmail: GmailClient, cal
             location=pending.location,
             add_google_meet=pending.add_google_meet,
         )
-        logger.info("gmail_webhook: created invite event for thread %s", email.thread_id)
+        logger.info("gmail_poll: created invite event for thread %s", email.thread_id)
     except Exception:
-        logger.exception("gmail_webhook: failed to create invite event for thread %s", email.thread_id)
+        logger.exception("gmail_poll: failed to create invite event for thread %s", email.thread_id)
 
     delete_pending_invite(pending.id)
 
 
-def _process_new_messages(user_id: str, email_address: str, history_id: str) -> None:
-    """Background task: fetch new messages since last history ID and process them."""
+def _process_new_messages(user_id: str, email_address: str) -> None:
+    """Poll for new messages since last history ID and process them."""
     from scheduler.db import get_user_by_id, update_gmail_history_id
 
     user = get_user_by_id(user_id)
     if not user:
         return
     if not user.system_enabled:
-        logger.info("gmail_webhook: system disabled for user=%s, skipping", email_address)
         return
     if not user.gmail_history_id:
-        update_gmail_history_id(user_id, history_id)
-        logger.info("gmail_webhook: stored initial history_id=%s for user=%s", history_id, email_address)
         return
 
     creds = load_credentials(user_id)
@@ -1023,17 +1031,20 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
     try:
         new_message_ids = gmail.get_history(user.gmail_history_id)
     except Exception:
-        logger.warning("gmail_webhook: history expired for user=%s, resetting", email_address)
-        update_gmail_history_id(user_id, history_id)
+        logger.warning("gmail_poll: history expired for user=%s, resetting", email_address)
+        current_id = gmail.get_current_history_id()
+        update_gmail_history_id(user_id, current_id)
         return
 
-    update_gmail_history_id(user_id, history_id)
+    # Update history ID to current so next poll starts from here
+    current_id = gmail.get_current_history_id()
+    update_gmail_history_id(user_id, current_id)
 
     if not new_message_ids:
         return
 
     logger.info(
-        "gmail_webhook: %d new message(s) for user=%s: %s",
+        "gmail_poll: %d new message(s) for user=%s: %s",
         len(new_message_ids),
         email_address,
         new_message_ids,
@@ -1047,7 +1058,7 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
 
     for message_id in new_message_ids:
         if not try_claim_message(user_id, message_id):
-            logger.info("gmail_webhook: message %s already claimed, skipping", message_id)
+            logger.info("gmail_poll: message %s already claimed, skipping", message_id)
             continue
 
         try:
@@ -1061,12 +1072,12 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
                     analytics.record_draft_sent(user_id, email.thread_id, email.body, email.date)
                 except Exception:
                     logger.debug("analytics: failed to check sent draft for message %s", message_id, exc_info=True)
-                logger.info("gmail_webhook: message %s is from the user, skipping", message_id)
+                logger.info("gmail_poll: message %s is from the user, skipping", message_id)
                 continue
 
             # Skip newsletters / mass emails (before classifier, saves API cost)
             if is_mass_email(email.headers, email.sender):
-                logger.info("gmail_webhook: message %s is a mass email/newsletter, skipping", message_id)
+                logger.info("gmail_poll: message %s is a mass email/newsletter, skipping", message_id)
                 continue
 
             # Fetch full thread for classifier context
@@ -1083,7 +1094,7 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
                     if t_email.id == email.id:
                         break
             except Exception:
-                logger.warning("gmail_webhook: failed to fetch thread %s for context, classifying without", email.thread_id)
+                logger.warning("gmail_poll: failed to fetch thread %s for context, classifying without", email.thread_id)
 
             classification = classify_email(
                 email.subject, email.body, email.sender,
@@ -1100,16 +1111,16 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
             })
 
             if classification.intent == SchedulingIntent.DOESNT_NEED_DRAFT:
-                logger.info("gmail_webhook: message %s is not scheduling-related, skipping", message_id)
+                logger.info("gmail_poll: message %s is not scheduling-related, skipping", message_id)
                 continue
 
             # Skip cold outreach unless user opted in
             if classification.is_sales_email and not user.process_sales_emails:
-                logger.info("gmail_webhook: message %s is cold outreach, skipping", message_id)
+                logger.info("gmail_poll: message %s is cold outreach, skipping", message_id)
                 continue
 
             logger.info(
-                "gmail_webhook: message %s classified as %s (confidence=%.2f), composing draft",
+                "gmail_poll: message %s classified as %s (confidence=%.2f), composing draft",
                 message_id,
                 classification.intent.value,
                 classification.confidence,
@@ -1131,9 +1142,9 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
             invite_proposal = compose_result.get("invite_proposal")
 
             if draft_id is None:
-                logger.info("gmail_webhook: thread for message %s already resolved, no draft created", message_id)
+                logger.info("gmail_poll: thread for message %s already resolved, no draft created", message_id)
             else:
-                logger.info("gmail_webhook: created draft %s for message %s", draft_id, message_id)
+                logger.info("gmail_poll: created draft %s for message %s", draft_id, message_id)
 
                 if invite_proposal:
                     from scheduler.db import create_pending_invite
@@ -1148,9 +1159,9 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
                             add_google_meet=invite_proposal.get("add_google_meet", False),
                             location=invite_proposal.get("location", ""),
                         )
-                        logger.info("gmail_webhook: created pending invite for thread %s", email.thread_id)
+                        logger.info("gmail_poll: created pending invite for thread %s", email.thread_id)
                     except Exception:
-                        logger.exception("gmail_webhook: failed to create pending invite for thread %s", email.thread_id)
+                        logger.exception("gmail_poll: failed to create pending invite for thread %s", email.thread_id)
 
                 analytics.track(user_id, "draft_composed", {
                     "thread_id": email.thread_id,
@@ -1160,52 +1171,9 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
 
         except Exception as exc:
             if _is_gmail_404(exc):
-                logger.warning("gmail_webhook: message %s not found (deleted?), skipping", message_id)
+                logger.warning("gmail_poll: message %s not found (deleted?), skipping", message_id)
             else:
-                logger.exception("gmail_webhook: failed to process message %s for user=%s", message_id, email_address)
-
-
-@app.post("/webhooks/gmail")
-async def gmail_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Receive Gmail push notifications via Google Cloud Pub/Sub."""
-    if config.gmail_webhook_token:
-        token = request.query_params.get("token", "")
-        if not hmac.compare_digest(token, config.gmail_webhook_token):
-            raise HTTPException(status_code=403, detail="Invalid webhook token")
-
-    from scheduler.db import get_user_by_email
-
-    body = await request.json()
-    message = body.get("message", {})
-    data_b64 = message.get("data", "")
-
-    if not data_b64:
-        raise HTTPException(status_code=400, detail="Missing message data")
-
-    try:
-        payload = json.loads(base64.urlsafe_b64decode(data_b64))
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid message data")
-
-    email_address = payload.get("emailAddress")
-    history_id = str(payload.get("historyId", ""))
-
-    if not email_address or not history_id:
-        raise HTTPException(status_code=400, detail="Missing emailAddress or historyId")
-
-    if _is_cached_unknown_gmail_webhook_email(email_address):
-        logger.info("gmail_webhook: cached unknown email %s", email_address)
-        return {"status": "ignored", "reason": "unknown user"}
-
-    user = await asyncio.to_thread(get_user_by_email, email_address)
-    if not user:
-        _cache_unknown_gmail_webhook_email(email_address)
-        logger.warning("gmail_webhook: unknown email %s", email_address)
-        return {"status": "ignored", "reason": "unknown user"}
-
-    background_tasks.add_task(_process_new_messages, str(user.id), email_address, history_id)
-
-    return {"status": "ok"}
+                logger.exception("gmail_poll: failed to process message %s for user=%s", message_id, email_address)
 
 
 # --- Web API routes ---
@@ -1459,9 +1427,3 @@ def web_account_disconnect(request: Request, user: dict = Depends(get_authentica
     return JSONResponse({"status": "disconnected"})
 
 
-@app.post("/api/v1/gmail/watch/renew")
-def gmail_watch_renew():
-    """Renew Gmail push notification watches for all users."""
-    from scheduler.gmail.watch import renew_all_watches
-    result = renew_all_watches()
-    return result

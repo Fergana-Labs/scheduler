@@ -360,40 +360,17 @@ class GmailClient:
         )
         return result["id"]
 
-    def watch(self, topic_name: str) -> dict:
-        """Start receiving push notifications for new emails.
-
-        Calls Gmail users.watch() to register for push notifications via
-        Google Cloud Pub/Sub. Must be renewed before expiration (~ 7 days).
-
-        Args:
-            topic_name: Full Pub/Sub topic name, e.g.
-                        "projects/my-project/topics/gmail-notifications".
-
-        Returns:
-            Dict with 'historyId' (str) and 'expiration' (epoch ms str).
-        """
+    def get_current_history_id(self) -> str:
+        """Get the current history ID from the user's Gmail profile."""
         service = self._get_service()
-        result = (
-            service.users()
-            .watch(
-                userId="me",
-                body={
-                    "topicName": topic_name,
-                    "labelFilterBehavior": "include",
-                    "labelIds": ["INBOX", "SENT"],
-                },
-            )
-            .execute()
-        )
-        return {"historyId": result["historyId"], "expiration": result["expiration"]}
+        profile = service.users().getProfile(userId="me").execute()
+        return str(profile["historyId"])
 
     def get_history(self, start_history_id: str) -> list[str]:
         """Get message IDs added to the inbox since a given history ID.
 
         Args:
-            start_history_id: The history ID to start from (from watch() or
-                              a previous push notification).
+            start_history_id: The history ID to start from.
 
         Returns:
             List of new message IDs.

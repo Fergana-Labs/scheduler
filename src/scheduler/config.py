@@ -38,7 +38,7 @@ class Config:
         default_factory=lambda: int(os.environ.get("ONBOARDING_LOOKBACK_DAYS", "60"))
     )
     watcher_poll_interval: int = field(
-        default_factory=lambda: int(os.environ.get("WATCHER_POLL_INTERVAL", "60"))
+        default_factory=lambda: int(os.environ.get("WATCHER_POLL_INTERVAL", "300"))
     )
 
     # Server
@@ -56,14 +56,6 @@ class Config:
     )
     session_secret: str = field(
         default_factory=lambda: os.environ.get("SESSION_SECRET", "change-me-in-production")
-    )
-
-    # Gmail
-    gmail_pubsub_topic: str = field(
-        default_factory=lambda: os.environ.get("GMAIL_PUBSUB_TOPIC", "")
-    )
-    gmail_webhook_token: str = field(
-        default_factory=lambda: os.environ.get("GMAIL_WEBHOOK_TOKEN", "")
     )
 
     # Local dev
