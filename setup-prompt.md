@@ -101,7 +101,8 @@ gcloud services enable \
   aiplatform.googleapis.com \
   cloudresourcemanager.googleapis.com \
   vpcaccess.googleapis.com \
-  compute.googleapis.com
+  compute.googleapis.com \
+  dns.googleapis.com
 ```
 
 ---
@@ -168,20 +169,59 @@ gcloud pubsub subscriptions create gmail-push-sub \
 
 This restricts the container to only communicate with Google APIs. No data can be sent anywhere else.
 
+The key is: route through a VPC with Private Google Access enabled, then block all egress except Google's restricted API ranges.
+
 ```bash
+# Create a custom subnet with Private Google Access enabled
+gcloud compute networks subnets update default \
+  --region=us-central1 \
+  --enable-private-ip-google-access
+
+# Create VPC connector
 gcloud compute networks vpc-access connectors create scheduler-connector \
   --region=us-central1 \
   --network=default \
   --range=10.8.0.0/28
 
+# Configure DNS to route *.googleapis.com to restricted.googleapis.com IPs
+# This ensures API calls go through the restricted range
+gcloud dns managed-zones create googleapis-restricted \
+  --dns-name="googleapis.com." \
+  --visibility=private \
+  --networks=default \
+  --description="Route Google APIs through restricted VIP" 2>/dev/null || true
+
+gcloud dns record-sets create "*.googleapis.com." \
+  --zone=googleapis-restricted \
+  --type=CNAME \
+  --rrdatas="restricted.googleapis.com." \
+  --ttl=300 2>/dev/null || true
+
+gcloud dns record-sets create "restricted.googleapis.com." \
+  --zone=googleapis-restricted \
+  --type=A \
+  --rrdatas="199.36.153.4,199.36.153.5,199.36.153.6,199.36.153.7" \
+  --ttl=300 2>/dev/null || true
+
+# Allow only Google restricted API ranges
 gcloud compute firewall-rules create allow-google-apis \
   --network=default \
   --direction=EGRESS \
   --action=ALLOW \
   --rules=tcp:443 \
-  --destination-ranges=199.36.153.4/30,199.36.153.8/30 \
+  --destination-ranges=199.36.153.4/30 \
   --priority=1000
 
+# Allow DNS (needed for resolving googleapis.com)
+gcloud compute firewall-rules create allow-dns \
+  --network=default \
+  --direction=EGRESS \
+  --action=ALLOW \
+  --rules=udp:53,tcp:53 \
+  --destination-ranges=0.0.0.0/0 \
+  --priority=999
+
+# Block everything else
 gcloud compute firewall-rules create deny-all-egress \
   --network=default \
   --direction=EGRESS \
@@ -190,13 +230,14 @@ gcloud compute firewall-rules create deny-all-egress \
   --destination-ranges=0.0.0.0/0 \
   --priority=2000
 
+# Route Cloud Run through the locked-down VPC
 gcloud run services update scheduler \
   --region=us-central1 \
   --vpc-connector=scheduler-connector \
   --vpc-egress=all-traffic
 ```
 
-If any egress lockdown command fails, do NOT skip it. Debug and fix the issue.
+If any egress lockdown command fails, do NOT skip it. Debug and fix the issue. The DNS API may need to be enabled first: `gcloud services enable dns.googleapis.com`
 
 ---
 
@@ -305,7 +346,81 @@ OAUTH_SCRIPT
 
 ---
 
-## Phase 8: Verify & Done
+## Phase 8: Register Gmail Watch
+
+Tell Gmail to send push notifications when new emails arrive. This uses the OAuth token stored in Firestore.
+
+```bash
+# Register Gmail watch using the user's OAuth token
+python3 << 'WATCH_SCRIPT'
+import json, os, urllib.request
+
+project_id = os.environ.get("PROJECT_ID", "MISSING")
+access_token = os.popen("gcloud auth print-access-token").read().strip()
+
+# First, get the user's OAuth token from Firestore
+firestore_url = f"https://firestore.googleapis.com/v1/projects/{project_id}/databases/(default)/documents/users"
+req = urllib.request.Request(firestore_url, headers={"Authorization": f"Bearer {access_token}"})
+resp = json.loads(urllib.request.urlopen(req).read())
+
+# Find the user document
+user_doc = resp.get("documents", [{}])[0]
+fields = user_doc.get("fields", {})
+user_email = fields.get("email", {}).get("stringValue", "")
+refresh_token = fields.get("google_refresh_token", {}).get("stringValue", "")
+
+if not refresh_token:
+    print("ERROR: No refresh token found in Firestore")
+    exit(1)
+
+# Exchange refresh token for access token
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+
+creds = Credentials(
+    token=None,
+    refresh_token=refresh_token,
+    token_uri="https://oauth2.googleapis.com/token",
+    client_id="1098804761920-k7qgt7gvhf10pub9sisviu11puk7j4rk.apps.googleusercontent.com",
+    client_secret="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",
+)
+creds.refresh(Request())
+
+# Call Gmail watch API
+import googleapiclient.discovery
+gmail = googleapiclient.discovery.build("gmail", "v1", credentials=creds)
+watch_response = gmail.users().watch(
+    userId="me",
+    body={
+        "topicName": f"projects/{project_id}/topics/gmail-push",
+        "labelIds": ["INBOX"],
+    },
+).execute()
+
+print(f"Gmail watch registered for {user_email}")
+print(f"History ID: {watch_response.get('historyId')}")
+print(f"Expiration: {watch_response.get('expiration')}")
+
+# Update the history ID in Firestore
+doc_name = user_doc.get("name", "")
+update_url = f"https://firestore.googleapis.com/v1/{doc_name}?updateMask.fieldPaths=gmail_history_id"
+update_doc = {"fields": {"gmail_history_id": {"stringValue": str(watch_response.get("historyId", ""))}}}
+req = urllib.request.Request(
+    update_url,
+    data=json.dumps(update_doc).encode(),
+    headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+    method="PATCH",
+)
+urllib.request.urlopen(req)
+print("History ID saved to Firestore.")
+WATCH_SCRIPT
+```
+
+---
+
+## Phase 9: Verify & Done
+
+Send a test email to verify the system works. Also add a DNS enablement step if needed.
 
 ```bash
 # Health check
