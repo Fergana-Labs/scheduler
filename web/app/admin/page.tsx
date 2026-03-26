@@ -94,7 +94,7 @@ function pct(a: number, b: number): string {
 
 // --- Components ---
 
-const WEEK_OPTIONS = [4, 8, 12, 24, 52] as const;
+const WEEK_OPTIONS = [1, 4, 8, 12, 24, 52] as const;
 
 function FunnelSection() {
   const [weeks, setWeeks] = useState<number>(12);
@@ -264,38 +264,10 @@ function CohortSection() {
   );
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function SingleSeriesTooltip({ active, payload, label, suffix }: any) {
-  if (!active || !payload?.length) return null;
-  const item = payload[0];
-  return (
-    <div className="rounded border border-gray-200 bg-white px-3 py-2 text-xs shadow-sm">
-      <div className="text-gray-500">{label}</div>
-      <div className="mt-1 font-medium" style={{ color: item.color }}>
-        {item.name}: {item.value}{suffix || ''}
-      </div>
-    </div>
-  );
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function SingleSeriesTooltipWithTotal({ active, payload, label }: any) {
-  if (!active || !payload?.length) return null;
-  const item = payload[0];
-  const total = payload.reduce((sum: number, p: { value?: number }) => sum + (p.value || 0), 0);
-  return (
-    <div className="rounded border border-gray-200 bg-white px-3 py-2 text-xs shadow-sm">
-      <div className="text-gray-500">{label}</div>
-      <div className="mt-1 font-medium" style={{ color: item.color }}>
-        {item.name}: {item.value}
-      </div>
-      <div className="mt-0.5 text-gray-500">Total: {total}</div>
-    </div>
-  );
-}
-
 function CohortCharts({ data, periodLabel }: { data: CohortData; periodLabel: string }) {
   const { cohorts, max_weeks, emails_by_week, active_by_week } = data;
+  const [hoveredSeries, setHoveredSeries] = useState<string | null>(null);
+
   if (cohorts.length === 0) {
     return <p className="text-gray-500">No cohort data yet.</p>;
   }
@@ -303,13 +275,12 @@ function CohortCharts({ data, periodLabel }: { data: CohortData; periodLabel: st
   const weekOffsets = Array.from({ length: max_weeks }, (_, i) => i);
   const cohortKeys = cohorts.map((c) => formatWeek(c.week));
 
-  // 1. Retention line chart (by week offset, starts at 100%)
-  // Use undefined for null values so Recharts stops drawing the line
+  // 1. Retention line chart — omit keys entirely for incomplete offsets so lines stop
   const retentionData = weekOffsets.map((offset) => {
     const point: Record<string, unknown> = { week: `${periodLabel}${offset}` };
     cohorts.forEach((c) => {
       const v = c.retention[offset];
-      point[formatWeek(c.week)] = v === null || v === undefined ? undefined : v;
+      if (v !== null && v !== undefined) point[formatWeek(c.week)] = v;
     });
     return point;
   });
@@ -330,15 +301,55 @@ function CohortCharts({ data, periodLabel }: { data: CohortData; periodLabel: st
   // 3. Active users by absolute date (from backend)
   const activeData = active_by_week.map(remapCohortKeys);
 
-  // 4. Avg cumulative actions per user (by week offset)
+  // 4. Avg cumulative actions — omit keys for incomplete offsets
   const lifetimeData = weekOffsets.map((offset) => {
     const point: Record<string, unknown> = { week: `${periodLabel}${offset}` };
     cohorts.forEach((c) => {
       const v = c.lifetime_actions[offset];
-      point[formatWeek(c.week)] = v === null || v === undefined ? undefined : v;
+      if (v !== null && v !== undefined) point[formatWeek(c.week)] = v;
     });
     return point;
   });
+
+  // Tooltip that shows only the hovered series
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const FocusedTooltip = ({ active, payload, label, suffix }: any) => {
+    if (!active || !payload?.length) return null;
+    const item = hoveredSeries
+      ? payload.find((p: { dataKey: string }) => p.dataKey === hoveredSeries) || payload[0]
+      : payload[0];
+    if (item.value === undefined || item.value === null) return null;
+    return (
+      <div className="rounded border border-gray-200 bg-white px-3 py-2 text-xs shadow-sm">
+        <div className="text-gray-500">{label}</div>
+        <div className="mt-1 font-medium" style={{ color: item.color }}>
+          {item.name}: {item.value}{suffix || ''}
+        </div>
+      </div>
+    );
+  };
+
+  // Tooltip that shows hovered series + total (for stacked area charts)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const FocusedTooltipWithTotal = ({ active, payload, label }: any) => {
+    if (!active || !payload?.length) return null;
+    const item = hoveredSeries
+      ? payload.find((p: { dataKey: string }) => p.dataKey === hoveredSeries) || payload[0]
+      : payload[0];
+    const total = payload.reduce((sum: number, p: { value?: number }) => sum + (p.value || 0), 0);
+    return (
+      <div className="rounded border border-gray-200 bg-white px-3 py-2 text-xs shadow-sm">
+        <div className="text-gray-500">{label}</div>
+        <div className="mt-1 font-medium" style={{ color: item.color }}>
+          {item.name}: {item.value}
+        </div>
+        <div className="mt-0.5 text-gray-500">Total: {total}</div>
+      </div>
+    );
+  };
+
+  const handleMouseEnter = (key: string) => () => setHoveredSeries(key);
+  const handleMouseLeave = () => setHoveredSeries(null);
 
   return (
     <div className="space-y-10">
@@ -349,10 +360,10 @@ function CohortCharts({ data, periodLabel }: { data: CohortData; periodLabel: st
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="week" tick={{ fontSize: 12 }} />
             <YAxis unit="%" domain={[0, 100]} />
-            <Tooltip content={<SingleSeriesTooltip suffix="%" />} />
-            <Legend />
+            <Tooltip content={<FocusedTooltip suffix="%" />} />
+            <Legend onMouseEnter={(e) => setHoveredSeries(e.dataKey as string)} onMouseLeave={handleMouseLeave} />
             {cohortKeys.map((key, i) => (
-              <Line key={key} type="monotone" dataKey={key} stroke={COHORT_COLORS[i % COHORT_COLORS.length]} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+              <Line key={key} type="monotone" dataKey={key} stroke={COHORT_COLORS[i % COHORT_COLORS.length]} strokeWidth={hoveredSeries === key ? 3 : hoveredSeries ? 1 : 2} dot={false} activeDot={{ r: 4 }} onMouseEnter={handleMouseEnter(key)} onMouseLeave={handleMouseLeave} connectNulls={false} />
             ))}
           </LineChart>
         </ResponsiveContainer>
@@ -365,10 +376,10 @@ function CohortCharts({ data, periodLabel }: { data: CohortData; periodLabel: st
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="week" tick={{ fontSize: 12 }} />
             <YAxis allowDecimals={false} />
-            <Tooltip content={<SingleSeriesTooltipWithTotal />} />
-            <Legend />
+            <Tooltip content={<FocusedTooltipWithTotal />} />
+            <Legend onMouseEnter={(e) => setHoveredSeries(e.dataKey as string)} onMouseLeave={handleMouseLeave} />
             {cohortKeys.map((key, i) => (
-              <Area key={key} type="monotone" dataKey={key} stackId="emails" fill={COHORT_COLORS[i % COHORT_COLORS.length]} stroke={COHORT_COLORS[i % COHORT_COLORS.length]} fillOpacity={0.6} activeDot={{ r: 4 }} />
+              <Area key={key} type="monotone" dataKey={key} stackId="emails" fill={COHORT_COLORS[i % COHORT_COLORS.length]} stroke={COHORT_COLORS[i % COHORT_COLORS.length]} fillOpacity={hoveredSeries === key ? 0.8 : hoveredSeries ? 0.3 : 0.6} activeDot={{ r: 4 }} onMouseEnter={handleMouseEnter(key)} onMouseLeave={handleMouseLeave} />
             ))}
           </AreaChart>
         </ResponsiveContainer>
@@ -381,10 +392,10 @@ function CohortCharts({ data, periodLabel }: { data: CohortData; periodLabel: st
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="week" tick={{ fontSize: 12 }} />
             <YAxis allowDecimals={false} />
-            <Tooltip content={<SingleSeriesTooltipWithTotal />} />
-            <Legend />
+            <Tooltip content={<FocusedTooltipWithTotal />} />
+            <Legend onMouseEnter={(e) => setHoveredSeries(e.dataKey as string)} onMouseLeave={handleMouseLeave} />
             {cohortKeys.map((key, i) => (
-              <Area key={key} type="monotone" dataKey={key} stackId="active" fill={COHORT_COLORS[i % COHORT_COLORS.length]} stroke={COHORT_COLORS[i % COHORT_COLORS.length]} fillOpacity={0.6} activeDot={{ r: 4 }} />
+              <Area key={key} type="monotone" dataKey={key} stackId="active" fill={COHORT_COLORS[i % COHORT_COLORS.length]} stroke={COHORT_COLORS[i % COHORT_COLORS.length]} fillOpacity={hoveredSeries === key ? 0.8 : hoveredSeries ? 0.3 : 0.6} activeDot={{ r: 4 }} onMouseEnter={handleMouseEnter(key)} onMouseLeave={handleMouseLeave} />
             ))}
           </AreaChart>
         </ResponsiveContainer>
@@ -397,10 +408,10 @@ function CohortCharts({ data, periodLabel }: { data: CohortData; periodLabel: st
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="week" tick={{ fontSize: 12 }} />
             <YAxis />
-            <Tooltip content={<SingleSeriesTooltip />} />
-            <Legend />
+            <Tooltip content={<FocusedTooltip />} />
+            <Legend onMouseEnter={(e) => setHoveredSeries(e.dataKey as string)} onMouseLeave={handleMouseLeave} />
             {cohortKeys.map((key, i) => (
-              <Line key={key} type="monotone" dataKey={key} stroke={COHORT_COLORS[i % COHORT_COLORS.length]} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+              <Line key={key} type="monotone" dataKey={key} stroke={COHORT_COLORS[i % COHORT_COLORS.length]} strokeWidth={hoveredSeries === key ? 3 : hoveredSeries ? 1 : 2} dot={false} activeDot={{ r: 4 }} onMouseEnter={handleMouseEnter(key)} onMouseLeave={handleMouseLeave} connectNulls={false} />
             ))}
           </LineChart>
         </ResponsiveContainer>
