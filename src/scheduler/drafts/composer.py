@@ -20,6 +20,8 @@ from claude_agent_sdk import (
     tool,
 )
 
+from scheduler.config import config
+
 if TYPE_CHECKING:
     from scheduler.calendar.client import CalendarClient
     from scheduler.classifier.intent import ClassificationResult
@@ -468,6 +470,10 @@ class DraftComposer:
             system_prompt=system_prompt,
             permission_mode="bypassPermissions",
             model="claude-opus-4-6",
+            env={
+                "ANTHROPIC_VERTEX_PROJECT_ID": config.gcp_project_id,
+                "CLOUD_ML_REGION": config.gcp_region,
+            },
         )
 
         os.environ.pop("CLAUDECODE", None)

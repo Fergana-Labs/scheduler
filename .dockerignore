@@ -1,0 +1,14 @@
+.git
+.github
+web/
+tests/
+sql/
+evals/
+*.md
+.env
+.env.*
+token.json
+__pycache__
+*.pyc
+e2b.Dockerfile
+local_dev_guide_artifacts/

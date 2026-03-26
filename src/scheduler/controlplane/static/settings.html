@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scheduled - Settings</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .toggle { position: relative; width: 44px; height: 24px; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle .slider {
+      position: absolute; cursor: pointer; inset: 0;
+      background-color: #d1d5db; border-radius: 9999px; transition: 0.2s;
+    }
+    .toggle .slider:before {
+      content: ""; position: absolute; height: 18px; width: 18px;
+      left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: 0.2s;
+    }
+    .toggle input:checked + .slider { background-color: #111827; }
+    .toggle input:checked + .slider:before { transform: translateX(20px); }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
+  <div id="app" class="w-full max-w-lg">
+    <!-- Loading -->
+    <div id="loading" class="text-center py-20">
+      <div class="inline-block h-8 w-8 animate-spin rounded-full border-2 border-gray-300 border-t-gray-900"></div>
+    </div>
+
+    <!-- Main content (hidden until loaded) -->
+    <div id="main" class="hidden">
+      <div class="bg-white rounded-2xl border border-gray-200 shadow-sm p-8">
+        <!-- Header -->
+        <div class="mb-8">
+          <h1 class="text-2xl font-bold text-gray-900">Scheduled</h1>
+          <p id="user-email" class="text-sm text-gray-500 mt-1"></p>
+        </div>
+
+        <!-- Toggles -->
+        <div class="space-y-5">
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="font-medium text-gray-900">System Enabled</div>
+              <div class="text-sm text-gray-500">Generate draft replies for scheduling emails</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="system_enabled" onchange="toggleSetting('system', this.checked)">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="font-medium text-gray-900">Autopilot</div>
+              <div class="text-sm text-gray-500">Auto-send replies for 1-on-1 meetings</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="autopilot_enabled" onchange="toggleSetting('autopilot', this.checked)">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="font-medium text-gray-900">Process Cold Outreach</div>
+              <div class="text-sm text-gray-500">Draft replies to sales and cold emails</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="process_sales_emails" onchange="toggleSetting('sales-emails', this.checked)">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="font-medium text-gray-900">Reasoning Emails</div>
+              <div class="text-sm text-gray-500">Include reasoning in draft explanations</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="reasoning_emails_enabled" onchange="toggleSetting('reasoning-emails', this.checked)">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="font-medium text-gray-900">"Sent by Scheduled" Branding</div>
+              <div class="text-sm text-gray-500">Add footer to drafted emails</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="scheduled_branding_enabled" onchange="toggleSetting('branding', this.checked)">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Divider -->
+        <hr class="my-8 border-gray-200">
+
+        <!-- Calendars -->
+        <div class="mb-8">
+          <h2 class="font-medium text-gray-900 mb-3">Availability Calendars</h2>
+          <p class="text-sm text-gray-500 mb-3">Select which calendars to check for conflicts</p>
+          <div id="calendars" class="space-y-2"></div>
+        </div>
+
+        <!-- Divider -->
+        <hr class="my-8 border-gray-200">
+
+        <!-- Guides -->
+        <div class="space-y-6">
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <h2 class="font-medium text-gray-900">Scheduling Preferences</h2>
+              <div class="flex gap-2">
+                <button onclick="regenerateGuide('scheduling_preferences')"
+                  class="text-xs text-gray-500 hover:text-gray-900 border border-gray-200 rounded-lg px-3 py-1">
+                  Regenerate
+                </button>
+                <button onclick="saveGuide('scheduling_preferences')"
+                  class="text-xs text-white bg-gray-900 hover:bg-gray-800 rounded-lg px-3 py-1">
+                  Save
+                </button>
+              </div>
+            </div>
+            <textarea id="guide_scheduling_preferences"
+              class="w-full h-40 border border-gray-200 rounded-lg p-3 text-sm font-mono resize-y focus:outline-none focus:ring-1 focus:ring-gray-400"
+              placeholder="Loading..."></textarea>
+          </div>
+
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <h2 class="font-medium text-gray-900">Email Style</h2>
+              <div class="flex gap-2">
+                <button onclick="regenerateGuide('email_style')"
+                  class="text-xs text-gray-500 hover:text-gray-900 border border-gray-200 rounded-lg px-3 py-1">
+                  Regenerate
+                </button>
+                <button onclick="saveGuide('email_style')"
+                  class="text-xs text-white bg-gray-900 hover:bg-gray-800 rounded-lg px-3 py-1">
+                  Save
+                </button>
+              </div>
+            </div>
+            <textarea id="guide_email_style"
+              class="w-full h-40 border border-gray-200 rounded-lg p-3 text-sm font-mono resize-y focus:outline-none focus:ring-1 focus:ring-gray-400"
+              placeholder="Loading..."></textarea>
+          </div>
+        </div>
+
+        <!-- Divider -->
+        <hr class="my-8 border-gray-200">
+
+        <!-- Disconnect -->
+        <button onclick="disconnectAccount()"
+          class="w-full text-red-600 hover:text-red-700 text-sm font-medium py-2 border border-red-200 rounded-lg hover:bg-red-50 transition">
+          Disconnect Account
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const BASE = window.location.origin;
+    let TOKEN = null;
+
+    // Grab session token from URL or localStorage
+    function init() {
+      const params = new URLSearchParams(window.location.search);
+      const urlToken = params.get('token') || params.get('session');
+      if (urlToken) {
+        TOKEN = urlToken;
+        localStorage.setItem('scheduled_session', urlToken);
+        // Clean URL
+        window.history.replaceState({}, '', '/settings');
+      } else {
+        TOKEN = localStorage.getItem('scheduled_session');
+      }
+      if (!TOKEN) {
+        window.location.href = BASE + '/auth/google';
+        return;
+      }
+      loadSettings();
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(BASE + path, {
+        ...options,
+        headers: {
+          'Authorization': 'Bearer ' + TOKEN,
+          'Content-Type': 'application/json',
+          ...(options.headers || {}),
+        },
+      });
+      if (res.status === 401 || res.status === 403) {
+        localStorage.removeItem('scheduled_session');
+        window.location.href = BASE + '/auth/google';
+        return;
+      }
+      if (!res.ok) throw new Error(`API error: ${res.status}`);
+      return res.json();
+    }
+
+    async function loadSettings() {
+      try {
+        const [user, settings, calendars] = await Promise.all([
+          api('/auth/me'),
+          api('/web/api/v1/settings'),
+          api('/web/api/v1/calendars').catch(() => ({ calendars: [] })),
+        ]);
+
+        document.getElementById('user-email').textContent = user.email;
+
+        // Set toggles
+        document.getElementById('system_enabled').checked = settings.system_enabled;
+        document.getElementById('autopilot_enabled').checked = settings.autopilot_enabled;
+        document.getElementById('process_sales_emails').checked = settings.process_sales_emails;
+        document.getElementById('reasoning_emails_enabled').checked = settings.reasoning_emails_enabled;
+        document.getElementById('scheduled_branding_enabled').checked = settings.scheduled_branding_enabled;
+
+        // Set guides
+        for (const guide of settings.guides || []) {
+          const el = document.getElementById('guide_' + guide.name);
+          if (el) el.value = guide.content || '';
+        }
+
+        // Set calendars
+        renderCalendars(calendars.calendars || []);
+
+        // Show main, hide loading
+        document.getElementById('loading').classList.add('hidden');
+        document.getElementById('main').classList.remove('hidden');
+      } catch (err) {
+        console.error('Failed to load settings:', err);
+        localStorage.removeItem('scheduled_session');
+        window.location.href = BASE + '/auth/google';
+      }
+    }
+
+    function renderCalendars(calendars) {
+      const container = document.getElementById('calendars');
+      container.innerHTML = '';
+      for (const cal of calendars) {
+        const div = document.createElement('div');
+        div.className = 'flex items-center gap-2';
+        div.innerHTML = `
+          <input type="checkbox" id="cal_${cal.id}" ${cal.selected ? 'checked' : ''}
+            onchange="updateCalendars()"
+            class="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-500">
+          <label for="cal_${cal.id}" class="text-sm text-gray-700">${cal.summary || cal.id}</label>
+          ${cal.primary ? '<span class="text-xs text-gray-400">(primary)</span>' : ''}
+        `;
+        container.appendChild(div);
+      }
+    }
+
+    async function toggleSetting(name, value) {
+      try {
+        await api('/web/api/v1/settings/' + name, {
+          method: 'PUT',
+          body: JSON.stringify({ enabled: value }),
+        });
+      } catch (err) {
+        console.error('Failed to update setting:', err);
+      }
+    }
+
+    async function updateCalendars() {
+      const checkboxes = document.querySelectorAll('#calendars input[type=checkbox]');
+      const ids = [];
+      checkboxes.forEach(cb => { if (cb.checked) ids.push(cb.id.replace('cal_', '')); });
+      try {
+        await api('/web/api/v1/settings/calendars', {
+          method: 'PUT',
+          body: JSON.stringify({ calendar_ids: ids }),
+        });
+      } catch (err) {
+        console.error('Failed to update calendars:', err);
+      }
+    }
+
+    async function saveGuide(name) {
+      const content = document.getElementById('guide_' + name).value;
+      try {
+        await api('/web/api/v1/guides/' + name, {
+          method: 'PUT',
+          body: JSON.stringify({ content }),
+        });
+      } catch (err) {
+        console.error('Failed to save guide:', err);
+      }
+    }
+
+    async function regenerateGuide(name) {
+      try {
+        await api('/web/api/v1/guides/' + name + '/regenerate', { method: 'POST' });
+        // Poll until the guide is updated
+        const poll = setInterval(async () => {
+          const settings = await api('/web/api/v1/settings');
+          const guide = (settings.guides || []).find(g => g.name === name);
+          if (guide && guide.content) {
+            document.getElementById('guide_' + name).value = guide.content;
+            clearInterval(poll);
+          }
+        }, 3000);
+        // Stop polling after 2 minutes
+        setTimeout(() => clearInterval(poll), 120000);
+      } catch (err) {
+        console.error('Failed to regenerate guide:', err);
+      }
+    }
+
+    async function disconnectAccount() {
+      if (!confirm('Are you sure you want to disconnect your account? This will stop all scheduling.')) return;
+      try {
+        await api('/web/api/v1/account/disconnect', { method: 'POST' });
+        localStorage.removeItem('scheduled_session');
+        window.location.href = BASE + '/auth/google';
+      } catch (err) {
+        console.error('Failed to disconnect:', err);
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>

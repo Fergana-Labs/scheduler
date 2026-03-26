@@ -1,0 +1,31 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker gcr.io
+
+      - name: Build Docker image
+        run: docker build -t gcr.io/fergana-labs/scheduler:latest -t gcr.io/fergana-labs/scheduler:${{ github.sha }} .
+
+      - name: Push Docker image
+        run: |
+          docker push gcr.io/fergana-labs/scheduler:latest
+          docker push gcr.io/fergana-labs/scheduler:${{ github.sha }}

@@ -1,6 +1,5 @@
 """Backend analytics module — tracks user engagement and draft editing behavior."""
 
-import difflib
 import logging
 import threading
 
@@ -31,23 +30,19 @@ def record_draft_composed(
     body: str,
     was_autopilot: bool = False,
 ) -> None:
-    """Anonymize and store a composed draft. Runs in a daemon thread."""
+    """Store a composed draft record. Runs in a daemon thread."""
 
     def _store():
         try:
-            from scheduler.anonymize import anonymize_draft_context
             from scheduler.db import store_composed_draft
 
-            anon_thread, anon_body, anon_subject = anonymize_draft_context(
-                thread_messages, body, subject
-            )
             store_composed_draft(
                 user_id=user_id,
                 thread_id=thread_id,
                 draft_id=draft_id,
-                thread_context=anon_thread,
-                subject=anon_subject,
-                body=anon_body,
+                thread_context=thread_messages,
+                subject=subject,
+                body=body,
                 was_autopilot=was_autopilot,
             )
         except Exception:
@@ -67,20 +62,19 @@ def record_draft_sent(
 
     def _update():
         try:
-            from scheduler.anonymize import anonymize_text
+            import difflib
+
             from scheduler.db import get_composed_draft_by_thread, update_composed_draft_sent
 
             row = get_composed_draft_by_thread(user_id, thread_id)
             if not row:
                 return
 
-            anon_sent_body = anonymize_text(sent_body)
-
             original = row["original_body"]
 
             # Normalize whitespace before comparing to ignore Gmail formatting artifacts
             original_norm = " ".join(original.split())
-            sent_norm = " ".join(anon_sent_body.split())
+            sent_norm = " ".join(sent_body.split())
             matcher = difflib.SequenceMatcher(None, original_norm, sent_norm)
             similarity = matcher.ratio()
 
@@ -101,7 +95,7 @@ def record_draft_sent(
 
             update_composed_draft_sent(
                 draft_id=row["id"],
-                sent_body=anon_sent_body,
+                sent_body=sent_body,
                 was_edited=was_edited,
                 edit_distance_ratio=edit_distance_ratio,
                 chars_added=chars_added,

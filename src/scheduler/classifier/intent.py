@@ -13,7 +13,7 @@ from enum import Enum
 import json
 from typing import Any, TypedDict, Literal
 
-from anthropic import Anthropic
+from anthropic import AnthropicVertex
 
 from scheduler.config import config
 
@@ -55,16 +55,9 @@ class _EventJSON(TypedDict, total=False):
     participants: list[str]
 
 
-def _get_anthropic_client() -> Anthropic:
-    """Create an Anthropic client using the configured API key.
-
-    Even though we conceptually talk about \"GPT\" in the design,
-    this project already depends on Anthropic and the Claude Agent SDK,
-    so we reuse Anthropic here for simple single-call classifiers.
-    """
-    if not config.anthropic_api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
-    return Anthropic(api_key=config.anthropic_api_key)
+def _get_anthropic_client() -> AnthropicVertex:
+    """Create an AnthropicVertex client using GCP project/region config."""
+    return AnthropicVertex(region=config.gcp_region, project_id=config.gcp_project_id)
 
 
 def classify_email(

@@ -23,6 +23,7 @@ from claude_agent_sdk import (
 )
 
 from scheduler.claude_runtime import is_api_error_result, nested_claude_session
+from scheduler.config import config
 
 if TYPE_CHECKING:
     from scheduler.guides.backends import GuideBackend
@@ -122,6 +123,10 @@ async def run_style_agent(backend: GuideBackend) -> None:
         system_prompt=STYLE_SYSTEM_PROMPT,
         permission_mode="bypassPermissions",
         model="claude-sonnet-4-6",
+        env={
+            "ANTHROPIC_VERTEX_PROJECT_ID": config.gcp_project_id,
+            "CLOUD_ML_REGION": config.gcp_region,
+        },
     )
 
     print("Starting email style analysis...")

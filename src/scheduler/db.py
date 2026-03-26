@@ -1,27 +1,30 @@
-"""Database client for user credential storage."""
+"""Database client – Firestore backend."""
 
-import json
-from datetime import datetime, timezone
-from dataclasses import dataclass, fields
+import uuid
+from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
 
-import psycopg2
-import psycopg2.extras
+from google.cloud import firestore
 
 from scheduler.config import config
 
-psycopg2.extras.register_uuid()
+# ---------------------------------------------------------------------------
+# Firestore client (lazy singleton)
+# ---------------------------------------------------------------------------
 
-_USER_ROW_FIELDS: set[str] = set()  # populated after class definition
+_db: firestore.Client | None = None
 
 
-def _row_to_user(cols, row) -> "UserRow":
-    """Build a UserRow, ignoring any DB columns not yet on the dataclass.
+def _get_db() -> firestore.Client:
+    global _db
+    if _db is None:
+        _db = firestore.Client()
+    return _db
 
-    This prevents 500s during deployment rollover when a migration adds a
-    column before the old instance is replaced.
-    """
-    data = {k: v for k, v in zip(cols, row) if k in _USER_ROW_FIELDS}
-    return UserRow(**data)
+
+# ---------------------------------------------------------------------------
+# Dataclasses
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -40,216 +43,8 @@ class UserRow:
     created_at: datetime
     updated_at: datetime
     reasoning_emails_enabled: bool = False
-    auth0_sub: str | None = None
     calendar_ids: list[str] | None = None
     onboarding_status: str | None = None
-
-
-_USER_ROW_FIELDS.update(f.name for f in fields(UserRow))
-
-
-def _conn():
-    return psycopg2.connect(config.database_url)
-
-
-def get_user_by_email(email: str) -> UserRow | None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT * FROM users WHERE email = %s", (email,))
-        row = cur.fetchone()
-        if not row:
-            return None
-        cols = [desc[0] for desc in cur.description]
-        return _row_to_user(cols, row)
-
-
-def get_user_by_id(user_id: str) -> UserRow | None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT * FROM users WHERE id = %s", (user_id,))
-        row = cur.fetchone()
-        if not row:
-            return None
-        cols = [desc[0] for desc in cur.description]
-        return _row_to_user(cols, row)
-
-
-def upsert_user(
-    email: str,
-    google_refresh_token: str,
-    google_access_token: str | None = None,
-    access_token_expires_at: datetime | None = None,
-    scheduled_calendar_id: str | None = None,
-) -> tuple[UserRow, bool]:
-    """Upsert a user. Returns (user, is_new) where is_new is True for fresh inserts."""
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO users (email, google_refresh_token, google_access_token,
-                               access_token_expires_at, scheduled_calendar_id)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (email) DO UPDATE SET
-                google_refresh_token = EXCLUDED.google_refresh_token,
-                google_access_token = EXCLUDED.google_access_token,
-                access_token_expires_at = EXCLUDED.access_token_expires_at,
-                scheduled_calendar_id = COALESCE(EXCLUDED.scheduled_calendar_id, users.scheduled_calendar_id),
-                updated_at = now()
-            RETURNING *, (xmax = 0) AS is_new
-            """,
-            (email, google_refresh_token, google_access_token,
-             access_token_expires_at, scheduled_calendar_id),
-        )
-        row = cur.fetchone()
-        cols = [desc[0] for desc in cur.description]
-        conn.commit()
-        col_val = dict(zip(cols, row))
-        is_new = col_val.pop("is_new", False)
-        filtered_cols = [c for c in cols if c != "is_new"]
-        filtered_row = [v for c, v in zip(cols, row) if c != "is_new"]
-        return _row_to_user(filtered_cols, filtered_row), is_new
-
-
-def update_user_tokens(
-    user_id: str,
-    google_access_token: str,
-    access_token_expires_at: datetime | None = None,
-) -> None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE users SET google_access_token = %s, access_token_expires_at = %s,
-                             updated_at = now()
-            WHERE id = %s
-            """,
-            (google_access_token, access_token_expires_at, user_id),
-        )
-        conn.commit()
-
-
-def update_gmail_history_id(user_id: str, history_id: str) -> None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE users SET gmail_history_id = %s, updated_at = now() WHERE id = %s",
-            (history_id, user_id),
-        )
-        conn.commit()
-
-
-def get_user_by_auth0_sub(auth0_sub: str) -> UserRow | None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT * FROM users WHERE auth0_sub = %s", (auth0_sub,))
-        row = cur.fetchone()
-        if not row:
-            return None
-        cols = [desc[0] for desc in cur.description]
-        return _row_to_user(cols, row)
-
-
-def create_user_from_auth0(email: str, auth0_sub: str) -> UserRow:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO users (email, auth0_sub)
-            VALUES (%s, %s)
-            RETURNING *
-            """,
-            (email, auth0_sub),
-        )
-        row = cur.fetchone()
-        cols = [desc[0] for desc in cur.description]
-        conn.commit()
-        return _row_to_user(cols, row)
-
-
-def set_auth0_sub(user_id: str, auth0_sub: str) -> None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE users SET auth0_sub = %s, updated_at = now() WHERE id = %s",
-            (auth0_sub, user_id),
-        )
-        conn.commit()
-
-
-def update_google_tokens(
-    user_id: str,
-    google_refresh_token: str,
-    google_access_token: str | None = None,
-    access_token_expires_at: datetime | None = None,
-) -> None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE users SET
-                google_refresh_token = %s,
-                google_access_token = %s,
-                access_token_expires_at = %s,
-                updated_at = now()
-            WHERE id = %s
-            """,
-            (google_refresh_token, google_access_token, access_token_expires_at, user_id),
-        )
-        conn.commit()
-
-
-def get_all_user_ids() -> list[str]:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT id FROM users")
-        return [str(row[0]) for row in cur.fetchall()]
-
-
-def update_scheduled_branding(user_id: str, enabled: bool) -> None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE users SET scheduled_branding_enabled = %s, updated_at = now() WHERE id = %s",
-            (enabled, user_id),
-        )
-        conn.commit()
-
-
-def update_system_enabled(user_id: str, enabled: bool) -> None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE users SET system_enabled = %s, updated_at = now() WHERE id = %s",
-            (enabled, user_id),
-        )
-        conn.commit()
-
-
-def update_autopilot(user_id: str, enabled: bool) -> None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE users SET autopilot_enabled = %s, updated_at = now() WHERE id = %s",
-            (enabled, user_id),
-        )
-        conn.commit()
-
-
-def update_process_sales_emails(user_id: str, enabled: bool) -> None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE users SET process_sales_emails = %s, updated_at = now() WHERE id = %s",
-            (enabled, user_id),
-        )
-        conn.commit()
-
-
-def update_reasoning_emails_enabled(user_id: str, enabled: bool) -> None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE users SET reasoning_emails_enabled = %s, updated_at = now() WHERE id = %s",
-            (enabled, user_id),
-        )
-        conn.commit()
-
-
-def update_scheduled_calendar_id(user_id: str, scheduled_calendar_id: str) -> None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE users SET scheduled_calendar_id = %s, updated_at = now() WHERE id = %s",
-            (scheduled_calendar_id, user_id),
-        )
-        conn.commit()
-
-
-# --- Guides ---
 
 
 @dataclass
@@ -260,94 +55,6 @@ class GuideRow:
     content: str
     created_at: datetime
     updated_at: datetime
-
-
-def upsert_guide(user_id: str, name: str, content: str) -> GuideRow:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO guides (user_id, name, content)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (user_id, name) DO UPDATE SET
-                content = EXCLUDED.content,
-                updated_at = now()
-            RETURNING *
-            """,
-            (user_id, name, content),
-        )
-        row = cur.fetchone()
-        cols = [desc[0] for desc in cur.description]
-        conn.commit()
-        return GuideRow(**dict(zip(cols, row)))
-
-
-def get_guide(user_id: str, name: str) -> GuideRow | None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT * FROM guides WHERE user_id = %s AND name = %s",
-            (user_id, name),
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        cols = [desc[0] for desc in cur.description]
-        return GuideRow(**dict(zip(cols, row)))
-
-
-def get_guides_for_user(user_id: str) -> list[GuideRow]:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT * FROM guides WHERE user_id = %s ORDER BY name",
-            (user_id,),
-        )
-        rows = cur.fetchall()
-        if not rows:
-            return []
-        cols = [desc[0] for desc in cur.description]
-        return [GuideRow(**dict(zip(cols, row))) for row in rows]
-
-
-def delete_user(user_id: str) -> None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute("DELETE FROM guides WHERE user_id = %s", (user_id,))
-        cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
-        conn.commit()
-
-
-def try_claim_message(user_id: str, message_id: str) -> bool:
-    """Atomically claim a message for processing. Returns True if claimed, False if already claimed.
-
-    This replaces the old check-then-mark pattern to prevent duplicate processing
-    from concurrent webhook handlers.
-    """
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO processed_messages (user_id, message_id)
-            VALUES (%s, %s)
-            ON CONFLICT (user_id, message_id) DO NOTHING
-            RETURNING 1
-            """,
-            (user_id, message_id),
-        )
-        claimed = cur.fetchone() is not None
-        conn.commit()
-        return claimed
-
-
-def cleanup_processed_messages(days: int = 7) -> int:
-    """Delete processed message records older than the given number of days."""
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM processed_messages WHERE processed_at < now() - make_interval(days => %s)",
-            (days,),
-        )
-        count = cur.rowcount
-        conn.commit()
-        return count
-
-
-# --- Pending Invites ---
 
 
 @dataclass
@@ -364,6 +71,348 @@ class PendingInviteRow:
     location: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _doc_to_user(doc_dict: dict) -> UserRow:
+    """Convert a Firestore document dict to a UserRow, ignoring extra fields."""
+    valid_fields = set(UserRow.__dataclass_fields__)
+    return UserRow(**{k: v for k, v in doc_dict.items() if k in valid_fields})
+
+
+def _user_ref(email: str):
+    """Reference to users/{email}."""
+    return _get_db().collection("users").document(email)
+
+
+# ---------------------------------------------------------------------------
+# User CRUD
+# ---------------------------------------------------------------------------
+
+
+def get_user_by_email(email: str) -> UserRow | None:
+    doc = _user_ref(email).get()
+    if not doc.exists:
+        return None
+    return _doc_to_user(doc.to_dict())
+
+
+def get_user_by_id(user_id: str) -> UserRow | None:
+    """Find a user by their UUID. Scans the users collection."""
+    docs = (
+        _get_db()
+        .collection("users")
+        .where("id", "==", user_id)
+        .limit(1)
+        .stream()
+    )
+    for doc in docs:
+        return _doc_to_user(doc.to_dict())
+    return None
+
+
+def upsert_user(
+    email: str,
+    google_refresh_token: str,
+    google_access_token: str | None = None,
+    access_token_expires_at: datetime | None = None,
+    scheduled_calendar_id: str | None = None,
+) -> tuple[UserRow, bool]:
+    """Upsert a user. Returns (user, is_new)."""
+    ref = _user_ref(email)
+    doc = ref.get()
+    now = _now()
+
+    if doc.exists:
+        updates = {
+            "google_refresh_token": google_refresh_token,
+            "google_access_token": google_access_token,
+            "access_token_expires_at": access_token_expires_at,
+            "updated_at": now,
+        }
+        if scheduled_calendar_id is not None:
+            updates["scheduled_calendar_id"] = scheduled_calendar_id
+        ref.update(updates)
+        return _doc_to_user(ref.get().to_dict()), False
+
+    # New user
+    data = {
+        "id": str(uuid.uuid4()),
+        "email": email,
+        "google_refresh_token": google_refresh_token,
+        "google_access_token": google_access_token,
+        "access_token_expires_at": access_token_expires_at,
+        "scheduled_calendar_id": scheduled_calendar_id,
+        "gmail_history_id": None,
+        "system_enabled": True,
+        "scheduled_branding_enabled": True,
+        "autopilot_enabled": False,
+        "process_sales_emails": False,
+        "reasoning_emails_enabled": False,
+        "calendar_ids": None,
+        "onboarding_status": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    ref.set(data)
+    return _doc_to_user(data), True
+
+
+def _update_user_field(user_id: str, **fields) -> None:
+    """Find user by id and update the given fields + updated_at."""
+    docs = (
+        _get_db()
+        .collection("users")
+        .where("id", "==", user_id)
+        .limit(1)
+        .stream()
+    )
+    for doc in docs:
+        doc.reference.update({**fields, "updated_at": _now()})
+        return
+
+
+def update_user_tokens(
+    user_id: str,
+    google_access_token: str,
+    access_token_expires_at: datetime | None = None,
+) -> None:
+    _update_user_field(
+        user_id,
+        google_access_token=google_access_token,
+        access_token_expires_at=access_token_expires_at,
+    )
+
+
+def update_gmail_history_id(user_id: str, history_id: str) -> None:
+    _update_user_field(user_id, gmail_history_id=history_id)
+
+
+def update_google_tokens(
+    user_id: str,
+    google_refresh_token: str,
+    google_access_token: str | None = None,
+    access_token_expires_at: datetime | None = None,
+) -> None:
+    _update_user_field(
+        user_id,
+        google_refresh_token=google_refresh_token,
+        google_access_token=google_access_token,
+        access_token_expires_at=access_token_expires_at,
+    )
+
+
+def get_all_user_ids() -> list[str]:
+    docs = _get_db().collection("users").select(["id"]).stream()
+    return [doc.to_dict()["id"] for doc in docs]
+
+
+def update_scheduled_branding(user_id: str, enabled: bool) -> None:
+    _update_user_field(user_id, scheduled_branding_enabled=enabled)
+
+
+def update_system_enabled(user_id: str, enabled: bool) -> None:
+    _update_user_field(user_id, system_enabled=enabled)
+
+
+def update_autopilot(user_id: str, enabled: bool) -> None:
+    _update_user_field(user_id, autopilot_enabled=enabled)
+
+
+def update_process_sales_emails(user_id: str, enabled: bool) -> None:
+    _update_user_field(user_id, process_sales_emails=enabled)
+
+
+def update_reasoning_emails_enabled(user_id: str, enabled: bool) -> None:
+    _update_user_field(user_id, reasoning_emails_enabled=enabled)
+
+
+def update_scheduled_calendar_id(user_id: str, scheduled_calendar_id: str) -> None:
+    _update_user_field(user_id, scheduled_calendar_id=scheduled_calendar_id)
+
+
+def update_calendar_ids(user_id: str, calendar_ids: list[str]) -> None:
+    _update_user_field(user_id, calendar_ids=calendar_ids)
+
+
+def update_onboarding_status(user_id: str, status: str | None) -> None:
+    _update_user_field(user_id, onboarding_status=status)
+
+
+def delete_user(user_id: str) -> None:
+    """Delete user and all subcollections."""
+    docs = (
+        _get_db()
+        .collection("users")
+        .where("id", "==", user_id)
+        .limit(1)
+        .stream()
+    )
+    for doc in docs:
+        # Delete guides subcollection
+        for guide in doc.reference.collection("guides").stream():
+            guide.reference.delete()
+        # Delete pending_invites subcollection
+        for invite in doc.reference.collection("pending_invites").stream():
+            invite.reference.delete()
+        # Delete processed_messages subcollection
+        for msg in doc.reference.collection("processed_messages").stream():
+            msg.reference.delete()
+        doc.reference.delete()
+
+
+def disconnect_user(user_id: str) -> None:
+    """Clear Google tokens and delete guides, but keep the user doc."""
+    docs = (
+        _get_db()
+        .collection("users")
+        .where("id", "==", user_id)
+        .limit(1)
+        .stream()
+    )
+    for doc in docs:
+        # Delete guides subcollection
+        for guide in doc.reference.collection("guides").stream():
+            guide.reference.delete()
+
+        doc.reference.update({
+            "google_refresh_token": None,
+            "google_access_token": None,
+            "access_token_expires_at": None,
+            "gmail_history_id": None,
+            "scheduled_calendar_id": None,
+            "onboarding_status": None,
+            "updated_at": _now(),
+        })
+
+
+# ---------------------------------------------------------------------------
+# Guides  (subcollection: users/{email}/guides/{guide_name})
+# ---------------------------------------------------------------------------
+
+
+def _guide_ref(user_id: str, name: str):
+    """Get guide doc ref. Looks up user email by user_id first."""
+    user = get_user_by_id(user_id)
+    if not user:
+        return None
+    return _user_ref(user.email).collection("guides").document(name)
+
+
+def _guides_collection(user_id: str):
+    """Get guides collection ref for a user."""
+    user = get_user_by_id(user_id)
+    if not user:
+        return None
+    return _user_ref(user.email).collection("guides")
+
+
+def upsert_guide(user_id: str, name: str, content: str) -> GuideRow:
+    ref = _guide_ref(user_id, name)
+    now = _now()
+
+    doc = ref.get()
+    if doc.exists:
+        ref.update({"content": content, "updated_at": now})
+        return GuideRow(**ref.get().to_dict())
+
+    data = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "name": name,
+        "content": content,
+        "created_at": now,
+        "updated_at": now,
+    }
+    ref.set(data)
+    return GuideRow(**data)
+
+
+def get_guide(user_id: str, name: str) -> GuideRow | None:
+    ref = _guide_ref(user_id, name)
+    if ref is None:
+        return None
+    doc = ref.get()
+    if not doc.exists:
+        return None
+    return GuideRow(**doc.to_dict())
+
+
+def get_guides_for_user(user_id: str) -> list[GuideRow]:
+    col = _guides_collection(user_id)
+    if col is None:
+        return []
+    docs = col.order_by("name").stream()
+    return [GuideRow(**doc.to_dict()) for doc in docs]
+
+
+# ---------------------------------------------------------------------------
+# Processed messages  (subcollection: users/{email}/processed_messages/{msg_id})
+# ---------------------------------------------------------------------------
+
+
+def try_claim_message(user_id: str, message_id: str) -> bool:
+    """Atomically claim a message using a Firestore transaction.
+
+    Returns True if this call claimed it, False if already claimed.
+    """
+    user = get_user_by_id(user_id)
+    if not user:
+        return False
+
+    ref = (
+        _user_ref(user.email)
+        .collection("processed_messages")
+        .document(message_id)
+    )
+
+    db = _get_db()
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _claim(txn, doc_ref):
+        snapshot = doc_ref.get(transaction=txn)
+        if snapshot.exists:
+            return False
+        txn.set(doc_ref, {
+            "user_id": user_id,
+            "message_id": message_id,
+            "processed_at": _now(),
+        })
+        return True
+
+    return _claim(transaction, ref)
+
+
+def cleanup_processed_messages(days: int = 7) -> int:
+    """Delete processed message records older than the given number of days."""
+    cutoff = _now() - timedelta(days=days)
+    count = 0
+
+    for user_doc in _get_db().collection("users").stream():
+        msgs = (
+            user_doc.reference.collection("processed_messages")
+            .where("processed_at", "<", cutoff)
+            .stream()
+        )
+        for msg in msgs:
+            msg.reference.delete()
+            count += 1
+
+    return count
+
+
+# ---------------------------------------------------------------------------
+# Pending invites  (subcollection: users/{email}/pending_invites/{thread_id})
+# ---------------------------------------------------------------------------
+
+
 def create_pending_invite(
     user_id: str,
     thread_id: str,
@@ -375,48 +424,35 @@ def create_pending_invite(
     location: str = "",
 ) -> PendingInviteRow:
     """Create or overwrite a pending invite for a thread."""
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO pending_invites (user_id, thread_id, attendee_emails, event_summary,
-                                         event_start, event_end, add_google_meet, location)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (user_id, thread_id) DO UPDATE SET
-                attendee_emails = EXCLUDED.attendee_emails,
-                event_summary = EXCLUDED.event_summary,
-                event_start = EXCLUDED.event_start,
-                event_end = EXCLUDED.event_end,
-                add_google_meet = EXCLUDED.add_google_meet,
-                location = EXCLUDED.location
-            RETURNING *
-            """,
-            (user_id, thread_id, json.dumps(attendee_emails), event_summary,
-             event_start, event_end, add_google_meet, location),
-        )
-        row = cur.fetchone()
-        cols = [desc[0] for desc in cur.description]
-        conn.commit()
-        return _pending_invite_from_row(cols, row)
+    user = get_user_by_id(user_id)
+    ref = _user_ref(user.email).collection("pending_invites").document(thread_id)
+    now = _now()
 
-
-def _pending_invite_from_row(cols, row) -> PendingInviteRow:
-    data = dict(zip(cols, row))
-    if isinstance(data.get("attendee_emails"), str):
-        data["attendee_emails"] = json.loads(data["attendee_emails"])
+    data = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "thread_id": thread_id,
+        "attendee_emails": attendee_emails,
+        "event_summary": event_summary,
+        "event_start": event_start,
+        "event_end": event_end,
+        "add_google_meet": add_google_meet,
+        "location": location,
+        "created_at": now,
+    }
+    ref.set(data)
     return PendingInviteRow(**data)
 
 
 def get_pending_invite_by_thread(user_id: str, thread_id: str) -> PendingInviteRow | None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT * FROM pending_invites WHERE user_id = %s AND thread_id = %s",
-            (user_id, thread_id),
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        cols = [desc[0] for desc in cur.description]
-        return _pending_invite_from_row(cols, row)
+    user = get_user_by_id(user_id)
+    if not user:
+        return None
+    ref = _user_ref(user.email).collection("pending_invites").document(thread_id)
+    doc = ref.get()
+    if not doc.exists:
+        return None
+    return PendingInviteRow(**doc.to_dict())
 
 
 def update_pending_invite(
@@ -429,594 +465,44 @@ def update_pending_invite(
     location: str | None = None,
 ) -> None:
     """Update only the provided fields on a pending invite."""
-    sets: list[str] = []
-    vals: list = []
+    updates: dict = {}
     if attendee_emails is not None:
-        sets.append("attendee_emails = %s")
-        vals.append(json.dumps(attendee_emails))
+        updates["attendee_emails"] = attendee_emails
     if event_summary is not None:
-        sets.append("event_summary = %s")
-        vals.append(event_summary)
+        updates["event_summary"] = event_summary
     if event_start is not None:
-        sets.append("event_start = %s")
-        vals.append(event_start)
+        updates["event_start"] = event_start
     if event_end is not None:
-        sets.append("event_end = %s")
-        vals.append(event_end)
+        updates["event_end"] = event_end
     if add_google_meet is not None:
-        sets.append("add_google_meet = %s")
-        vals.append(add_google_meet)
+        updates["add_google_meet"] = add_google_meet
     if location is not None:
-        sets.append("location = %s")
-        vals.append(location)
-    if not sets:
+        updates["location"] = location
+    if not updates:
         return
-    vals.append(invite_id)
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(f"UPDATE pending_invites SET {', '.join(sets)} WHERE id = %s", vals)
-        conn.commit()
+
+    # Search all users' pending_invites for matching invite_id
+    for user_doc in _get_db().collection("users").stream():
+        invites = (
+            user_doc.reference.collection("pending_invites")
+            .where("id", "==", invite_id)
+            .limit(1)
+            .stream()
+        )
+        for invite_doc in invites:
+            invite_doc.reference.update(updates)
+            return
 
 
 def delete_pending_invite(invite_id: str) -> None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute("DELETE FROM pending_invites WHERE id = %s", (invite_id,))
-        conn.commit()
-
-
-def update_calendar_ids(user_id: str, calendar_ids: list[str]) -> None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE users SET calendar_ids = %s, updated_at = now() WHERE id = %s",
-            (calendar_ids, user_id),
+    """Delete a pending invite by its UUID."""
+    for user_doc in _get_db().collection("users").stream():
+        invites = (
+            user_doc.reference.collection("pending_invites")
+            .where("id", "==", invite_id)
+            .limit(1)
+            .stream()
         )
-        conn.commit()
-
-
-def update_onboarding_status(user_id: str, status: str | None) -> None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE users SET onboarding_status = %s, updated_at = now() WHERE id = %s",
-            (status, user_id),
-        )
-        conn.commit()
-
-
-def insert_page_event(event: str, properties: dict | None = None) -> None:
-    """Insert an anonymous page event (no user_id required)."""
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO page_events (event, properties) VALUES (%s, %s)",
-            (event, json.dumps(properties or {})),
-        )
-        conn.commit()
-
-
-def insert_analytics_event(user_id: str, event: str, properties: dict | None = None) -> None:
-    """Insert a row into analytics_events."""
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO analytics_events (user_id, event, properties) VALUES (%s, %s, %s)",
-            (user_id, event, json.dumps(properties or {})),
-        )
-        conn.commit()
-
-
-def store_composed_draft(
-    user_id: str,
-    thread_id: str,
-    draft_id: str,
-    thread_context: list[dict],
-    subject: str,
-    body: str,
-    was_autopilot: bool = False,
-) -> None:
-    """Insert a row into composed_drafts with anonymized content."""
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO composed_drafts
-                (user_id, thread_id, draft_id, thread_context, original_subject, original_body, was_autopilot)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """,
-            (user_id, thread_id, draft_id, json.dumps(thread_context), subject, body, was_autopilot),
-        )
-        conn.commit()
-
-
-def get_composed_draft_by_thread(user_id: str, thread_id: str) -> dict | None:
-    """Get the most recent unsent composed draft for a user+thread pair."""
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT * FROM composed_drafts WHERE user_id = %s AND thread_id = %s AND sent_at IS NULL ORDER BY composed_at DESC LIMIT 1",
-            (user_id, thread_id),
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        cols = [desc[0] for desc in cur.description]
-        return dict(zip(cols, row))
-
-
-def update_composed_draft_sent(
-    draft_id: str,
-    sent_body: str,
-    was_edited: bool,
-    edit_distance_ratio: float,
-    chars_added: int,
-    chars_removed: int,
-    sent_at,
-) -> None:
-    """Update a composed_drafts row with sent-time diff metrics."""
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE composed_drafts
-            SET sent_body = %s, was_edited = %s, edit_distance_ratio = %s,
-                chars_added = %s, chars_removed = %s, sent_at = %s
-            WHERE id = %s
-            """,
-            (sent_body, was_edited, edit_distance_ratio, chars_added, chars_removed, sent_at, draft_id),
-        )
-        conn.commit()
-
-
-def cleanup_old_analytics(days: int = 90) -> int:
-    """Delete analytics_events older than the given number of days."""
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM analytics_events WHERE created_at < now() - make_interval(days => %s)",
-            (days,),
-        )
-        count = cur.rowcount
-        conn.commit()
-        return count
-
-
-def cleanup_composed_drafts(days: int = 90) -> int:
-    """Delete composed_drafts older than the given number of days."""
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM composed_drafts WHERE composed_at < now() - make_interval(days => %s)",
-            (days,),
-        )
-        count = cur.rowcount
-        conn.commit()
-        return count
-
-
-def get_funnel_data(weeks: int = 12) -> list[dict]:
-    """Weekly funnel: page views → signup clicks → signups → onboarded → first draft sent."""
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            WITH week_series AS (
-                SELECT generate_series(
-                    date_trunc('week', now() - make_interval(weeks => %s)),
-                    date_trunc('week', now()),
-                    '1 week'::interval
-                ) AS week
-            ),
-            page_views AS (
-                SELECT date_trunc('week', created_at) AS week, count(*) AS cnt
-                FROM page_events
-                WHERE event = 'landing_page_view'
-                  AND created_at >= now() - make_interval(weeks => %s)
-                GROUP BY 1
-            ),
-            signup_clicks AS (
-                SELECT date_trunc('week', created_at) AS week, count(*) AS cnt
-                FROM page_events
-                WHERE event = 'signup_click'
-                  AND created_at >= now() - make_interval(weeks => %s)
-                GROUP BY 1
-            ),
-            signups AS (
-                SELECT date_trunc('week', created_at) AS week, count(*) AS cnt
-                FROM users
-                WHERE created_at >= now() - make_interval(weeks => %s)
-                GROUP BY 1
-            ),
-            onboarded AS (
-                SELECT date_trunc('week', created_at) AS week, count(DISTINCT user_id) AS cnt
-                FROM analytics_events
-                WHERE event = 'onboarding_completed'
-                  AND created_at >= now() - make_interval(weeks => %s)
-                GROUP BY 1
-            ),
-            first_drafts AS (
-                SELECT date_trunc('week', min_sent) AS week, count(*) AS cnt
-                FROM (
-                    SELECT user_id, min(created_at) AS min_sent
-                    FROM analytics_events
-                    WHERE event = 'draft_sent'
-                      AND created_at >= now() - make_interval(weeks => %s)
-                    GROUP BY user_id
-                ) sub
-                GROUP BY 1
-            )
-            SELECT
-                ws.week,
-                COALESCE(pv.cnt, 0) AS page_views,
-                COALESCE(sc.cnt, 0) AS signup_clicks,
-                COALESCE(s.cnt, 0) AS signups,
-                COALESCE(o.cnt, 0) AS onboarded,
-                COALESCE(f.cnt, 0) AS first_draft_sent
-            FROM week_series ws
-            LEFT JOIN page_views pv ON pv.week = ws.week
-            LEFT JOIN signup_clicks sc ON sc.week = ws.week
-            LEFT JOIN signups s ON s.week = ws.week
-            LEFT JOIN onboarded o ON o.week = ws.week
-            LEFT JOIN first_drafts f ON f.week = ws.week
-            ORDER BY ws.week
-            """,
-            (weeks, weeks, weeks, weeks, weeks, weeks),
-        )
-        cols = [desc[0] for desc in cur.description]
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
-
-
-_ALL_EVENTS = ('user_created', 'onboarding_completed', 'draft_composed', 'draft_sent', 'email_classified', 'setting_changed')
-_USER_EVENTS = ('user_created', 'onboarding_completed', 'setting_changed', 'draft_sent')
-
-
-def get_cohort_data(weeks: int = 8, active_only: bool = False) -> dict:
-    """Rich cohort data: retention by week offset, plus absolute-date series for emails/active/actions."""
-    events = _USER_EVENTS if active_only else _ALL_EVENTS
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            WITH cohorts AS (
-                SELECT id AS user_id, date_trunc('week', created_at) AS cohort_week
-                FROM users
-                WHERE created_at >= now() - make_interval(weeks => %s)
-            ),
-            cohort_sizes AS (
-                SELECT cohort_week, count(*) AS size
-                FROM cohorts
-                GROUP BY cohort_week
-            ),
-            weekly_activity AS (
-                SELECT
-                    c.cohort_week,
-                    date_trunc('week', ae.created_at) AS activity_week,
-                    FLOOR(EXTRACT(EPOCH FROM date_trunc('week', ae.created_at) - c.cohort_week) / 604800)::int AS week_offset,
-                    count(DISTINCT c.user_id) AS active_users,
-                    count(*) FILTER (WHERE ae.event = 'draft_sent') AS emails_sent,
-                    count(*) AS total_actions
-                FROM cohorts c
-                JOIN analytics_events ae ON ae.user_id = c.user_id
-                WHERE ae.event = ANY(%s)
-                GROUP BY c.cohort_week, activity_week, week_offset
-            )
-            SELECT
-                cs.cohort_week,
-                cs.size,
-                wa.activity_week,
-                wa.week_offset,
-                COALESCE(wa.active_users, 0) AS active_users,
-                COALESCE(wa.emails_sent, 0) AS emails_sent,
-                COALESCE(wa.total_actions, 0) AS total_actions
-            FROM cohort_sizes cs
-            LEFT JOIN weekly_activity wa ON wa.cohort_week = cs.cohort_week
-            ORDER BY cs.cohort_week, wa.activity_week
-            """,
-            (weeks, list(events)),
-        )
-        cols = [desc[0] for desc in cur.description]
-        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-
-        # Build per-cohort data
-        cohort_map: dict[str, dict] = {}
-        all_activity_weeks: set[str] = set()
-        for row in rows:
-            key = row["cohort_week"].isoformat() if hasattr(row["cohort_week"], "isoformat") else str(row["cohort_week"])
-            if key not in cohort_map:
-                cohort_map[key] = {
-                    "week": key,
-                    "size": row["size"],
-                    "by_offset": {},   # week_offset -> {active_users, ...}
-                    "by_date": {},     # activity_week ISO -> {active_users, emails_sent, total_actions}
-                }
-            if row["week_offset"] is not None and row["week_offset"] >= 0:
-                cohort_map[key]["by_offset"][row["week_offset"]] = {
-                    "active_users": row["active_users"],
-                    "emails_sent": row["emails_sent"],
-                    "total_actions": row["total_actions"],
-                }
-            if row["activity_week"] is not None:
-                aw_key = row["activity_week"].isoformat()
-                all_activity_weeks.add(aw_key)
-                cohort_map[key]["by_date"][aw_key] = {
-                    "active_users": row["active_users"],
-                    "emails_sent": row["emails_sent"],
-                    "total_actions": row["total_actions"],
-                }
-
-        cohorts = sorted(cohort_map.values(), key=lambda c: c["week"])
-        # Use full range so all cohorts get a complete timeline
-        max_offset = weeks
-        # Generate full week series from earliest cohort to now
-        if cohorts:
-            from datetime import timedelta
-            earliest = min(datetime.fromisoformat(c["week"]) for c in cohorts)
-            now_week = datetime.fromisoformat(
-                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
-            )
-            week_cursor = earliest
-            while week_cursor <= now_week:
-                all_activity_weeks.add(week_cursor.isoformat())
-                week_cursor += timedelta(weeks=1)
-        sorted_activity_weeks = sorted(all_activity_weeks)
-
-        # Build retention arrays (by week offset) — week 0 = 100% by definition
-        result_cohorts = []
-        for c in cohorts:
-            size = c["size"]
-            retention = []
-            for i in range(int(max_offset) + 1):
-                if i == 0:
-                    retention.append(100.0)
-                else:
-                    w = c["by_offset"].get(i, {})
-                    active = w.get("active_users", 0)
-                    retention.append(round(active / size * 100, 1) if size > 0 else 0)
-
-            # Cumulative actions for lifetime chart (by offset, averaged per user)
-            lifetime_actions = []
-            cumulative = 0
-            for i in range(int(max_offset) + 1):
-                cumulative += c["by_offset"].get(i, {}).get("total_actions", 0)
-                lifetime_actions.append(round(cumulative / size, 1) if size > 0 else 0)
-
-            result_cohorts.append({
-                "week": c["week"],
-                "size": size,
-                "retention": retention,
-                "lifetime_actions": lifetime_actions,
-            })
-
-        # Build absolute-date series for emails_sent and active_users
-        emails_by_week: list[dict] = []
-        active_by_week: list[dict] = []
-        for aw in sorted_activity_weeks:
-            email_point: dict = {"week": aw}
-            active_point: dict = {"week": aw}
-            for c in cohorts:
-                label = c["week"]
-                d = c["by_date"].get(aw, {})
-                email_point[label] = d.get("emails_sent", 0)
-                active_point[label] = d.get("active_users", 0)
-            emails_by_week.append(email_point)
-            active_by_week.append(active_point)
-
-        return {
-            "cohorts": result_cohorts,
-            "max_weeks": int(max_offset) + 1,
-            "emails_by_week": emails_by_week,
-            "active_by_week": active_by_week,
-        }
-
-
-def get_cohort_data_daily(days: int = 7, active_only: bool = False) -> dict:
-    """Same as get_cohort_data but cohorts are grouped by day and activity is daily."""
-    events = _USER_EVENTS if active_only else _ALL_EVENTS
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            WITH cohorts AS (
-                SELECT id AS user_id, date_trunc('day', created_at) AS cohort_day
-                FROM users
-                WHERE created_at >= now() - make_interval(days => %s)
-            ),
-            cohort_sizes AS (
-                SELECT cohort_day, count(*) AS size
-                FROM cohorts
-                GROUP BY cohort_day
-            ),
-            daily_activity AS (
-                SELECT
-                    c.cohort_day,
-                    date_trunc('day', ae.created_at) AS activity_day,
-                    (date_trunc('day', ae.created_at)::date - c.cohort_day::date)::int AS day_offset,
-                    count(DISTINCT c.user_id) AS active_users,
-                    count(*) FILTER (WHERE ae.event = 'draft_sent') AS emails_sent,
-                    count(*) AS total_actions
-                FROM cohorts c
-                JOIN analytics_events ae ON ae.user_id = c.user_id
-                WHERE ae.event = ANY(%s)
-                GROUP BY c.cohort_day, activity_day, day_offset
-            )
-            SELECT
-                cs.cohort_day,
-                cs.size,
-                da.activity_day,
-                da.day_offset,
-                COALESCE(da.active_users, 0) AS active_users,
-                COALESCE(da.emails_sent, 0) AS emails_sent,
-                COALESCE(da.total_actions, 0) AS total_actions
-            FROM cohort_sizes cs
-            LEFT JOIN daily_activity da ON da.cohort_day = cs.cohort_day
-            ORDER BY cs.cohort_day, da.activity_day
-            """,
-            (days, list(events)),
-        )
-        cols = [desc[0] for desc in cur.description]
-        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-
-        cohort_map: dict[str, dict] = {}
-        all_activity_days: set[str] = set()
-        for row in rows:
-            key = row["cohort_day"].isoformat() if hasattr(row["cohort_day"], "isoformat") else str(row["cohort_day"])
-            if key not in cohort_map:
-                cohort_map[key] = {
-                    "day": key,
-                    "size": row["size"],
-                    "by_offset": {},
-                    "by_date": {},
-                }
-            if row["day_offset"] is not None and row["day_offset"] >= 0:
-                cohort_map[key]["by_offset"][row["day_offset"]] = {
-                    "active_users": row["active_users"],
-                    "emails_sent": row["emails_sent"],
-                    "total_actions": row["total_actions"],
-                }
-            if row["activity_day"] is not None:
-                ad_key = row["activity_day"].isoformat()
-                all_activity_days.add(ad_key)
-                cohort_map[key]["by_date"][ad_key] = {
-                    "active_users": row["active_users"],
-                    "emails_sent": row["emails_sent"],
-                    "total_actions": row["total_actions"],
-                }
-
-        cohorts = sorted(cohort_map.values(), key=lambda c: c["day"])
-
-        # Fill in all days in range
-        if cohorts:
-            from datetime import timedelta
-            earliest = min(datetime.fromisoformat(c["day"]) for c in cohorts)
-            now_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-            cursor = earliest
-            while cursor <= now_day:
-                all_activity_days.add(cursor.isoformat())
-                cursor += timedelta(days=1)
-        sorted_activity_days = sorted(all_activity_days)
-
-        # Use full range so all cohorts get a complete timeline
-        max_offset = days
-
-        result_cohorts = []
-        for c in cohorts:
-            size = c["size"]
-            retention = []
-            for i in range(int(max_offset) + 1):
-                if i == 0:
-                    retention.append(100.0)
-                else:
-                    w = c["by_offset"].get(i, {})
-                    active = w.get("active_users", 0)
-                    retention.append(round(active / size * 100, 1) if size > 0 else 0)
-            lifetime_actions = []
-            cumulative = 0
-            for i in range(int(max_offset) + 1):
-                cumulative += c["by_offset"].get(i, {}).get("total_actions", 0)
-                lifetime_actions.append(round(cumulative / size, 1) if size > 0 else 0)
-            result_cohorts.append({
-                "week": c["day"],  # keep "week" key for frontend compatibility
-                "size": size,
-                "retention": retention,
-                "lifetime_actions": lifetime_actions,
-            })
-
-        emails_by_day: list[dict] = []
-        active_by_day: list[dict] = []
-        for ad in sorted_activity_days:
-            email_point: dict = {"week": ad}
-            active_point: dict = {"week": ad}
-            for c in cohorts:
-                label = c["day"]
-                d = c["by_date"].get(ad, {})
-                email_point[label] = d.get("emails_sent", 0)
-                active_point[label] = d.get("active_users", 0)
-            emails_by_day.append(email_point)
-            active_by_day.append(active_point)
-
-        return {
-            "cohorts": result_cohorts,
-            "max_weeks": int(max_offset) + 1,
-            "emails_by_week": emails_by_day,
-            "active_by_week": active_by_day,
-        }
-
-
-def get_draft_stats() -> dict:
-    """Aggregate stats for the drafts tab."""
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute("""
-            SELECT
-                count(*) AS total_drafts,
-                count(*) FILTER (WHERE sent_at IS NOT NULL) AS total_sent,
-                count(*) FILTER (WHERE was_edited = TRUE) AS total_edited,
-                round(avg(edit_distance_ratio) FILTER (WHERE sent_at IS NOT NULL)::numeric, 4) AS avg_edit_pct,
-                round(avg(chars_added) FILTER (WHERE sent_at IS NOT NULL)::numeric, 1) AS avg_chars_added,
-                round(avg(chars_removed) FILTER (WHERE sent_at IS NOT NULL)::numeric, 1) AS avg_chars_removed,
-                count(*) FILTER (WHERE was_autopilot = TRUE) AS total_autopilot,
-                count(*) FILTER (WHERE was_autopilot = TRUE AND sent_at IS NOT NULL) AS autopilot_sent
-            FROM composed_drafts
-        """)
-        row = cur.fetchone()
-        cols = [desc[0] for desc in cur.description]
-        result = dict(zip(cols, row))
-        # Convert Decimal to float for JSON
-        for k, v in result.items():
-            if v is not None and not isinstance(v, (int, float, str)):
-                result[k] = float(v)
-        return result
-
-
-def get_admin_drafts(
-    page: int = 1,
-    per_page: int = 20,
-    email_search: str | None = None,
-    edited_only: bool = False,
-    autopilot_only: bool = False,
-) -> tuple[list[dict], int]:
-    """Paginated composed_drafts with user email, for admin browsing."""
-    conditions = []
-    params: list = []
-
-    if email_search:
-        conditions.append("u.email ILIKE %s")
-        params.append(f"%{email_search}%")
-    if edited_only:
-        conditions.append("cd.was_edited = TRUE")
-    if autopilot_only:
-        conditions.append("cd.was_autopilot = TRUE")
-
-    where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            f"SELECT count(*) FROM composed_drafts cd JOIN users u ON u.id = cd.user_id {where_clause}",
-            params,
-        )
-        total = cur.fetchone()[0]
-
-        cur.execute(
-            f"""
-            SELECT cd.id, u.email AS user_email, cd.original_subject, cd.original_body,
-                   cd.sent_body, cd.was_edited, cd.edit_distance_ratio,
-                   cd.chars_added, cd.chars_removed, cd.was_autopilot,
-                   cd.composed_at, cd.sent_at, cd.thread_context
-            FROM composed_drafts cd
-            JOIN users u ON u.id = cd.user_id
-            {where_clause}
-            ORDER BY cd.composed_at DESC
-            LIMIT %s OFFSET %s
-            """,
-            params + [per_page, (page - 1) * per_page],
-        )
-        cols = [desc[0] for desc in cur.description]
-        drafts = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return drafts, total
-
-
-def disconnect_user(user_id: str) -> None:
-    """Revoke Google tokens and delete guides, but keep the user row."""
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute("DELETE FROM guides WHERE user_id = %s", (user_id,))
-        cur.execute(
-            """
-            UPDATE users SET
-                google_refresh_token = NULL,
-                google_access_token = NULL,
-                access_token_expires_at = NULL,
-                gmail_history_id = NULL,
-                scheduled_calendar_id = NULL,
-                onboarding_status = NULL,
-                updated_at = now()
-            WHERE id = %s
-            """,
-            (user_id,),
-        )
-        conn.commit()
+        for invite_doc in invites:
+            invite_doc.reference.delete()
+            return

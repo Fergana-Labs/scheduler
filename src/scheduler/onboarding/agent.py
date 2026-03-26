@@ -19,6 +19,7 @@ from claude_agent_sdk import (
 )
 
 from scheduler.claude_runtime import is_api_error_result, nested_claude_session
+from scheduler.config import config
 
 if TYPE_CHECKING:
     from scheduler.onboarding.backends import BackfillBackend
@@ -160,6 +161,10 @@ async def _run_backfill_async(backend: BackfillBackend, lookback_days: int):
         system_prompt=system_prompt,
         permission_mode="bypassPermissions",
         model="claude-sonnet-4-6",
+        env={
+            "ANTHROPIC_VERTEX_PROJECT_ID": config.gcp_project_id,
+            "CLOUD_ML_REGION": config.gcp_region,
+        },
     )
 
     with nested_claude_session():

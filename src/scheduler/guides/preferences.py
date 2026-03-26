@@ -149,6 +149,10 @@ async def run_preferences_agent(backend: GuideBackend) -> None:
         system_prompt=system_prompt,
         permission_mode="bypassPermissions",
         model="claude-sonnet-4-6",
+        env={
+            "ANTHROPIC_VERTEX_PROJECT_ID": config.gcp_project_id,
+            "CLOUD_ML_REGION": config.gcp_region,
+        },
     )
 
     print("Starting scheduling preferences analysis...")
