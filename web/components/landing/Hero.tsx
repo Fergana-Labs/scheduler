@@ -218,10 +218,10 @@ export default function Hero() {
       </div>
 
       {/* Two-column hero — scrolls naturally with the page */}
-      <div className="relative z-10 mx-auto flex w-full max-w-6xl flex-col gap-10 sm:gap-11 lg:min-h-screen lg:flex-row lg:items-center lg:gap-20 lg:pb-28">
+      <div className="relative z-10 mx-auto flex w-full max-w-6xl flex-col gap-10 sm:gap-11 md:flex-row md:items-center md:gap-8 md:pt-24 lg:min-h-screen lg:gap-20 lg:pt-0 lg:pb-28">
         {/* Left: headline + CTA */}
-        <div className="flex-1 text-center lg:text-left">
-          <h1 className="font-[family-name:var(--font-playfair)] text-[clamp(2.5rem,10vw,4.5rem)] font-normal italic leading-[1.05] tracking-tight text-gray-900 sm:text-5xl lg:text-7xl xl:text-8xl">
+        <div className="flex-1 text-center md:text-left">
+          <h1 className="font-[family-name:var(--font-playfair)] text-[clamp(2.5rem,10vw,4.5rem)] font-normal italic leading-[1.05] tracking-tight text-gray-900 sm:text-5xl md:text-6xl lg:text-7xl xl:text-8xl">
             Just hit
             <br />
             send
@@ -248,7 +248,7 @@ export default function Hero() {
         </div>
 
         {/* Mobile: single email card preview */}
-        <div className="relative mx-auto w-full max-w-sm lg:hidden">
+        <div className="relative mx-auto w-full max-w-sm md:hidden">
           <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-lg">
             <div className="mb-3 flex items-start justify-between">
               <div>
@@ -277,7 +277,7 @@ export default function Hero() {
         </div>
 
         {/* Desktop: email card stack */}
-        <div ref={cardContainerRef} className="relative hidden h-[420px] w-[440px] flex-shrink-0 lg:block">
+        <div ref={cardContainerRef} className="relative hidden h-[380px] w-[320px] flex-shrink-0 md:block lg:h-[420px] lg:w-[440px]">
           {EMAILS.map((email, i) => {
             const progress = cardStates[i] ?? 0;
             const isGone = progress >= 1;
