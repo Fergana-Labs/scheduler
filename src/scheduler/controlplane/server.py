@@ -907,14 +907,29 @@ def gmail_draft(req: CreateDraftRequest, session: dict = Depends(get_session)):
         thread_id=req.thread_id, to=req.to, subject=req.subject, body=body, content_type=content_type, cc=req.cc
     )
 
+    # Fetch thread context for analytics if not provided by frontend
+    thread_messages = req.thread_context or []
+    if not thread_messages and req.thread_id:
+        try:
+            thread_emails = gmail.get_thread(req.thread_id)
+            for t_email in thread_emails:
+                thread_messages.append({
+                    "sender": t_email.sender,
+                    "subject": t_email.subject,
+                    "body": t_email.body,
+                    "date": t_email.date.isoformat() if t_email.date else "",
+                })
+        except Exception:
+            logger.debug("gmail_draft: failed to fetch thread %s for analytics context", req.thread_id)
+
     from scheduler import analytics
     analytics.record_draft_composed(
         user_id=session["user_id"],
         thread_id=req.thread_id,
         draft_id=draft_id,
-        thread_messages=req.thread_context or [],
+        thread_messages=thread_messages,
         subject=req.subject,
-        body=req.body,
+        body=body,
     )
 
     return {"draft_id": draft_id}
