@@ -40,8 +40,13 @@ def record_draft_composed(
             from scheduler.anonymize import anonymize_draft_context
             from scheduler.db import store_composed_draft
 
+            # Strip HTML so original body is plain text (matches sent body processing)
+            plain_body = re.sub(r'<br\s*/?>', '\n', body)
+            plain_body = re.sub(r'<[^>]+>', '', plain_body)
+            plain_body = html.unescape(plain_body)
+
             anon_thread, anon_body, anon_subject = anonymize_draft_context(
-                thread_messages, body, subject
+                thread_messages, plain_body, subject
             )
             store_composed_draft(
                 user_id=user_id,

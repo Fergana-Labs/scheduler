@@ -286,7 +286,7 @@ class LocalDraftBackend:
             draft_id=draft_id,
             thread_messages=self._thread_messages,
             subject=args["subject"],
-            body=args["body"],
+            body=body,
         )
 
         return {"draft_id": draft_id}
@@ -323,7 +323,7 @@ class LocalDraftBackend:
             draft_id=f"sent:{message_id}",
             thread_messages=self._thread_messages,
             subject=args["subject"],
-            body=args["body"],
+            body=body,
             was_autopilot=True,
         )
 
