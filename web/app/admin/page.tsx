@@ -278,6 +278,8 @@ function CohortCharts({ data, periodLabel }: { data: CohortData; periodLabel: st
 
   const weekOffsets = Array.from({ length: max_weeks }, (_, i) => i);
   const cohortKeys = cohorts.map((c) => formatWeek(c.week));
+  const cohortSizes: Record<string, number> = {};
+  cohorts.forEach((c) => { cohortSizes[formatWeek(c.week)] = c.size; });
 
   // 1. Retention line chart — omit keys entirely for incomplete offsets so lines stop
   const retentionData = weekOffsets.map((offset) => {
@@ -317,16 +319,18 @@ function CohortCharts({ data, periodLabel }: { data: CohortData; periodLabel: st
 
   // Tooltip that shows only the hovered series — hidden when hovering whitespace
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const FocusedTooltip = ({ active, payload, label, suffix }: any) => {
+  const FocusedTooltip = ({ active, payload, label, suffix, showSize }: any) => {
     if (!active || !payload?.length || !hoveredSeries) return null;
     const item = payload.find((p: { dataKey: string }) => p.dataKey === hoveredSeries);
     if (!item || item.value === undefined || item.value === null) return null;
+    const size = showSize ? cohortSizes[item.dataKey] : null;
     return (
       <div className="rounded border border-gray-200 bg-white px-3 py-2 text-xs shadow-sm">
         <div className="text-gray-500">{label}</div>
         <div className="mt-1 font-medium" style={{ color: item.color }}>
           {item.name}: {item.value}{suffix || ''}
         </div>
+        {size != null && <div className="mt-0.5 text-gray-500">Cohort size: {size}</div>}
       </div>
     );
   };
@@ -361,10 +365,10 @@ function CohortCharts({ data, periodLabel }: { data: CohortData; periodLabel: st
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="week" tick={{ fontSize: 12 }} />
             <YAxis unit="%" domain={[0, 100]} />
-            <Tooltip content={<FocusedTooltip suffix="%" />} />
+            <Tooltip content={<FocusedTooltip suffix="%" showSize />} />
             <Legend onMouseEnter={(e) => setHoveredSeries(e.dataKey as string)} onMouseLeave={handleMouseLeave} />
             {cohortKeys.map((key, i) => (
-              <Line key={key} type="monotone" dataKey={key} stroke={COHORT_COLORS[i % COHORT_COLORS.length]} strokeWidth={hoveredSeries === key ? 3 : hoveredSeries ? 1 : 2} dot={false} activeDot={{ r: 4 }} onMouseEnter={handleMouseEnter(key)} onMouseLeave={handleMouseLeave} connectNulls={false} />
+              <Line key={key} type="monotone" dataKey={key} stroke={COHORT_COLORS[i % COHORT_COLORS.length]} strokeWidth={hoveredSeries === key ? 3 : hoveredSeries ? 1 : 2} dot={false} activeDot={{ r: 6 }} onMouseEnter={handleMouseEnter(key)} onMouseLeave={handleMouseLeave} connectNulls={false} style={{ pointerEvents: 'all', cursor: 'pointer' }} />
             ))}
           </LineChart>
         </ResponsiveContainer>
@@ -409,10 +413,10 @@ function CohortCharts({ data, periodLabel }: { data: CohortData; periodLabel: st
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="week" tick={{ fontSize: 12 }} />
             <YAxis />
-            <Tooltip content={<FocusedTooltip />} />
+            <Tooltip content={<FocusedTooltip showSize />} />
             <Legend onMouseEnter={(e) => setHoveredSeries(e.dataKey as string)} onMouseLeave={handleMouseLeave} />
             {cohortKeys.map((key, i) => (
-              <Line key={key} type="monotone" dataKey={key} stroke={COHORT_COLORS[i % COHORT_COLORS.length]} strokeWidth={hoveredSeries === key ? 3 : hoveredSeries ? 1 : 2} dot={false} activeDot={{ r: 4 }} onMouseEnter={handleMouseEnter(key)} onMouseLeave={handleMouseLeave} connectNulls={false} />
+              <Line key={key} type="monotone" dataKey={key} stroke={COHORT_COLORS[i % COHORT_COLORS.length]} strokeWidth={hoveredSeries === key ? 3 : hoveredSeries ? 1 : 2} dot={false} activeDot={{ r: 6 }} onMouseEnter={handleMouseEnter(key)} onMouseLeave={handleMouseLeave} connectNulls={false} style={{ pointerEvents: 'all', cursor: 'pointer' }} />
             ))}
           </LineChart>
         </ResponsiveContainer>
