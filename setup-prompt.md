@@ -57,7 +57,7 @@ done
 Create the project:
 ```bash
 PROJECT_ID="scheduled-$(openssl rand -hex 4)"
-gcloud projects create $PROJECT_ID --name="Scheduled"
+gcloud projects create $PROJECT_ID --name="Scheduled" --organization=""
 gcloud config set project $PROJECT_ID
 
 gcloud projects add-iam-policy-binding $PROJECT_ID \
