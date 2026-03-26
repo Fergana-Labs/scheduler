@@ -822,7 +822,12 @@ def get_cohort_data(weeks: int = 8, emails_only: bool = False, include_current: 
                 }
 
         cohorts = sorted(cohort_map.values(), key=lambda c: c["week"])
-        max_offset = weeks
+        # Max offset = age of the oldest cohort in completed weeks
+        if cohorts:
+            oldest = datetime.fromisoformat(cohorts[0]["week"])
+            max_offset = max(0, int((current_week_start - oldest).total_seconds() / 604800) - (0 if include_current else 1))
+        else:
+            max_offset = 0
         # Generate full week series from earliest cohort to last boundary
         if cohorts:
             earliest = min(datetime.fromisoformat(c["week"]) for c in cohorts)
@@ -988,7 +993,11 @@ def get_cohort_data_daily(days: int = 7, emails_only: bool = False, include_curr
                 cursor += timedelta(days=1)
         sorted_activity_days = sorted(all_activity_days)
 
-        max_offset = days
+        if cohorts:
+            oldest = datetime.fromisoformat(cohorts[0]["day"])
+            max_offset = max(0, (current_day_start - oldest).days - (0 if include_current else 1))
+        else:
+            max_offset = 0
 
         def max_completed_offset(cohort_day_iso: str) -> int:
             cohort_start = datetime.fromisoformat(cohort_day_iso)
