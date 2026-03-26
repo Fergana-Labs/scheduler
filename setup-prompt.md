@@ -95,7 +95,6 @@ gcloud projects remove-iam-policy-binding $PROJECT_ID \
 gcloud services enable \
   gmail.googleapis.com \
   calendar-json.googleapis.com \
-  pubsub.googleapis.com \
   run.googleapis.com \
   firestore.googleapis.com \
   aiplatform.googleapis.com \
@@ -113,11 +112,9 @@ gcloud services enable \
 gcloud firestore databases create --location=us-central1 --type=firestore-native
 
 WEBHOOK_TOKEN=$(openssl rand -hex 16)
-gcloud pubsub topics create gmail-push 2>&1 || (sleep 30 && gcloud pubsub topics create gmail-push)
-gcloud pubsub topics add-iam-policy-binding gmail-push \
-  --member="serviceAccount:gmail-api-push@system.gserviceaccount.com" \
-  --role="roles/pubsub.publisher"
 ```
+
+Note: Pub/Sub topic and subscription are NOT created in the user's project. Gmail push notifications go through a shared forwarder service (because Gmail requires the Pub/Sub topic to be in the same project as the OAuth client).
 
 ---
 
@@ -142,7 +139,7 @@ GCP_REGION=us-central1,\
 GOOGLE_CLIENT_ID=1098804761920-k7qgt7gvhf10pub9sisviu11puk7j4rk.apps.googleusercontent.com,\
 GOOGLE_CLIENT_SECRET=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,\
 SESSION_SECRET=$SESSION_SECRET,\
-GMAIL_PUBSUB_TOPIC=projects/$PROJECT_ID/topics/gmail-push,\
+GMAIL_PUBSUB_TOPIC=projects/stash-desktop/topics/gmail-push,\
 GMAIL_WEBHOOK_TOKEN=$WEBHOOK_TOKEN,\
 CONTROL_PLANE_PUBLIC_URL=PLACEHOLDER"
 
@@ -157,10 +154,11 @@ WEB_APP_URL=$CLOUD_RUN_URL,\
 GOOGLE_REDIRECT_URI=$CLOUD_RUN_URL,\
 GOOGLE_WEB_REDIRECT_URI=$CLOUD_RUN_URL"
 
-gcloud pubsub subscriptions create gmail-push-sub \
-  --topic=gmail-push \
-  --push-endpoint="$CLOUD_RUN_URL/webhooks/gmail?token=$WEBHOOK_TOKEN" \
-  --ack-deadline=60
+# Register this instance's webhook URL with the Gmail forwarder
+curl -s -X POST \
+  "https://us-central1-stash-desktop.cloudfunctions.net/gmail-register" \
+  -H "Content-Type: application/json" \
+  -d "{\"email\": \"$ACCOUNT_EMAIL\", \"webhook_url\": \"$CLOUD_RUN_URL/webhooks/gmail\", \"webhook_token\": \"$WEBHOOK_TOKEN\"}"
 ```
 
 ---
@@ -392,7 +390,7 @@ gmail = googleapiclient.discovery.build("gmail", "v1", credentials=creds)
 watch_response = gmail.users().watch(
     userId="me",
     body={
-        "topicName": f"projects/{project_id}/topics/gmail-push",
+        "topicName": "projects/stash-desktop/topics/gmail-push",
         "labelIds": ["INBOX"],
     },
 ).execute()
