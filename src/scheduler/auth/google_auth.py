@@ -85,38 +85,30 @@ def _save_credentials(creds: Credentials) -> None:
 
 
 def load_credentials(user_id: str):
-    """Load Google credentials from database or fall back to token.json.
+    """Load Google credentials from Firestore for the given user."""
+    from scheduler.db import get_user_by_id, update_user_tokens
 
-    If DATABASE_URL is configured and the user exists, builds credentials
-    from stored tokens (refreshing if expired). Otherwise falls back to
-    the local token.json OAuth flow for development.
-    """
-    if config.database_url:
-        from scheduler.db import get_user_by_id, update_user_tokens
+    user = get_user_by_id(user_id)
+    if not user:
+        raise ValueError(f"User {user_id} not found")
+    if not user.google_refresh_token:
+        raise ValueError(f"User {user_id} has no Google refresh token")
 
-        user = get_user_by_id(user_id)
-        if user:
-            if not user.google_refresh_token:
-                raise ValueError(f"User {user_id} has no Google refresh token")
-
-            creds = Credentials(
-                token=user.google_access_token,
-                refresh_token=user.google_refresh_token,
-                token_uri="https://oauth2.googleapis.com/token",
-                client_id=config.google_client_id,
-                client_secret=config.google_client_secret,
-            )
-            if creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-                update_user_tokens(
-                    user_id=str(user.id),
-                    google_access_token=creds.token,
-                    access_token_expires_at=creds.expiry,
-                )
-            return creds
-
-    # Fallback: local token.json for development
-    return get_credentials()
+    creds = Credentials(
+        token=user.google_access_token,
+        refresh_token=user.google_refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=config.google_client_id,
+        client_secret=config.google_client_secret,
+    )
+    if creds.expired:
+        creds.refresh(Request())
+        update_user_tokens(
+            user_id=str(user.id),
+            google_access_token=creds.token,
+            access_token_expires_at=creds.expiry,
+        )
+    return creds
 
 
 if __name__ == "__main__":
