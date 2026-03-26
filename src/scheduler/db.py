@@ -195,6 +195,18 @@ def get_all_user_ids() -> list[str]:
         return [str(row[0]) for row in cur.fetchall()]
 
 
+def get_stuck_onboarding_users() -> list[UserRow]:
+    """Return users with Google tokens but onboarding not completed (null, pending, or running)."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT * FROM users
+               WHERE google_refresh_token IS NOT NULL
+                 AND (onboarding_status IS NULL OR onboarding_status IN ('pending', 'running'))""",
+        )
+        cols = [d[0] for d in cur.description]
+        return [_row_to_user(cols, row) for row in cur.fetchall()]
+
+
 def update_scheduled_branding(user_id: str, enabled: bool) -> None:
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(

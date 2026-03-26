@@ -344,6 +344,9 @@ def auth0_callback(code: str | None = None, error: str | None = None):
                 logger.info("auth0_callback: onboarding already running for user=%s", user.id)
                 background = None
             else:
+                # Mark pending in DB immediately so we can recover if the background task is lost
+                from scheduler.db import update_onboarding_status
+                update_onboarding_status(str(user.id), "pending")
                 background = BackgroundTask(_run_onboarding_for_runtime, str(user.id))
         redirect_url = f"{config.web_app_url}/onboarding?token={access_token}"
     else:
@@ -502,6 +505,8 @@ def auth_google_connect_callback(
                 logger.info("google_connect: onboarding already running for user=%s", user_id)
                 background = None
             else:
+                from scheduler.db import update_onboarding_status
+                update_onboarding_status(user_id, "pending")
                 background = BackgroundTask(_run_onboarding_for_runtime, user_id)
         redirect_url = f"{config.web_app_url}/onboarding?{token_param}"
 
@@ -651,6 +656,8 @@ def auth_google_callback(code: str | None = None, state: str | None = None, erro
                 logger.info("onboarding: already running for user=%s", user.id)
                 background = None
             else:
+                from scheduler.db import update_onboarding_status
+                update_onboarding_status(str(user.id), "pending")
                 background = BackgroundTask(_run_onboarding_for_runtime, str(user.id))
         redirect_url = f"{config.web_app_url}/onboarding"
 
@@ -1124,25 +1131,31 @@ def _run_onboarding_all(user_id: str) -> None:
 
 
 def _run_onboarding_for_runtime(user_id: str) -> None:
-    """Dispatch onboarding to the configured runtime."""
-    from scheduler.db import update_onboarding_status, update_system_enabled
+    """Dispatch onboarding to the configured runtime.
 
-    with _onboarding_lock:
-        if _onboarding_status.get(user_id, {}).get("status") == "running":
-            logger.info("onboarding: already running for user=%s, skipping", user_id)
-            return
-        _onboarding_status[user_id] = {
-            "status": "running",
-            "agents": {
-                "backfill": "running",
-                "preferences": "running",
-                "style": "running",
-            },
-        }
-
-    update_onboarding_status(user_id, "running")
+    Called as a background task after OAuth. The entire body is wrapped in
+    try/except so failures always get logged and persisted to DB — no silent drops.
+    """
+    logger.info("onboarding: background task starting for user=%s", user_id)
 
     try:
+        from scheduler.db import update_onboarding_status, update_system_enabled
+
+        with _onboarding_lock:
+            if _onboarding_status.get(user_id, {}).get("status") == "running":
+                logger.info("onboarding: already running for user=%s, skipping", user_id)
+                return
+            _onboarding_status[user_id] = {
+                "status": "running",
+                "agents": {
+                    "backfill": "running",
+                    "preferences": "running",
+                    "style": "running",
+                },
+            }
+
+        update_onboarding_status(user_id, "running")
+
         runtime = config.agent_runtime.strip().lower()
         if runtime == "local":
             _run_onboarding_all(user_id)
@@ -1208,8 +1221,11 @@ def _run_onboarding_for_runtime(user_id: str) -> None:
 
         raise RuntimeError(f"Unsupported AGENT_RUNTIME: {config.agent_runtime}")
     except Exception as e:
-        logger.exception("onboarding: failed for user=%s", user_id)
-        update_onboarding_status(user_id, "failed")
+        logger.exception("onboarding: FAILED for user=%s", user_id)
+        try:
+            update_onboarding_status(user_id, "failed")
+        except Exception:
+            logger.exception("onboarding: could not even set failed status in DB for user=%s", user_id)
         with _onboarding_lock:
             _onboarding_status[user_id] = {"status": "failed", "error": str(e)}
 
@@ -1689,6 +1705,33 @@ def admin_drafts(
     return {"drafts": drafts, "total": total, "page": page, "per_page": per_page}
 
 
+@app.post("/web/api/v1/admin/onboarding/retry-stuck")
+def admin_retry_stuck_onboarding(
+    background_tasks: BackgroundTasks,
+    admin: dict = Depends(_require_admin),
+):
+    """Batch-trigger onboarding for all users stuck with null/pending/running status."""
+    from scheduler.db import get_stuck_onboarding_users
+
+    stuck_users = get_stuck_onboarding_users()
+    triggered = []
+    skipped = []
+
+    for user in stuck_users:
+        user_id = str(user.id)
+        with _onboarding_lock:
+            if _onboarding_status.get(user_id, {}).get("status") == "running":
+                skipped.append({"user_id": user_id, "email": user.email, "reason": "already_running"})
+                continue
+
+        logger.info("admin: retrying stuck onboarding for user=%s (%s), was status=%s",
+                     user_id, user.email, user.onboarding_status)
+        background_tasks.add_task(_run_onboarding_for_runtime, user_id)
+        triggered.append({"user_id": user_id, "email": user.email, "old_status": user.onboarding_status})
+
+    return {"triggered": triggered, "skipped": skipped}
+
+
 @app.get("/web/api/v1/onboarding/status")
 def web_onboarding_status(
     user: dict = Depends(get_authenticated_user),
@@ -1716,10 +1759,14 @@ def web_onboarding_status(
                 result["error"] = status_entry.get("error", "Unknown error")
             if "agents" in status_entry:
                 result["agents"] = status_entry["agents"]
-        elif db_user.onboarding_status == "running":
-            # DB says running but no in-memory status — server restarted mid-onboarding.
+        elif db_user.onboarding_status in ("running", "pending", None):
+            # DB says running/pending/null but no in-memory status — the background task
+            # was lost (server restarted, deploy killed it, or it never started).
             # Auto-retry by kicking off onboarding again.
-            logger.info("onboarding: detected interrupted run for user=%s, auto-retrying", user_id)
+            logger.info(
+                "onboarding: detected stuck onboarding (status=%s) for user=%s, auto-retrying",
+                db_user.onboarding_status, user_id,
+            )
             background_tasks.add_task(_run_onboarding_for_runtime, user_id)
         elif db_user.onboarding_status == "failed":
             result["failed"] = True
