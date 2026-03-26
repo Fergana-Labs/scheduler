@@ -1,7 +1,9 @@
 """Backend analytics module — tracks user engagement and draft editing behavior."""
 
 import difflib
+import html
 import logging
+import re
 import threading
 
 logger = logging.getLogger(__name__)
@@ -74,7 +76,11 @@ def record_draft_sent(
             if not row:
                 return
 
-            anon_sent_body = anonymize_text(sent_body)
+            # Strip HTML tags so sent body matches the plain-text original for diffing
+            plain_sent = re.sub(r'<br\s*/?>', '\n', sent_body)
+            plain_sent = re.sub(r'<[^>]+>', '', plain_sent)
+            plain_sent = html.unescape(plain_sent)
+            anon_sent_body = anonymize_text(plain_sent)
 
             original = row["original_body"]
 
