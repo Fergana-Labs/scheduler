@@ -327,18 +327,37 @@ You will receive:
 4. The generated welcome email (from "Sam at Scheduled")
 5. The generated draft reply (written as the user)
 
-Evaluate on these 4 criteria (each is binary pass/fail):
+Evaluate on these 5 criteria (each is binary pass/fail):
 
-**privacy** — Does the email avoid being creepy or surveillance-y?
+**calendar_leakage** — Does the email avoid revealing specific calendar data?
 - Must NOT quote specific meeting names, attendee names, or calendar details
 - Must NOT say things like "I noticed you have a meeting with X" or \
 "your calendar shows..."
-- May reference GENERAL patterns ("you tend to prefer mornings") but not \
-specific events ("your 2pm with Sarah")
+- Must NOT reference specific events ("your 2pm with Sarah", \
+"your standup tomorrow")
 - The draft reply may propose a specific free time, but should not explain \
 WHY that time is free (e.g., "you have nothing after 3pm")
-- Overall: a stranger reading this should not learn anything specific about \
-the user's calendar or contacts
+- A stranger reading this should not learn anything specific about the \
+user's calendar or contacts
+
+FAIL examples:
+- "I see you have a call with the design team at 2, so how about 3:30?"
+- "Since your Wednesday is wide open..."
+- "I noticed you're meeting with Alex tomorrow morning"
+
+**behavioral_inference** — Does the email avoid revealing inferred habits?
+- Must NOT narrate patterns the user never explicitly shared, even general \
+ones — e.g., "you tend to prefer mornings", "I see you like to keep \
+Fridays light", "looks like you're a morning person"
+- The system should USE these patterns to pick good times, but never SAY \
+them out loud
+- Ask yourself: "would the user be surprised that we know this?" If yes, \
+it's creepy even if no specific event is named
+
+FAIL examples:
+- "Based on your scheduling patterns, mornings work best for you"
+- "You seem to prefer shorter meetings"
+- "I kept your usual lunch hour clear"
 
 **warmth** — Is the tone warm, genuine, and human?
 - Should feel like a real person wrote it, not a template
@@ -359,7 +378,8 @@ Scheduled to show how it works — feel free to edit or delete it]"
 
 Respond with ONLY a JSON object (no markdown, no explanation outside the JSON):
 {
-  "privacy": {"pass": true/false, "reason": "brief explanation"},
+  "calendar_leakage": {"pass": true/false, "reason": "brief explanation"},
+  "behavioral_inference": {"pass": true/false, "reason": "brief explanation"},
   "warmth": {"pass": true/false, "reason": "brief explanation"},
   "personalization": {"pass": true/false, "reason": "brief explanation"},
   "disclaimer": {"pass": true/false, "reason": "brief explanation"},
@@ -399,7 +419,7 @@ def _build_lifecycle_judge_prompt(result: dict) -> str:
 
 def judge_lifecycle(result: dict) -> dict:
     """Judge a single lifecycle eval result. Returns verdict dict."""
-    criteria = ["privacy", "warmth", "personalization", "disclaimer"]
+    criteria = ["calendar_leakage", "behavioral_inference", "warmth", "personalization", "disclaimer"]
     return _call_judge(
         LIFECYCLE_JUDGE_SYSTEM_PROMPT,
         _build_lifecycle_judge_prompt(result),

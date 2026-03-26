@@ -408,6 +408,21 @@ class DraftComposer:
             "or anything that could sound impatient or annoyed."
         )
 
+        parts.append(
+            "\n\n## Privacy\n"
+            "The draft must never reveal that an AI read the user's calendar or emails. "
+            "Follow these rules strictly:\n"
+            "- Never reference specific meeting names, attendee names, or calendar details.\n"
+            "- Never say things like \"I noticed you have a meeting with X\", "
+            "\"your calendar shows...\", or \"since you're free after 3pm\".\n"
+            "- You may propose a specific time, but never explain WHY that time is free.\n"
+            "- Do not reference behavioral patterns the user never explicitly shared "
+            "(e.g., \"you tend to keep mornings clear\"). Use the scheduling preferences "
+            "to pick good times, but don't narrate them.\n"
+            "- A stranger reading this draft should learn nothing about the user's "
+            "calendar, contacts, or habits."
+        )
+
         return "\n".join(parts)
 
     def _build_tools(self) -> tuple[list, dict, dict]:

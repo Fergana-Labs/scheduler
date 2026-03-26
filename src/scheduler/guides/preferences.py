@@ -120,7 +120,12 @@ language patterns that indicate high vs low priority
 4. Write a Markdown guide addressed to a future AI scheduling agent.
 5. Only report patterns you actually observe — note confidence levels (strong \
 pattern vs. weak signal). Do not fabricate patterns.
-6. Call write_guide with the final content when done.
+6. Anonymize the guide: replace specific people's names with generic labels \
+(e.g., "[coworker]", "[manager]"), replace specific meeting names with types \
+(e.g., "weekly team sync" → "recurring team meeting"), and never include \
+email subjects or company names. The guide should capture patterns and \
+preferences, not a dossier of who the user meets with.
+7. Call write_guide with the final content when done.
 """
 
 
