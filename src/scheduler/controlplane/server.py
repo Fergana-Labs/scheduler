@@ -142,11 +142,8 @@ async def setup_init(body: SetupInitRequest, authorization: str = Header(default
     try:
         creds = await asyncio.to_thread(load_credentials, user.id)
         if creds:
-            gmail = GmailClient(creds, user.id)
-            profile = await asyncio.to_thread(
-                gmail.service.users().getProfile(userId="me").execute
-            )
-            history_id = str(profile["historyId"])
+            gmail = GmailClient(creds)
+            history_id = await asyncio.to_thread(gmail.get_current_history_id)
             await asyncio.to_thread(update_gmail_history_id, user.id, history_id)
             logger.info("setup_init: gmail history_id=%s for %s", history_id, user.email)
     except Exception:
