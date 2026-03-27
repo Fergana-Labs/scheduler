@@ -45,6 +45,7 @@ def generate_welcome_email(
     scheduling_prefs: str,
     email_style: str,
     client: Anthropic | None = None,
+    has_real_guides: bool = True,
 ) -> dict:
     """Generate a welcome email. Pure generation — no side effects.
 
@@ -53,21 +54,39 @@ def generate_welcome_email(
     if client is None:
         client = _get_anthropic_client()
 
-    welcome_system = (
-        "You are writing a warm, personalized welcome email from Sam at Scheduled "
-        "(sam@tryscheduled.com) to a new user. The email should suggest hopping on a "
-        "quick chat to help them get the most out of Scheduled.\n\n"
-        "You have the user's scheduling preferences and email style guides below. "
-        "Reference specific details from their scheduling patterns to show the email "
-        "is personal — for example, mention their preferred meeting times, typical "
-        "meeting lengths, or communication style.\n\n"
-        "Keep it brief, friendly, and genuine — like a real person wrote it, not a template.\n\n"
-        f"## User's Scheduling Preferences\n{scheduling_prefs}\n\n"
-        f"## User's Email Style\n{email_style}\n\n"
-        "Respond with a JSON object only:\n"
-        '{"subject": "...", "body": "..."}\n'
-        "The body should be plain text (no HTML). Sign off as Sam."
-    )
+    if has_real_guides:
+        welcome_system = (
+            "You are writing a warm, personalized welcome email from Sam at Scheduled "
+            "(sam@tryscheduled.com) to a new user. The email should suggest hopping on a "
+            "quick chat to help them get the most out of Scheduled.\n\n"
+            "You have the user's scheduling preferences and email style guides below. "
+            "Reference specific details from their scheduling patterns to show the email "
+            "is personal — for example, mention their preferred meeting times, typical "
+            "meeting lengths, or communication style.\n\n"
+            "Keep it brief, friendly, and genuine — like a real person wrote it, not a template.\n\n"
+            f"## User's Scheduling Preferences\n{scheduling_prefs}\n\n"
+            f"## User's Email Style\n{email_style}\n\n"
+            "Respond with a JSON object only:\n"
+            '{"subject": "...", "body": "..."}\n'
+            "The body should be plain text (no HTML). Sign off as Sam."
+        )
+    else:
+        welcome_system = (
+            "You are writing a warm welcome email from Sam at Scheduled "
+            "(sam@tryscheduled.com) to a new user. The email should:\n"
+            "- Welcome them to Scheduled\n"
+            "- Briefly explain that Scheduled reads their emails and drafts "
+            "scheduling replies for them\n"
+            "- Mention that the system will get better as it learns their style "
+            "over time\n"
+            "- Suggest hopping on a quick chat if they want help getting started\n\n"
+            "Do NOT reference any specific scheduling preferences, meeting times, "
+            "or communication style — we don't have that data for this user yet. "
+            "Keep it brief, friendly, and genuine.\n\n"
+            "Respond with a JSON object only:\n"
+            '{"subject": "...", "body": "..."}\n'
+            "The body should be plain text (no HTML). Sign off as Sam."
+        )
 
     resp = client.messages.create(
         model="claude-sonnet-4-6",
@@ -155,6 +174,7 @@ def send_lifecycle_email(user_id: str) -> None:
 
     scheduling_prefs = load_guide("scheduling_preferences", user_id)
     email_style = load_guide("email_style", user_id)
+    has_real_guides = bool(scheduling_prefs and email_style)
 
     if not scheduling_prefs:
         logger.info(
@@ -172,7 +192,10 @@ def send_lifecycle_email(user_id: str) -> None:
     client = _get_anthropic_client()
 
     try:
-        welcome_data = generate_welcome_email(user.email, scheduling_prefs, email_style, client)
+        welcome_data = generate_welcome_email(
+            user.email, scheduling_prefs, email_style, client,
+            has_real_guides=has_real_guides,
+        )
         subject = welcome_data["subject"]
         welcome_body = welcome_data["body"]
     except Exception:
