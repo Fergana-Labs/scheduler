@@ -8,16 +8,17 @@ export default function OpenSource() {
           Open Source
         </p>
         <h2 className="font-[family-name:var(--font-playfair)] mt-4 text-3xl font-normal italic tracking-tight text-gray-900 sm:text-4xl lg:text-5xl">
-          Built in the open
+          Or, self-host
         </h2>
         <p className="mx-auto mt-6 max-w-xl text-base leading-relaxed text-gray-500 sm:text-lg">
-          Scheduled is fully open source. Read the code, run it yourself,
-          or contribute — your calendar data is yours.
+          Scheduled is fully open source. Run it on your own
+          infrastructure with a single Claude Code prompt — your calendar
+          data never leaves your servers.
         </p>
 
         <div className="mt-10 flex items-center justify-center gap-5">
           <a
-            href="https://github.com/Fergana-Labs/scheduler"
+            href="https://github.com/Fergana-Labs/scheduler#self-host"
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex min-h-[44px] w-full items-center justify-center gap-2.5 rounded-full border border-gray-900 px-7 py-3.5 text-base font-medium text-gray-900 transition-all hover:bg-gray-900 hover:text-white sm:w-auto"
@@ -34,7 +35,7 @@ export default function OpenSource() {
                 clipRule="evenodd"
               />
             </svg>
-            View on GitHub
+            Self-host with Claude Code
           </a>
         </div>
       </div>
