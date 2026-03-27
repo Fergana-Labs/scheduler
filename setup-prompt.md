@@ -141,6 +141,7 @@ gcloud run deploy scheduler \
   --memory=1Gi \
   --cpu=1 \
   --timeout=300 \
+  --no-cpu-throttling \
   --set-env-vars="\
 GCP_PROJECT_ID=$PROJECT_ID,\
 GCP_REGION=us-central1,\
