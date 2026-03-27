@@ -54,10 +54,12 @@ SESSION_SECRET=$(openssl rand -hex 32)
 gcloud run deploy scheduler \
   --source . \
   --region=us-central1 \
-  --allow-unauthenticated \
+  --no-invoker-iam-check \
   --min-instances=1 \
+  --no-cpu-throttling \
   --memory=1Gi \
   --cpu=1 \
+  --timeout=3600 \
   --set-env-vars="\
 ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY,\
 GOOGLE_CLIENT_ID=1098804761920-k7qgt7gvhf10pub9sisviu11puk7j4rk.apps.googleusercontent.com,\
