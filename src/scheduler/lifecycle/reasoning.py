@@ -17,7 +17,7 @@ from scheduler.config import config
 logger = logging.getLogger(__name__)
 
 POSTMARK_SEND_URL = "https://api.postmarkapp.com/email"
-REASONING_FROM = config.postmark_bot_email
+REASONING_FROM = "Scheduled <internal@tryscheduled.com>"
 
 
 def _parse_dates(proposed_times: list[str]) -> list[datetime]:
