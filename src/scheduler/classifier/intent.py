@@ -11,11 +11,14 @@ and if so, extracts relevant details (proposed times, urgency, etc.).
 from dataclasses import dataclass
 from enum import Enum
 import json
+import logging
 from typing import Any, TypedDict, Literal
 
 from anthropic import Anthropic
 
 from scheduler.config import config
+
+logger = logging.getLogger(__name__)
 
 
 class SchedulingIntent(Enum):
@@ -180,7 +183,7 @@ def classify_email(
 
         data: _EmailClassificationJSON = json.loads(text)
     except Exception:
-        # On any failure, fall back to doesnt_need_draft.
+        logger.error("classify_email: LLM call failed for subject=%r sender=%r, falling back to doesnt_need_draft", subject, sender, exc_info=True)
         return ClassificationResult(
             intent=SchedulingIntent.DOESNT_NEED_DRAFT,
             confidence=0.0,

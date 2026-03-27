@@ -1899,6 +1899,8 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
                 "message_id": message_id,
             })
 
+            logger.info("gmail_webhook: message %s classified as %s confidence=%.2f summary=%r", message_id, classification.intent.value, classification.confidence, classification.summary)
+
             if classification.intent == SchedulingIntent.DOESNT_NEED_DRAFT:
                 logger.info("gmail_webhook: message %s is not scheduling-related, skipping", message_id)
                 continue
