@@ -1359,6 +1359,7 @@ def _process_scheduling_link_submission(user_id: str, link_id: str) -> None:
                     subject=email_payload.subject if hasattr(email_payload, "subject") else link.event_summary,
                     classification=classification,
                     calendar=calendar,
+                    gmail=gmail,
                     invite_proposal=invite_proposal,
                 )
             except Exception:
@@ -1970,6 +1971,7 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
                             subject=email.subject,
                             classification=classification,
                             calendar=calendar,
+                            gmail=gmail,
                             invite_proposal=invite_proposal,
                         )
                     except Exception:

@@ -13,6 +13,7 @@ from dateutil import parser as dateutil_parser
 from scheduler.calendar.client import CalendarClient
 from scheduler.classifier.intent import ClassificationResult
 from scheduler.config import config
+from scheduler.gmail.client import GmailClient
 
 logger = logging.getLogger(__name__)
 
@@ -114,12 +115,22 @@ def send_reasoning_email(
     subject: str,
     classification: ClassificationResult,
     calendar: CalendarClient,
+    gmail: GmailClient,
     invite_proposal: dict | None = None,
 ) -> None:
     """Send a reasoning message to the user via Postmark."""
     if not config.postmark_server_token:
         logger.info("reasoning: no POSTMARK_SERVER_TOKEN, skipping")
         return
+
+    # Get Message-Id header of the last message in the thread for threading
+    message_id_header = ""
+    try:
+        thread = gmail.get_thread(thread_id)
+        if thread:
+            message_id_header = thread[-1].headers.get("message-id", "")
+    except Exception:
+        logger.warning("reasoning: failed to fetch thread %s for threading headers", thread_id)
 
     dates = _parse_dates(classification.proposed_times)
     day_start = min(dates).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -130,6 +141,18 @@ def send_reasoning_email(
 
     reply_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}"
 
+    payload: dict = {
+        "From": REASONING_FROM,
+        "To": user_email,
+        "Subject": reply_subject,
+        "TextBody": body,
+    }
+    if message_id_header:
+        payload["Headers"] = [
+            {"Name": "In-Reply-To", "Value": message_id_header},
+            {"Name": "References", "Value": message_id_header},
+        ]
+
     resp = httpx.post(
         POSTMARK_SEND_URL,
         headers={
@@ -137,12 +160,7 @@ def send_reasoning_email(
             "Content-Type": "application/json",
             "X-Postmark-Server-Token": config.postmark_server_token,
         },
-        json={
-            "From": REASONING_FROM,
-            "To": user_email,
-            "Subject": reply_subject,
-            "TextBody": body,
-        },
+        json=payload,
         timeout=15,
     )
     resp.raise_for_status()
