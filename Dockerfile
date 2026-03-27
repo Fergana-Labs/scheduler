@@ -2,9 +2,6 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Create data directory for SQLite volume mount
-RUN mkdir -p /data
-
 # Copy everything needed for install
 COPY pyproject.toml .
 COPY src/ src/
@@ -13,7 +10,7 @@ COPY src/ src/
 RUN pip install --no-cache-dir .
 
 ENV PYTHONPATH=/app/src
-ENV SQLITE_DB_PATH=/data/scheduler.db
+ENV SQLITE_DB_PATH=/tmp/scheduler.db
 
 EXPOSE 8080
 

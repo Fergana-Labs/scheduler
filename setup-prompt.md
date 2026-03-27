@@ -2,7 +2,7 @@
 
 You are setting up Scheduled, an AI scheduling assistant that lives in Gmail. It reads incoming scheduling emails, checks the user's calendar, and drafts replies with proposed meeting times.
 
-This setup deploys to Railway. Run all bash commands without asking for permission. The user has already consented to this setup by pasting this prompt.
+This setup deploys to Google Cloud Run. Run all bash commands without asking for permission. The user has already consented to this setup by pasting this prompt.
 
 ## Before you start
 
@@ -15,66 +15,57 @@ echo "Key received."
 
 ---
 
-## Phase 1: Install & Login
+## Phase 1: Install & Authenticate
 
 ```bash
-which railway || brew install railway 2>/dev/null || npm i -g @railway/cli
-railway login
+which gcloud || brew install google-cloud-sdk
+gcloud auth login
+ACCOUNT_EMAIL=$(gcloud config get-value account)
+echo "Authenticated as: $ACCOUNT_EMAIL"
 ```
 
 ---
 
-## Phase 2: Deploy
+## Phase 2: Create Project & Deploy
 
 ```bash
-railway init --name scheduled
-railway up --detach
+PROJECT_ID="scheduled-$(openssl rand -hex 4)"
+gcloud projects create $PROJECT_ID --name="Scheduled"
+gcloud config set project $PROJECT_ID
 
-# Wait for deploy to complete
-echo "Waiting for deployment..."
-sleep 30
+# Link billing
+BILLING_ACCOUNT=$(gcloud billing accounts list --filter="open=true" --format="value(ACCOUNT_ID)" --limit=1)
+if [ -z "$BILLING_ACCOUNT" ]; then
+  echo "No billing account found. Create one at: https://console.cloud.google.com/billing/create"
+  echo "Then re-run this setup."
+  exit 1
+fi
+gcloud billing projects link $PROJECT_ID --billing-account=$BILLING_ACCOUNT
 
-# Get the public URL
-railway domain
-RAILWAY_URL=$(railway domain 2>/dev/null | grep -o 'https://[^ ]*' | head -1)
-echo "Deployed to: $RAILWAY_URL"
-```
+# Enable APIs
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
 
-Set environment variables:
+# Clone and deploy
+git clone https://github.com/Fergana-Labs/scheduled.git /tmp/scheduled-setup
+cd /tmp/scheduled-setup && git checkout self-hosted
 
-```bash
-SETUP_TOKEN=$(openssl rand -hex 16)
 SESSION_SECRET=$(openssl rand -hex 32)
 
-# These are the Scheduled app's OAuth client credentials (Desktop app type).
-# They identify the app, not grant access — every installed app ships these.
-GOOGLE_CLIENT_ID="1098804761920-k7qgt7gvhf10pub9sisviu11puk7j4rk.apps.googleusercontent.com"
-GOOGLE_CLIENT_SECRET="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"
+gcloud run deploy scheduler \
+  --source . \
+  --region=us-central1 \
+  --allow-unauthenticated \
+  --min-instances=1 \
+  --memory=1Gi \
+  --cpu=1 \
+  --set-env-vars="\
+ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY,\
+GOOGLE_CLIENT_ID=1098804761920-k7qgt7gvhf10pub9sisviu11puk7j4rk.apps.googleusercontent.com,\
+GOOGLE_CLIENT_SECRET=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,\
+SESSION_SECRET=$SESSION_SECRET"
 
-railway variables set \
-  ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
-  GOOGLE_CLIENT_ID="$GOOGLE_CLIENT_ID" \
-  GOOGLE_CLIENT_SECRET="$GOOGLE_CLIENT_SECRET" \
-  SESSION_SECRET="$SESSION_SECRET" \
-  SETUP_TOKEN="$SETUP_TOKEN" \
-  CONTROL_PLANE_PUBLIC_URL="$RAILWAY_URL" \
-  WEB_APP_URL="$RAILWAY_URL" \
-  GOOGLE_REDIRECT_URI="$RAILWAY_URL" \
-  GOOGLE_WEB_REDIRECT_URI="$RAILWAY_URL"
-```
-
-Create a persistent volume for the database:
-
-```bash
-railway volume create --mount /data
-```
-
-Wait for the redeploy after env var changes:
-
-```bash
-echo "Waiting for redeploy..."
-sleep 30
-curl -sf "$RAILWAY_URL/" > /dev/null && echo "App is live!" || echo "Still deploying, waiting..." && sleep 30
+CLOUD_RUN_URL=$(gcloud run services describe scheduler --region=us-central1 --format='value(status.url)')
+echo "Deployed to: $CLOUD_RUN_URL"
 ```
 
 ---
@@ -88,6 +79,8 @@ lsof -ti:8080 | xargs kill -9 2>/dev/null || true
 sleep 1
 
 export OAUTHLIB_RELAX_TOKEN_SCOPE=1
+export GOOGLE_CLIENT_ID="1098804761920-k7qgt7gvhf10pub9sisviu11puk7j4rk.apps.googleusercontent.com"
+export GOOGLE_CLIENT_SECRET="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"
 
 python3 << 'OAUTH_SCRIPT'
 import json, os, sys, socket
@@ -109,8 +102,8 @@ SCOPES = [
 
 client_config = {
     "installed": {
-        "client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
-        "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET", ""),
+        "client_id": os.environ["GOOGLE_CLIENT_ID"],
+        "client_secret": os.environ["GOOGLE_CLIENT_SECRET"],
         "redirect_uris": ["http://localhost:8080"],
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
         "token_uri": "https://oauth2.googleapis.com/token",
@@ -132,14 +125,12 @@ if not creds.refresh_token:
     print("ERROR: No refresh token received. Try again.")
     sys.exit(1)
 
-# Get user email
 import googleapiclient.discovery
 service = googleapiclient.discovery.build("oauth2", "v2", credentials=creds)
 user_info = service.userinfo().get().execute()
 email = user_info["email"]
 print(f"Authorized: {email}")
 
-# Save for next step
 with open("/tmp/scheduled_oauth.json", "w") as f:
     json.dump({"email": email, "refresh_token": creds.refresh_token}, f)
 
@@ -149,22 +140,23 @@ OAUTH_SCRIPT
 
 ---
 
-## Phase 4: Initialize
-
-Send the OAuth token to the running app:
+## Phase 4: Set User Credentials
 
 ```bash
 OAUTH_DATA=$(cat /tmp/scheduled_oauth.json)
-EMAIL=$(echo "$OAUTH_DATA" | python3 -c "import sys,json; print(json.load(sys.stdin)['email'])")
+USER_EMAIL=$(echo "$OAUTH_DATA" | python3 -c "import sys,json; print(json.load(sys.stdin)['email'])")
 REFRESH_TOKEN=$(echo "$OAUTH_DATA" | python3 -c "import sys,json; print(json.load(sys.stdin)['refresh_token'])")
 
-curl -sf -X POST "$RAILWAY_URL/api/setup/init" \
-  -H "Authorization: Bearer $SETUP_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{\"email\": \"$EMAIL\", \"refresh_token\": \"$REFRESH_TOKEN\"}"
+gcloud run services update scheduler --region=us-central1 \
+  --update-env-vars="\
+USER_EMAIL=$USER_EMAIL,\
+GOOGLE_REFRESH_TOKEN=$REFRESH_TOKEN,\
+CONTROL_PLANE_PUBLIC_URL=$CLOUD_RUN_URL,\
+WEB_APP_URL=$CLOUD_RUN_URL"
 
 rm -f /tmp/scheduled_oauth.json
-echo "User initialized!"
+echo "Credentials set — new revision deploying..."
+sleep 15
 ```
 
 ---
@@ -173,15 +165,18 @@ echo "User initialized!"
 
 ```bash
 echo "Checking deployment..."
-curl -sf "$RAILWAY_URL/" | head -c 200
+curl -sf "$CLOUD_RUN_URL/" | head -c 200
 echo ""
 
-railway logs --limit 20 2>/dev/null || true
+gcloud run services logs read scheduler --region=us-central1 --limit=15 2>/dev/null || true
 
 echo ""
 echo "==================================="
 echo "  Scheduled is set up!"
 echo "==================================="
+echo ""
+echo "  Project:  $PROJECT_ID"
+echo "  URL:      $CLOUD_RUN_URL"
 echo ""
 echo "  How it works:"
 echo "  1. Someone emails you to schedule a meeting"
@@ -189,6 +184,6 @@ echo "  2. Scheduled reads the email and checks your calendar"
 echo "  3. A draft reply appears in your Gmail with proposed times"
 echo "  4. You review and send (or edit first)"
 echo ""
-echo "  To check logs:  railway logs"
+echo "  To check logs:  gcloud run services logs read scheduler --region=us-central1"
 echo ""
 ```

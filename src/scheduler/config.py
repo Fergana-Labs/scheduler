@@ -29,8 +29,12 @@ class Config:
     # Anthropic
     anthropic_api_key: str = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY", ""))
 
+    # Self-hosted user (reconstructed from env vars on cold start)
+    user_email: str = field(default_factory=lambda: os.environ.get("USER_EMAIL", ""))
+    google_refresh_token: str = field(default_factory=lambda: os.environ.get("GOOGLE_REFRESH_TOKEN", ""))
+
     # Database
-    sqlite_db_path: str = field(default_factory=lambda: os.environ.get("SQLITE_DB_PATH", "/data/scheduler.db"))
+    sqlite_db_path: str = field(default_factory=lambda: os.environ.get("SQLITE_DB_PATH", "/tmp/scheduler.db"))
 
     # Scheduling
     scheduled_calendar_name: str = field(
