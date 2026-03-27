@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Maximize2, X, Pencil, Eye, RefreshCw } from 'lucide-react';
+import { Maximize2, X, Pencil, Eye, RefreshCw, Info } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { api } from '@/lib/api';
 import { track } from '@/lib/analytics';
@@ -11,6 +11,7 @@ interface GuideEditorProps {
   label: string;
   initialContent: string;
   updatedAt: string;
+  isDefault?: boolean;
 }
 
 const mdComponents = {
@@ -41,7 +42,7 @@ const mdComponents = {
 };
 
 
-export default function GuideEditor({ name, label, initialContent, updatedAt }: GuideEditorProps) {
+export default function GuideEditor({ name, label, initialContent, updatedAt, isDefault }: GuideEditorProps) {
   const [content, setContent] = useState(initialContent);
   const [draft, setDraft] = useState(initialContent);
   const [modalOpen, setModalOpen] = useState(false);
@@ -49,6 +50,7 @@ export default function GuideEditor({ name, label, initialContent, updatedAt }: 
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [regenerating, setRegenerating] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState(updatedAt);
+  const [showingDefault, setShowingDefault] = useState(isDefault ?? false);
 
   const lastSavedRef = useRef(initialContent);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -152,15 +154,16 @@ export default function GuideEditor({ name, label, initialContent, updatedAt }: 
       }
       try {
         const data = await api<{
-          guides: { name: string; content: string; updated_at: string }[];
+          guides: { name: string; content: string; updated_at: string; is_default?: boolean }[];
         }>('/web/api/v1/settings');
-        const guide = data.guides.find((g) => g.name === name);
+        const guide = data.guides.find((g: { name: string }) => g.name === name);
         if (guide && guide.updated_at !== lastUpdatedAt) {
           setContent(guide.content);
           setDraft(guide.content);
           lastSavedRef.current = guide.content;
           draftRef.current = guide.content;
           setLastUpdatedAt(guide.updated_at);
+          setShowingDefault(guide.is_default ?? false);
           setRegenerating(false);
           if (pollRef.current) clearInterval(pollRef.current);
           pollRef.current = null;
@@ -186,6 +189,14 @@ export default function GuideEditor({ name, label, initialContent, updatedAt }: 
           <p className="text-sm font-medium text-gray-900">{label}</p>
           <Maximize2 className="h-3.5 w-3.5 text-gray-400 opacity-0 transition-opacity group-hover:opacity-100" />
         </div>
+        {showingDefault && (
+          <div className="mb-2 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+            <p className="text-xs text-amber-800">
+              Using generic defaults — click to regenerate from your emails or edit directly.
+            </p>
+          </div>
+        )}
         <div className="relative overflow-hidden" style={{ maxHeight: '5.5rem' }}>
           <ReactMarkdown components={mdComponents}>{content}</ReactMarkdown>
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-[#FAFAFA]" />
@@ -243,6 +254,17 @@ export default function GuideEditor({ name, label, initialContent, updatedAt }: 
 
             {/* Body */}
             <div className="relative flex-1 overflow-y-auto px-6 py-4">
+              {showingDefault && !regenerating && (
+                <div className="mb-4 flex items-start gap-2.5 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3">
+                  <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                  <div className="text-sm text-amber-800">
+                    <p className="font-medium">Using generic defaults</p>
+                    <p className="mt-0.5 text-xs text-amber-700">
+                      We couldn&apos;t learn your style from your emails yet. Try <button onClick={handleRegenerate} className="underline font-medium hover:text-amber-900">regenerating</button> once you have more scheduling history, or edit the defaults directly to match your preferences.
+                    </p>
+                  </div>
+                </div>
+              )}
               {regenerating && (
                 <div className="absolute inset-0 z-10 flex items-center justify-center rounded-b-2xl bg-white/80">
                   <RefreshCw className="h-6 w-6 animate-spin text-gray-400" />

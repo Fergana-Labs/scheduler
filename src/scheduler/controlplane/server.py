@@ -2207,12 +2207,44 @@ def web_onboarding_status(
 @app.get("/web/api/v1/settings")
 def web_settings_get(user: dict = Depends(get_authenticated_user)):
     from scheduler.db import get_guides_for_user, get_user_by_id
+    from scheduler.guides.defaults import (
+        DEFAULT_EMAIL_STYLE,
+        DEFAULT_SCHEDULING_PREFERENCES,
+        is_default_guide,
+    )
 
     db_user = get_user_by_id(user["user_id"])
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
 
     guides = get_guides_for_user(user["user_id"])
+    guide_names = {g.name for g in guides}
+
+    guides_response = [
+        {
+            "name": g.name,
+            "content": g.content,
+            "updated_at": g.updated_at.isoformat(),
+            "is_default": is_default_guide(g.content),
+        }
+        for g in guides
+    ]
+
+    # Inject defaults for any missing guides so the UI always shows both
+    if "scheduling_preferences" not in guide_names:
+        guides_response.append({
+            "name": "scheduling_preferences",
+            "content": DEFAULT_SCHEDULING_PREFERENCES,
+            "updated_at": "",
+            "is_default": True,
+        })
+    if "email_style" not in guide_names:
+        guides_response.append({
+            "name": "email_style",
+            "content": DEFAULT_EMAIL_STYLE,
+            "updated_at": "",
+            "is_default": True,
+        })
 
     return {
         "system_enabled": db_user.system_enabled,
@@ -2223,10 +2255,7 @@ def web_settings_get(user: dict = Depends(get_authenticated_user)):
         "draft_auto_delete_enabled": db_user.draft_auto_delete_enabled,
         "scheduled_calendar_id": db_user.scheduled_calendar_id,
         "calendar_ids": db_user.calendar_ids or [],
-        "guides": [
-            {"name": g.name, "content": g.content, "updated_at": g.updated_at.isoformat()}
-            for g in guides
-        ],
+        "guides": guides_response,
     }
 
 

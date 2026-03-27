@@ -14,6 +14,7 @@ from scheduler.config import config
 from scheduler.db import get_user_by_id
 from scheduler.gmail.client import GmailClient
 from scheduler.guides import load_guide
+from scheduler.guides.defaults import DEFAULT_EMAIL_STYLE, DEFAULT_SCHEDULING_PREFERENCES
 
 logger = logging.getLogger(__name__)
 
@@ -155,14 +156,17 @@ def send_lifecycle_email(user_id: str) -> None:
     scheduling_prefs = load_guide("scheduling_preferences", user_id)
     email_style = load_guide("email_style", user_id)
 
-    if not scheduling_prefs or not email_style:
-        logger.warning(
-            "lifecycle: missing guides for user=%s (prefs=%s, style=%s), skipping",
-            user_id,
-            bool(scheduling_prefs),
-            bool(email_style),
+    if not scheduling_prefs:
+        logger.info(
+            "lifecycle: no scheduling_preferences for user=%s, using default", user_id
         )
-        return
+        scheduling_prefs = DEFAULT_SCHEDULING_PREFERENCES
+
+    if not email_style:
+        logger.info(
+            "lifecycle: no email_style guide for user=%s, using default", user_id
+        )
+        email_style = DEFAULT_EMAIL_STYLE
 
     # (b) Generate welcome email via Anthropic
     client = _get_anthropic_client()

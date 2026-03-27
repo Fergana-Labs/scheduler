@@ -373,21 +373,21 @@ class DraftComposer:
             "for availability, and compose a natural-sounding draft reply."
         ]
 
+        from scheduler.guides.defaults import DEFAULT_EMAIL_STYLE, DEFAULT_SCHEDULING_PREFERENCES
+
         scheduling_prefs = self._backend.load_guide("scheduling_preferences")
-        if scheduling_prefs:
-            parts.append(
-                "\n\n## Scheduling Preferences\n"
-                "Use these observed patterns when proposing times:\n\n"
-                + scheduling_prefs
-            )
+        parts.append(
+            "\n\n## Scheduling Preferences\n"
+            "Use these observed patterns when proposing times:\n\n"
+            + (scheduling_prefs or DEFAULT_SCHEDULING_PREFERENCES)
+        )
 
         email_style = self._backend.load_guide("email_style")
-        if email_style:
-            parts.append(
-                "\n\n## Email Style Guide\n"
-                "Match this writing style in the draft:\n\n"
-                + email_style
-            )
+        parts.append(
+            "\n\n## Email Style Guide\n"
+            "Match this writing style in the draft:\n\n"
+            + (email_style or DEFAULT_EMAIL_STYLE)
+        )
 
         if self._user_email:
             parts.append(

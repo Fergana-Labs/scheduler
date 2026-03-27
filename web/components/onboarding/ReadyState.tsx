@@ -15,6 +15,7 @@ interface Guide {
   name: string;
   content: string;
   updated_at: string;
+  is_default?: boolean;
 }
 
 interface ReadyStateProps {
@@ -57,6 +58,7 @@ export default function ReadyState({
           label="Scheduling Preferences"
           initialContent={schedulingGuide.content}
           updatedAt={schedulingGuide.updated_at}
+          isDefault={schedulingGuide.is_default}
         />
       )}
 
@@ -66,6 +68,7 @@ export default function ReadyState({
           label="Email Style"
           initialContent={emailGuide.content}
           updatedAt={emailGuide.updated_at}
+          isDefault={emailGuide.is_default}
         />
       )}
 
