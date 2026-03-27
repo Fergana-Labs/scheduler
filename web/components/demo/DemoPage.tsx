@@ -59,10 +59,10 @@ export default function DemoPage() {
         }, 400);
       }, 1200);
     } else {
-      // Not complete yet — let user continue the conversation
+      // Not complete yet — show "sent", then let user continue
       setTimeout(() => {
         setDraftSent(false); // Reset so next round works
-        setSidePanelStep('idle');
+        // Keep showing 'sent' state — it'll reset to 'received' when user sends next message
       }, 600);
     }
   }, [latestResponse]);
