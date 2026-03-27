@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { Inbox, Calendar, FileEdit, Mail, Send, CheckCircle, Loader2, CalendarCheck, Zap } from 'lucide-react';
 
 export type SidePanelStep =
@@ -19,39 +19,76 @@ interface Props {
   autopilot?: boolean;
 }
 
-interface StepInfo {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
-  active: boolean;
-  complete: boolean;
+interface StepEntry {
+  step: SidePanelStep;
+  round: number;
+  key: string;
 }
 
-const STEP_ORDER: SidePanelStep[] = [
-  'received',
-  'checking-calendar',
-  'drafting',
-  'reasoning',
-  'draft-ready',
-  'sent',
-  'complete',
-];
+const STEP_META: Record<SidePanelStep, { icon: React.ReactNode; title: string; description: string; autopilotDesc?: string }> = {
+  idle: { icon: null, title: '', description: '' },
+  received: {
+    icon: <Inbox className="h-4 w-4" />,
+    title: 'Email received',
+    description: 'Scheduled detected a new scheduling email.',
+  },
+  'checking-calendar': {
+    icon: <Calendar className="h-4 w-4" />,
+    title: 'Checking calendar',
+    description: 'Reading Sam\'s calendar for available slots...',
+  },
+  drafting: {
+    icon: <FileEdit className="h-4 w-4" />,
+    title: 'Drafting reply',
+    description: 'Writing a reply as Sam.',
+  },
+  reasoning: {
+    icon: <Mail className="h-4 w-4" />,
+    title: 'Reasoning email sent',
+    description: 'Sam gets an internal email explaining the draft.',
+  },
+  'draft-ready': {
+    icon: <Send className="h-4 w-4" />,
+    title: 'Draft ready',
+    description: 'Waiting for Sam to hit send.',
+    autopilotDesc: 'Auto-sending...',
+  },
+  sent: {
+    icon: <CheckCircle className="h-4 w-4" />,
+    title: 'Reply sent',
+    description: 'Sam sent the reply.',
+  },
+  complete: {
+    icon: <CalendarCheck className="h-4 w-4" />,
+    title: 'Invite sent',
+    description: 'Calendar invite created for both parties.',
+  },
+};
+
+const SPINNER_STEPS: SidePanelStep[] = ['received', 'checking-calendar', 'drafting', 'draft-ready'];
 
 export default function SidePanel({ step, onSendDraft, autopilot }: Props) {
-  const [visibleSteps, setVisibleSteps] = useState<SidePanelStep[]>([]);
+  const [entries, setEntries] = useState<StepEntry[]>([]);
+  const roundRef = useRef(0);
 
   useEffect(() => {
-    if (step === 'idle') {
-      setVisibleSteps([]);
-      return;
+    if (step === 'idle') return;
+
+    // New round starts when 'received' fires
+    if (step === 'received') {
+      roundRef.current += 1;
     }
-    const idx = STEP_ORDER.indexOf(step);
-    if (idx >= 0) {
-      setVisibleSteps(STEP_ORDER.slice(0, idx + 1));
-    }
+
+    const round = roundRef.current;
+    const key = `${step}-${round}`;
+
+    setEntries((prev) => {
+      if (prev.some((e) => e.key === key)) return prev;
+      return [...prev, { step, round, key }];
+    });
   }, [step]);
 
-  if (step === 'idle') {
+  if (entries.length === 0) {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="text-center">
@@ -68,58 +105,7 @@ export default function SidePanel({ step, onSendDraft, autopilot }: Props) {
     );
   }
 
-  const steps: Record<SidePanelStep, StepInfo> = {
-    idle: { icon: null, title: '', description: '', active: false, complete: false },
-    received: {
-      icon: <Inbox className="h-4 w-4" />,
-      title: 'Email received',
-      description: 'Scheduled detected a new scheduling email.',
-      active: step === 'received',
-      complete: STEP_ORDER.indexOf(step) > 0,
-    },
-    'checking-calendar': {
-      icon: <Calendar className="h-4 w-4" />,
-      title: 'Checking calendar',
-      description: 'Reading Sam\'s calendar for available slots...',
-      active: step === 'checking-calendar',
-      complete: STEP_ORDER.indexOf(step) > 1,
-    },
-    drafting: {
-      icon: <FileEdit className="h-4 w-4" />,
-      title: 'Drafting reply',
-      description: 'Writing a reply as Sam.',
-      active: step === 'drafting',
-      complete: STEP_ORDER.indexOf(step) > 2,
-    },
-    reasoning: {
-      icon: <Mail className="h-4 w-4" />,
-      title: 'Reasoning email sent',
-      description: 'Sam gets an internal email explaining the draft.',
-      active: step === 'reasoning',
-      complete: STEP_ORDER.indexOf(step) > 3,
-    },
-    'draft-ready': {
-      icon: <Send className="h-4 w-4" />,
-      title: 'Draft ready',
-      description: autopilot ? 'Auto-sending...' : 'Waiting for Sam to hit send.',
-      active: step === 'draft-ready',
-      complete: STEP_ORDER.indexOf(step) > 4,
-    },
-    sent: {
-      icon: <CheckCircle className="h-4 w-4" />,
-      title: 'Reply sent',
-      description: 'Sam sent the reply.',
-      active: step === 'sent',
-      complete: STEP_ORDER.indexOf(step) > 5,
-    },
-    complete: {
-      icon: <CalendarCheck className="h-4 w-4" />,
-      title: 'Invite sent',
-      description: 'Calendar invite created for both parties.',
-      active: step === 'complete',
-      complete: false,
-    },
-  };
+  const lastEntry = entries[entries.length - 1];
 
   return (
     <div className="space-y-5">
@@ -127,27 +113,37 @@ export default function SidePanel({ step, onSendDraft, autopilot }: Props) {
         What Scheduled is doing
       </div>
 
-      {/* Step timeline */}
+      {/* Full accumulated timeline */}
       <div className="space-y-1">
-        {visibleSteps.map((s, i) => {
-          const info = steps[s];
-          const isLast = i === visibleSteps.length - 1;
+        {entries.map((entry, i) => {
+          const meta = STEP_META[entry.step];
+          if (!meta.icon) return null;
+
+          const isLast = i === entries.length - 1;
+          const isActive = isLast && step === entry.step;
+          const isComplete = !isLast;
+          const showSpinner = isActive && SPINNER_STEPS.includes(entry.step);
+
+          const description = autopilot && entry.step === 'draft-ready'
+            ? (meta.autopilotDesc || meta.description)
+            : meta.description;
+
           return (
-            <div key={s} className="flex gap-3">
+            <div key={entry.key} className="flex gap-3">
               <div className="flex flex-col items-center">
                 <div
                   className={`flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full transition-colors ${
-                    info.active
+                    isActive
                       ? 'bg-[#43614a] text-white'
-                      : info.complete
+                      : isComplete
                         ? 'bg-[#43614a]/15 text-[#43614a]'
                         : 'bg-gray-100 text-gray-400'
                   }`}
                 >
-                  {info.active && !info.complete && s !== 'complete' && s !== 'sent' ? (
+                  {showSpinner ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : (
-                    info.icon
+                    meta.icon
                   )}
                 </div>
                 {!isLast && <div className="my-1 h-5 w-px bg-gray-200" />}
@@ -155,13 +151,13 @@ export default function SidePanel({ step, onSendDraft, autopilot }: Props) {
               <div className="min-w-0 pb-2 pt-0.5">
                 <div
                   className={`text-sm font-medium ${
-                    info.active ? 'text-gray-900' : info.complete ? 'text-gray-600' : 'text-gray-400'
+                    isActive ? 'text-gray-900' : isComplete ? 'text-gray-600' : 'text-gray-400'
                   }`}
                 >
-                  {info.title}
+                  {meta.title}
                 </div>
                 <div className="mt-0.5 text-xs leading-relaxed text-gray-400">
-                  {info.description}
+                  {description}
                 </div>
               </div>
             </div>

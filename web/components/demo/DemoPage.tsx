@@ -58,6 +58,11 @@ export default function DemoPage() {
     ) => {
       setSidePanelStep(step);
 
+      // Autopilot path sets complete via onStep
+      if (step === 'complete') {
+        setIsComplete(true);
+      }
+
       // On mobile, scroll side panel into view
       if (step !== 'idle' && typeof window !== 'undefined' && window.innerWidth < 1024) {
         setTimeout(() => {
