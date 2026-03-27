@@ -45,6 +45,10 @@ gcloud billing projects link $PROJECT_ID --billing-account=$BILLING_ACCOUNT
 # Enable APIs
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
 
+# Create a GCS bucket for persistent SQLite storage
+GCS_BUCKET="scheduled-${PROJECT_ID}-data"
+gcloud storage buckets create "gs://${GCS_BUCKET}" --location=us-central1 --quiet 2>/dev/null || true
+
 # Clone and deploy
 git clone https://github.com/Fergana-Labs/scheduled.git /tmp/scheduled-setup
 cd /tmp/scheduled-setup && git checkout self-hosted
@@ -64,7 +68,8 @@ gcloud run deploy scheduler \
 ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY,\
 GOOGLE_CLIENT_ID=1098804761920-k7qgt7gvhf10pub9sisviu11puk7j4rk.apps.googleusercontent.com,\
 GOOGLE_CLIENT_SECRET=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,\
-SESSION_SECRET=$SESSION_SECRET"
+SESSION_SECRET=$SESSION_SECRET,\
+GCS_BUCKET=$GCS_BUCKET"
 
 CLOUD_RUN_URL=$(gcloud run services describe scheduler --region=us-central1 --format='value(status.url)')
 echo "Deployed to: $CLOUD_RUN_URL"

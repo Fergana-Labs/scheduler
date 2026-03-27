@@ -933,6 +933,7 @@ def _initialize_gmail_history(user_id: str) -> None:
         logger.exception("sign-in: failed to initialize gmail history for user=%s", user_id)
 
 
+
 def _run_onboarding_all(user_id: str) -> None:
     """Run backfill + both guide-writer agents for a user, then initialize Gmail polling."""
     import anyio

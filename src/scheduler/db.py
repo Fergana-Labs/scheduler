@@ -1,13 +1,75 @@
-"""Database client – SQLite backend."""
+"""Database client – SQLite backend with optional GCS persistence."""
 
 import json
+import logging
 import sqlite3
+import threading
+import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from pathlib import Path
 
+import google.auth
+import google.auth.transport.requests
+
 from scheduler.config import config
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# GCS sync — download on startup, upload after writes
+# ---------------------------------------------------------------------------
+
+_GCS_BLOB = "scheduler.db"
+_upload_lock = threading.Lock()
+
+
+def _gcs_token() -> str:
+    credentials, _ = google.auth.default()
+    credentials.refresh(google.auth.transport.requests.Request())
+    return credentials.token
+
+
+def _gcs_download() -> None:
+    """Download the SQLite DB from GCS if it exists."""
+    if not config.gcs_bucket:
+        return
+    try:
+        url = f"https://storage.googleapis.com/storage/v1/b/{config.gcs_bucket}/o/{_GCS_BLOB}?alt=media"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {_gcs_token()}"})
+        data = urllib.request.urlopen(req).read()
+        Path(config.sqlite_db_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(config.sqlite_db_path).write_bytes(data)
+        logger.info("gcs_sync: downloaded %d bytes from gs://%s/%s", len(data), config.gcs_bucket, _GCS_BLOB)
+    except Exception as e:
+        if "404" in str(e):
+            logger.info("gcs_sync: no existing DB in GCS, starting fresh")
+        else:
+            logger.warning("gcs_sync: download failed: %s", e)
+
+
+def _do_gcs_upload() -> None:
+    with _upload_lock:
+        try:
+            data = Path(config.sqlite_db_path).read_bytes()
+            url = f"https://storage.googleapis.com/upload/storage/v1/b/{config.gcs_bucket}/o?uploadType=media&name={_GCS_BLOB}"
+            req = urllib.request.Request(url, data=data, method="POST", headers={
+                "Authorization": f"Bearer {_gcs_token()}",
+                "Content-Type": "application/octet-stream",
+            })
+            urllib.request.urlopen(req)
+            logger.debug("gcs_sync: uploaded %d bytes to gs://%s/%s", len(data), config.gcs_bucket, _GCS_BLOB)
+        except Exception:
+            logger.warning("gcs_sync: upload failed", exc_info=True)
+
+
+def _gcs_upload() -> None:
+    """Upload the SQLite DB to GCS in background."""
+    if not config.gcs_bucket:
+        return
+    threading.Thread(target=_do_gcs_upload, daemon=True).start()
+
 
 # ---------------------------------------------------------------------------
 # SQLite connection (lazy singleton)
@@ -19,6 +81,7 @@ _conn: sqlite3.Connection | None = None
 def _get_db() -> sqlite3.Connection:
     global _conn
     if _conn is None:
+        _gcs_download()
         Path(config.sqlite_db_path).parent.mkdir(parents=True, exist_ok=True)
         _conn = sqlite3.connect(config.sqlite_db_path, check_same_thread=False)
         _conn.row_factory = sqlite3.Row
@@ -136,6 +199,12 @@ class PendingInviteRow:
 # ---------------------------------------------------------------------------
 
 
+def _commit(db: sqlite3.Connection) -> None:
+    """Commit and sync to GCS in background."""
+    db.commit()
+    _gcs_upload()
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -245,7 +314,7 @@ def upsert_user(
             f"UPDATE users SET {set_clause} WHERE email = ?",
             (*updates.values(), email),
         )
-        db.commit()
+        _commit(db)
         return get_user_by_email(email), False
 
     user_id = str(uuid.uuid4())
@@ -260,7 +329,7 @@ def upsert_user(
          _ts(access_token_expires_at), scheduled_calendar_id, None,
          None, None, _ts(now), _ts(now)),
     )
-    db.commit()
+    _commit(db)
     return get_user_by_email(email), True
 
 
@@ -273,7 +342,7 @@ def _update_user_field(user_id: str, **fields) -> None:
         f"UPDATE users SET {set_clause} WHERE id = ?",
         (*fields.values(), user_id),
     )
-    db.commit()
+    _commit(db)
 
 
 def update_user_tokens(
@@ -350,7 +419,7 @@ def delete_user(user_id: str) -> None:
     db.execute("DELETE FROM pending_invites WHERE user_id = ?", (user_id,))
     db.execute("DELETE FROM processed_messages WHERE user_id = ?", (user_id,))
     db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-    db.commit()
+    _commit(db)
 
 
 def disconnect_user(user_id: str) -> None:
@@ -382,7 +451,7 @@ def upsert_guide(user_id: str, name: str, content: str) -> GuideRow:
            ON CONFLICT(user_id, name) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at""",
         (str(uuid.uuid4()), user_id, name, content, now, now),
     )
-    db.commit()
+    _commit(db)
     row = db.execute(
         "SELECT * FROM guides WHERE user_id = ? AND name = ?", (user_id, name)
     ).fetchone()
@@ -418,7 +487,7 @@ def try_claim_message(user_id: str, message_id: str) -> bool:
             "INSERT INTO processed_messages (user_id, message_id, processed_at) VALUES (?, ?, ?)",
             (user_id, message_id, _ts(_now())),
         )
-        db.commit()
+        _commit(db)
         return True
     except sqlite3.IntegrityError:
         return False
@@ -431,7 +500,7 @@ def cleanup_processed_messages(days: int = 7) -> int:
     cursor = db.execute(
         "DELETE FROM processed_messages WHERE processed_at < ?", (cutoff,)
     )
-    db.commit()
+    _commit(db)
     return cursor.rowcount
 
 
@@ -467,7 +536,7 @@ def create_pending_invite(
          event_summary, _ts(event_start), _ts(event_end), int(add_google_meet),
          location, now),
     )
-    db.commit()
+    _commit(db)
     row = db.execute("SELECT * FROM pending_invites WHERE id = ?", (invite_id,)).fetchone()
     return _row_to_invite(row)
 
@@ -513,10 +582,10 @@ def update_pending_invite(
         f"UPDATE pending_invites SET {set_clause} WHERE id = ?",
         (*updates.values(), invite_id),
     )
-    _get_db().commit()
+    _commit(_get_db())
 
 
 def delete_pending_invite(invite_id: str) -> None:
     """Delete a pending invite by its UUID."""
     _get_db().execute("DELETE FROM pending_invites WHERE id = ?", (invite_id,))
-    _get_db().commit()
+    _commit(_get_db())

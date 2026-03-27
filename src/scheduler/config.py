@@ -35,6 +35,7 @@ class Config:
 
     # Database
     sqlite_db_path: str = field(default_factory=lambda: os.environ.get("SQLITE_DB_PATH", "/tmp/scheduler.db"))
+    gcs_bucket: str = field(default_factory=lambda: os.environ.get("GCS_BUCKET", ""))
 
     # Scheduling
     scheduled_calendar_name: str = field(
