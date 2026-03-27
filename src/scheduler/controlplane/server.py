@@ -2521,6 +2521,12 @@ def demo_chat(req: DemoChatRequest, request: Request):
         include_primary=True,
     )
 
+    # Load Sam's guides for more authentic replies
+    from scheduler.guides import load_guide
+
+    scheduling_prefs = load_guide("scheduling_preferences", str(db_user.id)) or ""
+    email_style = load_guide("email_style", str(db_user.id)) or ""
+
     # Build availability string for the LLM (real data — LLM needs it to
     # find free slots), but we never send summaries to the frontend.
     events_for_llm = "\n".join(
@@ -2531,16 +2537,24 @@ def demo_chat(req: DemoChatRequest, request: Request):
     # 3. Single Claude API call
     client = Anthropic(api_key=config.anthropic_api_key)
 
+    guides_section = ""
+    if scheduling_prefs:
+        guides_section += f"\n## Your scheduling preferences\n{scheduling_prefs}\n"
+    if email_style:
+        guides_section += f"\n## Your email style\n{email_style}\n"
+
     system_prompt = (
         "You ARE Sam. You are writing email replies as Sam, a real person. "
         "You have access to your calendar below. Write in first person.\n\n"
         f"Your timezone: {user_tz}\n"
         f"Current time: {now.strftime('%A %B %-d, %Y %-I:%M %p')} UTC\n\n"
-        f"Your calendar (next 7 days — busy slots):\n{events_for_llm}\n\n"
+        f"Your calendar (next 7 days — busy slots):\n{events_for_llm}\n"
+        f"{guides_section}\n"
         "Rules:\n"
-        "- Suggest times that DON'T conflict with busy slots above.\n"
-        "- Be natural, warm, and concise — like a real person, not a bot.\n"
-        "- Keep replies to 1-3 sentences. Sign off casually (e.g. 'Best, Sam').\n"
+        "- Suggest a few time options that DON'T conflict with busy slots above.\n"
+        "- Offer 2-3 time slots across different days when first proposing times.\n"
+        "- Be natural, warm, and concise — match the email style guide above.\n"
+        "- Keep replies to 1-4 sentences.\n"
         "- When both parties agree on a time, confirm it.\n\n"
         "Respond with JSON only (no markdown fences):\n"
         '{"reply": "your message text", "is_complete": false}\n'
