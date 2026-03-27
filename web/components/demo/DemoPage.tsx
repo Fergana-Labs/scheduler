@@ -33,6 +33,17 @@ export default function DemoPage() {
     trackPageEvent('demo_page_view');
   }, []);
 
+  const handleSendDraft = async () => {
+    trackPageEvent('demo_send_clicked');
+    setSidePanelStep('sent');
+    await new Promise((r) => setTimeout(r, 1200));
+    setSidePanelStep('complete');
+    setIsComplete(true);
+    setTimeout(() => {
+      ctaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 600);
+  };
+
   const handleStep = (
     step: SidePanelStep,
     data?: {
@@ -48,15 +59,8 @@ export default function DemoPage() {
     if (data?.reasoning) setDemoData((prev) => ({ ...prev, reasoning: data.reasoning }));
     if (data?.reply) setDemoData((prev) => ({ ...prev, lastReply: data.reply }));
 
-    if (step === 'complete') {
-      setIsComplete(true);
-      setTimeout(() => {
-        ctaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }, 600);
-    }
-
     // On mobile, scroll side panel into view when it updates
-    if (step !== 'idle' && window.innerWidth < 1024) {
+    if (step !== 'idle' && typeof window !== 'undefined' && window.innerWidth < 1024) {
       setTimeout(() => {
         sidePanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }, 200);
@@ -107,6 +111,7 @@ export default function DemoPage() {
                 events={demoData.events}
                 reasoning={demoData.reasoning}
                 draftText={demoData.lastReply}
+                onSendDraft={handleSendDraft}
               />
             </div>
           </div>

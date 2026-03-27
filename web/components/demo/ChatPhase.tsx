@@ -2,7 +2,6 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { Send } from 'lucide-react';
-import ChatBubble from './ChatBubble';
 import TypingIndicator from './TypingIndicator';
 import { trackPageEvent } from '@/lib/analytics';
 import type { SidePanelStep } from './SidePanel';
@@ -80,16 +79,12 @@ export default function ChatPhase({ onStep, isComplete }: Props) {
 
       if (data.is_complete) {
         trackPageEvent('demo_conversation_complete');
-        // Walk through the remaining steps with the data
+        // Show reasoning, then stop at draft-ready and wait for user to click Send
         onStep('reasoning', data);
         await delay(1200);
         onStep('draft-ready', data);
-        await delay(1500);
-        onStep('sent', data);
-        await delay(1200);
-        onStep('complete', data);
+        // Don't auto-advance past here — user clicks "Send" in side panel
       } else {
-        // Reset side panel for next exchange
         onStep('draft-ready', data);
       }
     } catch (err) {
@@ -114,54 +109,88 @@ export default function ChatPhase({ onStep, isComplete }: Props) {
   return (
     <div className="flex h-full flex-col">
       {/* Thread header */}
-      <div className="mb-4 rounded-xl border border-gray-200 bg-white px-4 py-3">
+      <div className="mb-4 rounded-t-xl border border-gray-200 bg-white px-5 py-3">
         <div className="text-xs font-medium text-gray-400">EMAIL THREAD</div>
-        <div className="mt-1 text-sm text-gray-700">
+        <div className="mt-1 text-sm font-medium text-gray-800">
           Schedule a meeting with Sam
         </div>
       </div>
 
-      {/* Messages */}
-      <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto pr-1">
+      {/* Email messages */}
+      <div ref={scrollRef} className="flex-1 space-y-0 overflow-y-auto">
         {messages.length === 0 && (
-          <div className="flex h-full items-center justify-center">
-            <p className="max-w-xs text-center text-sm text-gray-400">
+          <div className="flex h-full items-center justify-center rounded-b-xl border border-t-0 border-gray-200 bg-white">
+            <p className="max-w-xs px-4 py-12 text-center text-sm text-gray-400">
               Type a message to start scheduling. Try something like
               &ldquo;Hey, can we grab coffee next week?&rdquo;
             </p>
           </div>
         )}
         {messages.map((msg, i) => (
-          <ChatBubble
+          <div
             key={i}
-            text={msg.content}
-            align={msg.role === 'user' ? 'left' : 'right'}
-            label={msg.role === 'user' ? 'You' : 'Sam'}
-            animate
-          />
+            className="animate-fade-in border border-t-0 border-gray-200 bg-white px-5 py-4"
+            style={{ animationDelay: '50ms' }}
+          >
+            <div className="mb-2 flex items-baseline justify-between">
+              <div className="text-xs">
+                <span className="font-medium text-gray-800">
+                  {msg.role === 'user' ? 'You' : 'Sam'}
+                </span>
+                {msg.role === 'assistant' && (
+                  <span className="ml-1.5 text-gray-400">&lt;sam@ferganalabs.com&gt;</span>
+                )}
+              </div>
+              <span className="text-[10px] text-gray-300">just now</span>
+            </div>
+            <p className="text-sm leading-relaxed text-gray-700">{msg.content}</p>
+          </div>
         ))}
-        {isLoading && <TypingIndicator align="right" />}
+        {isLoading && (
+          <div className="border border-t-0 border-gray-200 bg-white px-5 py-4">
+            <div className="mb-2 text-xs">
+              <span className="font-medium text-gray-800">Sam</span>
+              <span className="ml-1.5 text-gray-400">&lt;sam@ferganalabs.com&gt;</span>
+            </div>
+            <TypingIndicator align="left" />
+          </div>
+        )}
       </div>
 
-      {/* Input */}
-      <div className="mt-4 flex gap-2">
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={isComplete ? 'Conversation complete' : 'Type a scheduling message...'}
-          disabled={isLoading || isComplete}
-          className="flex-1 rounded-full border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 outline-none transition-colors focus:border-[#43614a] disabled:opacity-50"
-        />
-        <button
-          onClick={sendMessage}
-          disabled={!input.trim() || isLoading || isComplete}
-          className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-[#43614a] text-white transition-all hover:bg-[#527559] disabled:opacity-40"
-        >
-          <Send className="h-4 w-4" />
-        </button>
+      {/* Compose input */}
+      <div className="mt-3 rounded-xl border border-gray-200 bg-white p-3">
+        <div className="mb-2 text-xs text-gray-400">
+          <span className="font-medium text-gray-500">To:</span> sam@ferganalabs.com
+        </div>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={isComplete ? 'Conversation complete' : 'Write your message...'}
+            disabled={isLoading || isComplete}
+            className="flex-1 bg-transparent text-sm text-gray-800 placeholder-gray-400 outline-none disabled:opacity-50"
+          />
+          <button
+            onClick={sendMessage}
+            disabled={!input.trim() || isLoading || isComplete}
+            className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-[#43614a] text-white transition-all hover:bg-[#527559] disabled:opacity-40"
+          >
+            <Send className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
+
+      <style jsx>{`
+        @keyframes fade-in {
+          from { opacity: 0; transform: translateY(4px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in {
+          animation: fade-in 0.3s ease-out forwards;
+        }
+      `}</style>
     </div>
   );
 }

@@ -33,6 +33,7 @@ interface Props {
   events?: MaskedEvent[];
   reasoning?: ReasoningData;
   draftText?: string;
+  onSendDraft?: () => void;
 }
 
 interface StepInfo {
@@ -53,7 +54,7 @@ const STEP_ORDER: SidePanelStep[] = [
   'complete',
 ];
 
-export default function SidePanel({ step, events, reasoning, draftText }: Props) {
+export default function SidePanel({ step, events, reasoning, draftText, onSendDraft }: Props) {
   const [visibleSteps, setVisibleSteps] = useState<SidePanelStep[]>([]);
 
   useEffect(() => {
@@ -209,6 +210,15 @@ export default function SidePanel({ step, events, reasoning, draftText }: Props)
           <div className="mt-3 border-t border-dashed border-gray-200 pt-2 text-xs text-gray-400">
             Includes a scheduling link so the other person can pick a different time if needed.
           </div>
+          {step === 'draft-ready' && onSendDraft && (
+            <button
+              onClick={onSendDraft}
+              className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-full bg-[#43614a] px-4 py-2 text-sm font-medium text-white transition-all hover:bg-[#527559] active:scale-[0.98]"
+            >
+              <Send className="h-3.5 w-3.5" />
+              Send as Sam
+            </button>
+          )}
         </div>
       )}
 
