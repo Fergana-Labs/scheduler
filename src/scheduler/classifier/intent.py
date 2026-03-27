@@ -13,7 +13,7 @@ from enum import Enum
 import json
 from typing import Any, TypedDict, Literal
 
-from anthropic import AnthropicVertex
+from anthropic import Anthropic
 
 from scheduler.config import config
 
@@ -55,9 +55,9 @@ class _EventJSON(TypedDict, total=False):
     participants: list[str]
 
 
-def _get_anthropic_client() -> AnthropicVertex:
-    """Create an AnthropicVertex client using GCP project/region config."""
-    return AnthropicVertex(region=config.gcp_region, project_id=config.gcp_project_id)
+def _get_anthropic_client() -> Anthropic:
+    """Create an Anthropic client."""
+    return Anthropic(api_key=config.anthropic_api_key)
 
 
 def classify_email(

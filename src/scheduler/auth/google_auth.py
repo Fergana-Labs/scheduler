@@ -85,7 +85,7 @@ def _save_credentials(creds: Credentials) -> None:
 
 
 def load_credentials(user_id: str):
-    """Load Google credentials from Firestore for the given user."""
+    """Load Google credentials from the database for the given user."""
     from scheduler.db import get_user_by_id, update_user_tokens
 
     user = get_user_by_id(user_id)

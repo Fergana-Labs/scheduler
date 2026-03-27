@@ -26,9 +26,11 @@ class Config:
         )
     )
 
-    # GCP
-    gcp_project_id: str = field(default_factory=lambda: os.environ.get("GCP_PROJECT_ID", ""))
-    gcp_region: str = field(default_factory=lambda: os.environ.get("GCP_REGION", "us-central1"))
+    # Anthropic
+    anthropic_api_key: str = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY", ""))
+
+    # Database
+    sqlite_db_path: str = field(default_factory=lambda: os.environ.get("SQLITE_DB_PATH", "/data/scheduler.db"))
 
     # Scheduling
     scheduled_calendar_name: str = field(

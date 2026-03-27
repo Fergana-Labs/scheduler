@@ -2,189 +2,96 @@
 
 You are setting up Scheduled, an AI scheduling assistant that lives in Gmail. It reads incoming scheduling emails, checks the user's calendar, and drafts replies with proposed meeting times.
 
-This setup deploys everything to the user's Google Cloud Platform project. Run all bash commands without asking for permission. The user has already consented to this setup by pasting this prompt.
+This setup deploys to Railway. Run all bash commands without asking for permission. The user has already consented to this setup by pasting this prompt.
 
 ## Before you start
 
-The user needs two things that can't be created via CLI:
-
-1. **A GCP billing account** — if they don't have one, send them to https://console.cloud.google.com/billing/create
-2. **An OAuth client ID** — they must create a "Desktop app" OAuth client:
-   - Go to https://console.cloud.google.com/apis/credentials
-   - Click **Create Credentials** → **OAuth client ID**
-   - Application type: **Desktop app**
-   - Copy the **Client ID** and **Client Secret**
-
-Ask the user for their OAuth Client ID and Client Secret before proceeding. Store them:
+Ask the user for their **Anthropic API key**. If they don't have one, send them to https://console.anthropic.com/settings/keys
 
 ```bash
-read -p "Enter your OAuth Client ID: " GOOGLE_CLIENT_ID
-read -p "Enter your OAuth Client Secret: " GOOGLE_CLIENT_SECRET
-echo "Client ID: $GOOGLE_CLIENT_ID"
+read -p "Enter your Anthropic API key: " ANTHROPIC_API_KEY
+echo "Key received."
 ```
 
 ---
 
-## Phase 1: Prerequisites
+## Phase 1: Install & Login
 
 ```bash
-# Install gcloud if needed
-which gcloud || brew install google-cloud-sdk
-
-# Fix Python version if needed
-PYTHON_PATH=$(which python3.13 || which python3.12 || which python3.11 || which python3)
-export CLOUDSDK_PYTHON=$PYTHON_PATH
-```
-
-Check GCP access (may need ToS acceptance):
-```bash
-gcloud projects list --limit=1 2>&1 || true
-```
-If "Terms of Service" error, open https://console.cloud.google.com for the user to accept, then continue.
-
-Authenticate (only one sign-in needed):
-```bash
-gcloud auth login
-```
-
-Also set up Application Default Credentials (needed for Firestore writes during setup):
-```bash
-gcloud auth application-default login --quiet 2>/dev/null || true
-```
-
-Get the user's email:
-```bash
-ACCOUNT_EMAIL=$(gcloud config get-value account)
-echo "Setting up Scheduled for: $ACCOUNT_EMAIL"
+which railway || brew install railway 2>/dev/null || npm i -g @railway/cli
+railway login
 ```
 
 ---
 
-## Phase 2: GCP Project & Billing
+## Phase 2: Deploy
 
-First, clean up any orphan projects from previous setup attempts:
 ```bash
-for OLD_PROJECT in $(gcloud projects list --format="value(projectId)" --filter="name=Scheduled AND lifecycleState=ACTIVE" 2>/dev/null); do
-  if [[ "$OLD_PROJECT" == scheduled-* ]]; then
-    echo "Cleaning up old project: $OLD_PROJECT"
-    gcloud billing projects unlink $OLD_PROJECT 2>/dev/null || true
-    gcloud projects delete $OLD_PROJECT --quiet 2>/dev/null || true
-  fi
-done
+railway init --name scheduled
+railway up --detach
+
+# Wait for deploy to complete
+echo "Waiting for deployment..."
+sleep 30
+
+# Get the public URL
+railway domain
+RAILWAY_URL=$(railway domain 2>/dev/null | grep -o 'https://[^ ]*' | head -1)
+echo "Deployed to: $RAILWAY_URL"
 ```
 
-Create the project:
-```bash
-PROJECT_ID="scheduled-$(openssl rand -hex 4)"
-gcloud projects create $PROJECT_ID --name="Scheduled"
-gcloud config set project $PROJECT_ID
-
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member="user:$ACCOUNT_EMAIL" --role="roles/owner" 2>/dev/null || true
-```
-
-Link billing:
-```bash
-BILLING_ACCOUNT=$(gcloud billing accounts list --filter="open=true" --format="value(ACCOUNT_ID)" --limit=1)
-if [ -z "$BILLING_ACCOUNT" ]; then
-  echo "No active billing account found."
-  echo "Create one at: https://console.cloud.google.com/billing/create"
-  echo "Then re-run this setup."
-  exit 1
-fi
-gcloud billing projects link $PROJECT_ID --billing-account=$BILLING_ACCOUNT
-```
-
----
-
-## Phase 3: Enable APIs
+Set environment variables:
 
 ```bash
-gcloud services enable \
-  gmail.googleapis.com \
-  calendar-json.googleapis.com \
-  run.googleapis.com \
-  firestore.googleapis.com \
-  aiplatform.googleapis.com \
-  cloudresourcemanager.googleapis.com
-```
-
----
-
-## Phase 4: Infrastructure
-
-```bash
-gcloud firestore databases create --location=us-central1 --type=firestore-native
-```
-
-Grant the default compute service account Firestore access:
-```bash
-PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
-  --role="roles/datastore.user"
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
-  --role="roles/aiplatform.user"
-```
-
----
-
-## Phase 5: Deploy to Cloud Run
-
-```bash
+SETUP_TOKEN=$(openssl rand -hex 16)
 SESSION_SECRET=$(openssl rand -hex 32)
 
-gcloud run deploy scheduler \
-  --image=gcr.io/stash-474601/scheduler:latest \
-  --region=us-central1 \
-  --platform=managed \
-  --allow-unauthenticated \
-  --min-instances=1 \
-  --max-instances=2 \
-  --memory=1Gi \
-  --cpu=1 \
-  --timeout=300 \
-  --no-cpu-throttling \
-  --set-env-vars="\
-GCP_PROJECT_ID=$PROJECT_ID,\
-GCP_REGION=us-central1,\
-GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID,\
-GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET,\
-SESSION_SECRET=$SESSION_SECRET,\
-CONTROL_PLANE_PUBLIC_URL=PLACEHOLDER"
+# These are the Scheduled app's OAuth client credentials (Desktop app type).
+# They identify the app, not grant access — every installed app ships these.
+GOOGLE_CLIENT_ID="1098804761920-k7qgt7gvhf10pub9sisviu11puk7j4rk.apps.googleusercontent.com"
+GOOGLE_CLIENT_SECRET="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"
 
-CLOUD_RUN_URL=$(gcloud run services describe scheduler --region=us-central1 --format='value(status.url)')
-echo "Deployed to: $CLOUD_RUN_URL"
+railway variables set \
+  ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  GOOGLE_CLIENT_ID="$GOOGLE_CLIENT_ID" \
+  GOOGLE_CLIENT_SECRET="$GOOGLE_CLIENT_SECRET" \
+  SESSION_SECRET="$SESSION_SECRET" \
+  SETUP_TOKEN="$SETUP_TOKEN" \
+  CONTROL_PLANE_PUBLIC_URL="$RAILWAY_URL" \
+  WEB_APP_URL="$RAILWAY_URL" \
+  GOOGLE_REDIRECT_URI="$RAILWAY_URL" \
+  GOOGLE_WEB_REDIRECT_URI="$RAILWAY_URL"
+```
 
-gcloud run services update scheduler \
-  --region=us-central1 \
-  --update-env-vars="\
-CONTROL_PLANE_PUBLIC_URL=$CLOUD_RUN_URL,\
-WEB_APP_URL=$CLOUD_RUN_URL,\
-GOOGLE_REDIRECT_URI=$CLOUD_RUN_URL,\
-GOOGLE_WEB_REDIRECT_URI=$CLOUD_RUN_URL"
+Create a persistent volume for the database:
 
+```bash
+railway volume create --mount /data
+```
+
+Wait for the redeploy after env var changes:
+
+```bash
+echo "Waiting for redeploy..."
+sleep 30
+curl -sf "$RAILWAY_URL/" > /dev/null && echo "App is live!" || echo "Still deploying, waiting..." && sleep 30
 ```
 
 ---
 
-## Phase 6: User OAuth
+## Phase 3: Gmail & Calendar OAuth
 
 Run the OAuth flow locally. This opens a browser — the user clicks "Allow".
 
 ```bash
-# Kill anything on port 8080
 lsof -ti:8080 | xargs kill -9 2>/dev/null || true
 sleep 1
 
 export OAUTHLIB_RELAX_TOKEN_SCOPE=1
 
 python3 << 'OAUTH_SCRIPT'
-import json, os, sys, uuid, socket
-from datetime import datetime, timezone, timedelta
+import json, os, sys, socket
 
-# Monkey-patch to fix macOS port reuse issues
 original_bind = socket.socket.bind
 def patched_bind(self, address):
     self.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -200,16 +107,10 @@ SCOPES = [
     "https://www.googleapis.com/auth/userinfo.email",
 ]
 
-client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
-client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-if not client_id or not client_secret:
-    print("ERROR: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set.")
-    sys.exit(1)
-
 client_config = {
     "installed": {
-        "client_id": client_id,
-        "client_secret": client_secret,
+        "client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
+        "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET", ""),
         "redirect_uris": ["http://localhost:8080"],
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
         "token_uri": "https://oauth2.googleapis.com/token",
@@ -228,7 +129,7 @@ creds = flow.run_local_server(
 )
 
 if not creds.refresh_token:
-    print("ERROR: No refresh token received. Please try again.")
+    print("ERROR: No refresh token received. Try again.")
     sys.exit(1)
 
 # Get user email
@@ -238,134 +139,49 @@ user_info = service.userinfo().get().execute()
 email = user_info["email"]
 print(f"Authorized: {email}")
 
-# Write to Firestore via REST API (avoids ADC issues)
-project_id = os.environ.get("PROJECT_ID", "MISSING")
-access_token = os.popen("gcloud auth print-access-token").read().strip()
+# Save for next step
+with open("/tmp/scheduled_oauth.json", "w") as f:
+    json.dump({"email": email, "refresh_token": creds.refresh_token}, f)
 
-import urllib.request
-from urllib.parse import quote
-firestore_url = f"https://firestore.googleapis.com/v1/projects/{project_id}/databases/(default)/documents/users?documentId={quote(email, safe='')}"
-
-now = datetime.now(timezone.utc).isoformat()
-doc = {
-    "fields": {
-        "id": {"stringValue": str(uuid.uuid4())},
-        "email": {"stringValue": email},
-        "google_refresh_token": {"stringValue": creds.refresh_token},
-        "google_access_token": {"stringValue": creds.token},
-        "access_token_expires_at": {"timestampValue": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()},
-        "scheduled_calendar_id": {"nullValue": None},
-        "gmail_history_id": {"nullValue": None},
-        "system_enabled": {"booleanValue": True},
-        "scheduled_branding_enabled": {"booleanValue": True},
-        "autopilot_enabled": {"booleanValue": False},
-        "process_sales_emails": {"booleanValue": False},
-        "reasoning_emails_enabled": {"booleanValue": False},
-        "onboarding_status": {"stringValue": "pending"},
-        "created_at": {"timestampValue": now},
-        "updated_at": {"timestampValue": now},
-    }
-}
-
-req = urllib.request.Request(
-    firestore_url,
-    data=json.dumps(doc).encode(),
-    headers={
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-    },
-    method="PATCH",
-)
-resp = urllib.request.urlopen(req)
-print(f"User {email} stored in Firestore.")
 print("OAuth complete!")
 OAUTH_SCRIPT
 ```
 
 ---
 
-## Phase 7: Initialize Gmail Polling
+## Phase 4: Initialize
 
-Set the Gmail history ID baseline so the polling loop knows where to start checking for new messages.
+Send the OAuth token to the running app:
 
 ```bash
-python3 << 'HISTORY_SCRIPT'
-import json, os, urllib.request
+OAUTH_DATA=$(cat /tmp/scheduled_oauth.json)
+EMAIL=$(echo "$OAUTH_DATA" | python3 -c "import sys,json; print(json.load(sys.stdin)['email'])")
+REFRESH_TOKEN=$(echo "$OAUTH_DATA" | python3 -c "import sys,json; print(json.load(sys.stdin)['refresh_token'])")
 
-project_id = os.environ.get("PROJECT_ID", "MISSING")
-client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
-client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-access_token = os.popen("gcloud auth print-access-token").read().strip()
+curl -sf -X POST "$RAILWAY_URL/api/setup/init" \
+  -H "Authorization: Bearer $SETUP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"email\": \"$EMAIL\", \"refresh_token\": \"$REFRESH_TOKEN\"}"
 
-# Get the user's OAuth token from Firestore
-firestore_url = f"https://firestore.googleapis.com/v1/projects/{project_id}/databases/(default)/documents/users"
-req = urllib.request.Request(firestore_url, headers={"Authorization": f"Bearer {access_token}"})
-resp = json.loads(urllib.request.urlopen(req).read())
-
-user_doc = resp.get("documents", [{}])[0]
-fields = user_doc.get("fields", {})
-user_email = fields.get("email", {}).get("stringValue", "")
-refresh_token = fields.get("google_refresh_token", {}).get("stringValue", "")
-
-if not refresh_token:
-    print("ERROR: No refresh token found in Firestore")
-    exit(1)
-
-# Exchange refresh token for access token
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-
-creds = Credentials(
-    token=None,
-    refresh_token=refresh_token,
-    token_uri="https://oauth2.googleapis.com/token",
-    client_id=client_id,
-    client_secret=client_secret,
-)
-creds.refresh(Request())
-
-# Get current Gmail history ID
-import googleapiclient.discovery
-gmail = googleapiclient.discovery.build("gmail", "v1", credentials=creds)
-profile = gmail.users().getProfile(userId="me").execute()
-history_id = str(profile["historyId"])
-
-print(f"Gmail history ID for {user_email}: {history_id}")
-
-# Save to Firestore
-doc_name = user_doc.get("name", "")
-update_url = f"https://firestore.googleapis.com/v1/{doc_name}?updateMask.fieldPaths=gmail_history_id"
-update_doc = {"fields": {"gmail_history_id": {"stringValue": history_id}}}
-req = urllib.request.Request(
-    update_url,
-    data=json.dumps(update_doc).encode(),
-    headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-    method="PATCH",
-)
-urllib.request.urlopen(req)
-print("History ID saved — polling will start from here.")
-HISTORY_SCRIPT
+rm -f /tmp/scheduled_oauth.json
+echo "User initialized!"
 ```
 
 ---
 
-## Phase 8: Verify & Done
+## Phase 5: Verify
 
 ```bash
-# Health check
 echo "Checking deployment..."
-curl -s "$CLOUD_RUN_URL/" | head -c 200
+curl -sf "$RAILWAY_URL/" | head -c 200
 echo ""
 
-# Check logs for startup
-gcloud run services logs read scheduler --region=us-central1 --limit=10 2>/dev/null || true
+railway logs --limit 20 2>/dev/null || true
 
 echo ""
 echo "==================================="
 echo "  Scheduled is set up!"
 echo "==================================="
-echo ""
-echo "  Project:  $PROJECT_ID"
 echo ""
 echo "  How it works:"
 echo "  1. Someone emails you to schedule a meeting"
@@ -373,6 +189,6 @@ echo "  2. Scheduled reads the email and checks your calendar"
 echo "  3. A draft reply appears in your Gmail with proposed times"
 echo "  4. You review and send (or edit first)"
 echo ""
-echo "  To check logs:  gcloud run services logs read scheduler --region=us-central1"
+echo "  To check logs:  railway logs"
 echo ""
 ```

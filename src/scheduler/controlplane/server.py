@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import secrets
 import threading
 import time
@@ -100,6 +101,59 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+
+# --- One-time setup endpoint ---
+
+_setup_completed = False
+
+
+class SetupInitRequest(BaseModel):
+    email: str
+    refresh_token: str
+
+
+@app.post("/api/setup/init")
+async def setup_init(body: SetupInitRequest, authorization: str = Header(default="")):
+    """One-time endpoint: accepts OAuth refresh token from the setup prompt.
+
+    Authorized by SETUP_TOKEN env var. Disables itself after first successful call.
+    """
+    global _setup_completed
+    if _setup_completed:
+        raise HTTPException(status_code=410, detail="Setup already completed")
+
+    setup_token = os.environ.get("SETUP_TOKEN", "")
+    if not setup_token:
+        raise HTTPException(status_code=403, detail="SETUP_TOKEN not configured")
+
+    expected = f"Bearer {setup_token}"
+    if not hmac.compare_digest(authorization, expected):
+        raise HTTPException(status_code=403, detail="Invalid setup token")
+
+    from scheduler.db import upsert_user, update_gmail_history_id
+
+    user, is_new = await asyncio.to_thread(
+        upsert_user, body.email, body.refresh_token
+    )
+    logger.info("setup_init: user %s (%s), is_new=%s", user.email, user.id, is_new)
+
+    # Initialize Gmail history ID so polling knows where to start
+    try:
+        creds = await asyncio.to_thread(load_credentials, user.id)
+        if creds:
+            gmail = GmailClient(creds, user.id)
+            profile = await asyncio.to_thread(
+                gmail.service.users().getProfile(userId="me").execute
+            )
+            history_id = str(profile["historyId"])
+            await asyncio.to_thread(update_gmail_history_id, user.id, history_id)
+            logger.info("setup_init: gmail history_id=%s for %s", history_id, user.email)
+    except Exception:
+        logger.exception("setup_init: failed to init gmail history_id")
+
+    _setup_completed = True
+    return {"status": "ok", "user_id": user.id, "email": user.email}
 
 
 # --- HMAC session auth ---

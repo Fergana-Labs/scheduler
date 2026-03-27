@@ -1,25 +1,85 @@
-"""Database client – Firestore backend."""
+"""Database client – SQLite backend."""
 
+import json
+import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
-
-from google.cloud import firestore
+from pathlib import Path
 
 from scheduler.config import config
 
 # ---------------------------------------------------------------------------
-# Firestore client (lazy singleton)
+# SQLite connection (lazy singleton)
 # ---------------------------------------------------------------------------
 
-_db: firestore.Client | None = None
+_conn: sqlite3.Connection | None = None
 
 
-def _get_db() -> firestore.Client:
-    global _db
-    if _db is None:
-        _db = firestore.Client()
-    return _db
+def _get_db() -> sqlite3.Connection:
+    global _conn
+    if _conn is None:
+        Path(config.sqlite_db_path).parent.mkdir(parents=True, exist_ok=True)
+        _conn = sqlite3.connect(config.sqlite_db_path, check_same_thread=False)
+        _conn.row_factory = sqlite3.Row
+        _conn.execute("PRAGMA journal_mode=WAL")
+        _conn.execute("PRAGMA foreign_keys=ON")
+        _init_schema(_conn)
+    return _conn
+
+
+def _init_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            email TEXT UNIQUE NOT NULL,
+            google_refresh_token TEXT,
+            google_access_token TEXT,
+            access_token_expires_at TEXT,
+            scheduled_calendar_id TEXT,
+            gmail_history_id TEXT,
+            system_enabled INTEGER NOT NULL DEFAULT 1,
+            scheduled_branding_enabled INTEGER NOT NULL DEFAULT 1,
+            autopilot_enabled INTEGER NOT NULL DEFAULT 0,
+            process_sales_emails INTEGER NOT NULL DEFAULT 0,
+            reasoning_emails_enabled INTEGER NOT NULL DEFAULT 0,
+            calendar_ids TEXT,
+            onboarding_status TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS guides (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id),
+            name TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, name)
+        );
+
+        CREATE TABLE IF NOT EXISTS processed_messages (
+            user_id TEXT NOT NULL REFERENCES users(id),
+            message_id TEXT NOT NULL,
+            processed_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, message_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS pending_invites (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id),
+            thread_id TEXT NOT NULL,
+            attendee_emails TEXT NOT NULL,
+            event_summary TEXT NOT NULL,
+            event_start TEXT NOT NULL,
+            event_end TEXT NOT NULL,
+            add_google_meet INTEGER NOT NULL DEFAULT 0,
+            location TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            UNIQUE(user_id, thread_id)
+        );
+    """)
 
 
 # ---------------------------------------------------------------------------
@@ -80,31 +140,63 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _doc_to_user(doc_dict: dict) -> UserRow:
-    """Convert a Firestore document dict to a UserRow, ignoring extra fields.
-
-    Fills in defaults for any missing required fields so partial documents
-    (e.g., from the setup script) don't crash.
-    """
-    defaults = {
-        "scheduled_calendar_id": None,
-        "gmail_history_id": None,
-        "system_enabled": True,
-        "scheduled_branding_enabled": True,
-        "autopilot_enabled": False,
-        "process_sales_emails": False,
-        "reasoning_emails_enabled": False,
-        "created_at": _now(),
-        "updated_at": _now(),
-    }
-    valid_fields = set(UserRow.__dataclass_fields__)
-    data = {**defaults, **{k: v for k, v in doc_dict.items() if k in valid_fields}}
-    return UserRow(**data)
+def _ts(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    return dt.isoformat()
 
 
-def _user_ref(email: str):
-    """Reference to users/{email}."""
-    return _get_db().collection("users").document(email)
+def _parse_ts(val: str | None) -> datetime | None:
+    if val is None:
+        return None
+    return datetime.fromisoformat(val)
+
+
+def _row_to_user(row: sqlite3.Row) -> UserRow:
+    return UserRow(
+        id=row["id"],
+        email=row["email"],
+        google_refresh_token=row["google_refresh_token"],
+        google_access_token=row["google_access_token"],
+        access_token_expires_at=_parse_ts(row["access_token_expires_at"]),
+        scheduled_calendar_id=row["scheduled_calendar_id"],
+        gmail_history_id=row["gmail_history_id"],
+        system_enabled=bool(row["system_enabled"]),
+        scheduled_branding_enabled=bool(row["scheduled_branding_enabled"]),
+        autopilot_enabled=bool(row["autopilot_enabled"]),
+        process_sales_emails=bool(row["process_sales_emails"]),
+        reasoning_emails_enabled=bool(row["reasoning_emails_enabled"]),
+        calendar_ids=json.loads(row["calendar_ids"]) if row["calendar_ids"] else None,
+        onboarding_status=row["onboarding_status"],
+        created_at=_parse_ts(row["created_at"]),
+        updated_at=_parse_ts(row["updated_at"]),
+    )
+
+
+def _row_to_guide(row: sqlite3.Row) -> GuideRow:
+    return GuideRow(
+        id=row["id"],
+        user_id=row["user_id"],
+        name=row["name"],
+        content=row["content"],
+        created_at=_parse_ts(row["created_at"]),
+        updated_at=_parse_ts(row["updated_at"]),
+    )
+
+
+def _row_to_invite(row: sqlite3.Row) -> PendingInviteRow:
+    return PendingInviteRow(
+        id=row["id"],
+        user_id=row["user_id"],
+        thread_id=row["thread_id"],
+        attendee_emails=json.loads(row["attendee_emails"]),
+        event_summary=row["event_summary"],
+        event_start=_parse_ts(row["event_start"]),
+        event_end=_parse_ts(row["event_end"]),
+        add_google_meet=bool(row["add_google_meet"]),
+        location=row["location"],
+        created_at=_parse_ts(row["created_at"]),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -113,24 +205,17 @@ def _user_ref(email: str):
 
 
 def get_user_by_email(email: str) -> UserRow | None:
-    doc = _user_ref(email).get()
-    if not doc.exists:
+    row = _get_db().execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    if row is None:
         return None
-    return _doc_to_user(doc.to_dict())
+    return _row_to_user(row)
 
 
 def get_user_by_id(user_id: str) -> UserRow | None:
-    """Find a user by their UUID. Scans the users collection."""
-    docs = (
-        _get_db()
-        .collection("users")
-        .where("id", "==", user_id)
-        .limit(1)
-        .stream()
-    )
-    for doc in docs:
-        return _doc_to_user(doc.to_dict())
-    return None
+    row = _get_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if row is None:
+        return None
+    return _row_to_user(row)
 
 
 def upsert_user(
@@ -141,57 +226,54 @@ def upsert_user(
     scheduled_calendar_id: str | None = None,
 ) -> tuple[UserRow, bool]:
     """Upsert a user. Returns (user, is_new)."""
-    ref = _user_ref(email)
-    doc = ref.get()
+    db = _get_db()
+    existing = get_user_by_email(email)
     now = _now()
 
-    if doc.exists:
+    if existing:
         updates = {
             "google_refresh_token": google_refresh_token,
             "google_access_token": google_access_token,
-            "access_token_expires_at": access_token_expires_at,
-            "updated_at": now,
+            "access_token_expires_at": _ts(access_token_expires_at),
+            "updated_at": _ts(now),
         }
         if scheduled_calendar_id is not None:
             updates["scheduled_calendar_id"] = scheduled_calendar_id
-        ref.update(updates)
-        return _doc_to_user(ref.get().to_dict()), False
 
-    # New user
-    data = {
-        "id": str(uuid.uuid4()),
-        "email": email,
-        "google_refresh_token": google_refresh_token,
-        "google_access_token": google_access_token,
-        "access_token_expires_at": access_token_expires_at,
-        "scheduled_calendar_id": scheduled_calendar_id,
-        "gmail_history_id": None,
-        "system_enabled": True,
-        "scheduled_branding_enabled": True,
-        "autopilot_enabled": False,
-        "process_sales_emails": False,
-        "reasoning_emails_enabled": False,
-        "calendar_ids": None,
-        "onboarding_status": None,
-        "created_at": now,
-        "updated_at": now,
-    }
-    ref.set(data)
-    return _doc_to_user(data), True
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        db.execute(
+            f"UPDATE users SET {set_clause} WHERE email = ?",
+            (*updates.values(), email),
+        )
+        db.commit()
+        return get_user_by_email(email), False
+
+    user_id = str(uuid.uuid4())
+    db.execute(
+        """INSERT INTO users (id, email, google_refresh_token, google_access_token,
+           access_token_expires_at, scheduled_calendar_id, gmail_history_id,
+           system_enabled, scheduled_branding_enabled, autopilot_enabled,
+           process_sales_emails, reasoning_emails_enabled, calendar_ids,
+           onboarding_status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, 0, 0, 0, ?, ?, ?, ?)""",
+        (user_id, email, google_refresh_token, google_access_token,
+         _ts(access_token_expires_at), scheduled_calendar_id, None,
+         None, None, _ts(now), _ts(now)),
+    )
+    db.commit()
+    return get_user_by_email(email), True
 
 
 def _update_user_field(user_id: str, **fields) -> None:
-    """Find user by id and update the given fields + updated_at."""
-    docs = (
-        _get_db()
-        .collection("users")
-        .where("id", "==", user_id)
-        .limit(1)
-        .stream()
+    """Update the given fields + updated_at for a user."""
+    fields["updated_at"] = _ts(_now())
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    db = _get_db()
+    db.execute(
+        f"UPDATE users SET {set_clause} WHERE id = ?",
+        (*fields.values(), user_id),
     )
-    for doc in docs:
-        doc.reference.update({**fields, "updated_at": _now()})
-        return
+    db.commit()
 
 
 def update_user_tokens(
@@ -202,7 +284,7 @@ def update_user_tokens(
     _update_user_field(
         user_id,
         google_access_token=google_access_token,
-        access_token_expires_at=access_token_expires_at,
+        access_token_expires_at=_ts(access_token_expires_at),
     )
 
 
@@ -220,33 +302,33 @@ def update_google_tokens(
         user_id,
         google_refresh_token=google_refresh_token,
         google_access_token=google_access_token,
-        access_token_expires_at=access_token_expires_at,
+        access_token_expires_at=_ts(access_token_expires_at),
     )
 
 
 def get_all_user_ids() -> list[str]:
-    docs = _get_db().collection("users").select(["id"]).stream()
-    return [doc.to_dict()["id"] for doc in docs]
+    rows = _get_db().execute("SELECT id FROM users").fetchall()
+    return [row["id"] for row in rows]
 
 
 def update_scheduled_branding(user_id: str, enabled: bool) -> None:
-    _update_user_field(user_id, scheduled_branding_enabled=enabled)
+    _update_user_field(user_id, scheduled_branding_enabled=int(enabled))
 
 
 def update_system_enabled(user_id: str, enabled: bool) -> None:
-    _update_user_field(user_id, system_enabled=enabled)
+    _update_user_field(user_id, system_enabled=int(enabled))
 
 
 def update_autopilot(user_id: str, enabled: bool) -> None:
-    _update_user_field(user_id, autopilot_enabled=enabled)
+    _update_user_field(user_id, autopilot_enabled=int(enabled))
 
 
 def update_process_sales_emails(user_id: str, enabled: bool) -> None:
-    _update_user_field(user_id, process_sales_emails=enabled)
+    _update_user_field(user_id, process_sales_emails=int(enabled))
 
 
 def update_reasoning_emails_enabled(user_id: str, enabled: bool) -> None:
-    _update_user_field(user_id, reasoning_emails_enabled=enabled)
+    _update_user_field(user_id, reasoning_emails_enabled=int(enabled))
 
 
 def update_scheduled_calendar_id(user_id: str, scheduled_calendar_id: str) -> None:
@@ -254,7 +336,7 @@ def update_scheduled_calendar_id(user_id: str, scheduled_calendar_id: str) -> No
 
 
 def update_calendar_ids(user_id: str, calendar_ids: list[str]) -> None:
-    _update_user_field(user_id, calendar_ids=calendar_ids)
+    _update_user_field(user_id, calendar_ids=json.dumps(calendar_ids))
 
 
 def update_onboarding_status(user_id: str, status: str | None) -> None:
@@ -262,170 +344,99 @@ def update_onboarding_status(user_id: str, status: str | None) -> None:
 
 
 def delete_user(user_id: str) -> None:
-    """Delete user and all subcollections."""
-    docs = (
-        _get_db()
-        .collection("users")
-        .where("id", "==", user_id)
-        .limit(1)
-        .stream()
-    )
-    for doc in docs:
-        # Delete guides subcollection
-        for guide in doc.reference.collection("guides").stream():
-            guide.reference.delete()
-        # Delete pending_invites subcollection
-        for invite in doc.reference.collection("pending_invites").stream():
-            invite.reference.delete()
-        # Delete processed_messages subcollection
-        for msg in doc.reference.collection("processed_messages").stream():
-            msg.reference.delete()
-        doc.reference.delete()
+    """Delete user and all related data."""
+    db = _get_db()
+    db.execute("DELETE FROM guides WHERE user_id = ?", (user_id,))
+    db.execute("DELETE FROM pending_invites WHERE user_id = ?", (user_id,))
+    db.execute("DELETE FROM processed_messages WHERE user_id = ?", (user_id,))
+    db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    db.commit()
 
 
 def disconnect_user(user_id: str) -> None:
     """Clear Google tokens and delete guides, but keep the user doc."""
-    docs = (
-        _get_db()
-        .collection("users")
-        .where("id", "==", user_id)
-        .limit(1)
-        .stream()
+    db = _get_db()
+    db.execute("DELETE FROM guides WHERE user_id = ?", (user_id,))
+    _update_user_field(
+        user_id,
+        google_refresh_token=None,
+        google_access_token=None,
+        access_token_expires_at=None,
+        gmail_history_id=None,
+        scheduled_calendar_id=None,
+        onboarding_status=None,
     )
-    for doc in docs:
-        # Delete guides subcollection
-        for guide in doc.reference.collection("guides").stream():
-            guide.reference.delete()
-
-        doc.reference.update({
-            "google_refresh_token": None,
-            "google_access_token": None,
-            "access_token_expires_at": None,
-            "gmail_history_id": None,
-            "scheduled_calendar_id": None,
-            "onboarding_status": None,
-            "updated_at": _now(),
-        })
 
 
 # ---------------------------------------------------------------------------
-# Guides  (subcollection: users/{email}/guides/{guide_name})
+# Guides
 # ---------------------------------------------------------------------------
-
-
-def _guide_ref(user_id: str, name: str):
-    """Get guide doc ref. Looks up user email by user_id first."""
-    user = get_user_by_id(user_id)
-    if not user:
-        return None
-    return _user_ref(user.email).collection("guides").document(name)
-
-
-def _guides_collection(user_id: str):
-    """Get guides collection ref for a user."""
-    user = get_user_by_id(user_id)
-    if not user:
-        return None
-    return _user_ref(user.email).collection("guides")
 
 
 def upsert_guide(user_id: str, name: str, content: str) -> GuideRow:
-    ref = _guide_ref(user_id, name)
-    now = _now()
-
-    doc = ref.get()
-    if doc.exists:
-        ref.update({"content": content, "updated_at": now})
-        return GuideRow(**ref.get().to_dict())
-
-    data = {
-        "id": str(uuid.uuid4()),
-        "user_id": user_id,
-        "name": name,
-        "content": content,
-        "created_at": now,
-        "updated_at": now,
-    }
-    ref.set(data)
-    return GuideRow(**data)
+    db = _get_db()
+    now = _ts(_now())
+    db.execute(
+        """INSERT INTO guides (id, user_id, name, content, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, name) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at""",
+        (str(uuid.uuid4()), user_id, name, content, now, now),
+    )
+    db.commit()
+    row = db.execute(
+        "SELECT * FROM guides WHERE user_id = ? AND name = ?", (user_id, name)
+    ).fetchone()
+    return _row_to_guide(row)
 
 
 def get_guide(user_id: str, name: str) -> GuideRow | None:
-    ref = _guide_ref(user_id, name)
-    if ref is None:
+    row = _get_db().execute(
+        "SELECT * FROM guides WHERE user_id = ? AND name = ?", (user_id, name)
+    ).fetchone()
+    if row is None:
         return None
-    doc = ref.get()
-    if not doc.exists:
-        return None
-    return GuideRow(**doc.to_dict())
+    return _row_to_guide(row)
 
 
 def get_guides_for_user(user_id: str) -> list[GuideRow]:
-    col = _guides_collection(user_id)
-    if col is None:
-        return []
-    docs = col.order_by("name").stream()
-    return [GuideRow(**doc.to_dict()) for doc in docs]
+    rows = _get_db().execute(
+        "SELECT * FROM guides WHERE user_id = ? ORDER BY name", (user_id,)
+    ).fetchall()
+    return [_row_to_guide(row) for row in rows]
 
 
 # ---------------------------------------------------------------------------
-# Processed messages  (subcollection: users/{email}/processed_messages/{msg_id})
+# Processed messages
 # ---------------------------------------------------------------------------
 
 
 def try_claim_message(user_id: str, message_id: str) -> bool:
-    """Atomically claim a message using a Firestore transaction.
-
-    Returns True if this call claimed it, False if already claimed.
-    """
-    user = get_user_by_id(user_id)
-    if not user:
-        return False
-
-    ref = (
-        _user_ref(user.email)
-        .collection("processed_messages")
-        .document(message_id)
-    )
-
+    """Atomically claim a message. Returns True if this call claimed it."""
     db = _get_db()
-    transaction = db.transaction()
-
-    @firestore.transactional
-    def _claim(txn, doc_ref):
-        snapshot = doc_ref.get(transaction=txn)
-        if snapshot.exists:
-            return False
-        txn.set(doc_ref, {
-            "user_id": user_id,
-            "message_id": message_id,
-            "processed_at": _now(),
-        })
+    try:
+        db.execute(
+            "INSERT INTO processed_messages (user_id, message_id, processed_at) VALUES (?, ?, ?)",
+            (user_id, message_id, _ts(_now())),
+        )
+        db.commit()
         return True
-
-    return _claim(transaction, ref)
+    except sqlite3.IntegrityError:
+        return False
 
 
 def cleanup_processed_messages(days: int = 7) -> int:
     """Delete processed message records older than the given number of days."""
-    cutoff = _now() - timedelta(days=days)
-    count = 0
-
-    for user_doc in _get_db().collection("users").stream():
-        msgs = (
-            user_doc.reference.collection("processed_messages")
-            .where("processed_at", "<", cutoff)
-            .stream()
-        )
-        for msg in msgs:
-            msg.reference.delete()
-            count += 1
-
-    return count
+    cutoff = _ts(_now() - timedelta(days=days))
+    db = _get_db()
+    cursor = db.execute(
+        "DELETE FROM processed_messages WHERE processed_at < ?", (cutoff,)
+    )
+    db.commit()
+    return cursor.rowcount
 
 
 # ---------------------------------------------------------------------------
-# Pending invites  (subcollection: users/{email}/pending_invites/{thread_id})
+# Pending invites
 # ---------------------------------------------------------------------------
 
 
@@ -440,35 +451,35 @@ def create_pending_invite(
     location: str = "",
 ) -> PendingInviteRow:
     """Create or overwrite a pending invite for a thread."""
-    user = get_user_by_id(user_id)
-    ref = _user_ref(user.email).collection("pending_invites").document(thread_id)
-    now = _now()
+    db = _get_db()
+    invite_id = str(uuid.uuid4())
+    now = _ts(_now())
 
-    data = {
-        "id": str(uuid.uuid4()),
-        "user_id": user_id,
-        "thread_id": thread_id,
-        "attendee_emails": attendee_emails,
-        "event_summary": event_summary,
-        "event_start": event_start,
-        "event_end": event_end,
-        "add_google_meet": add_google_meet,
-        "location": location,
-        "created_at": now,
-    }
-    ref.set(data)
-    return PendingInviteRow(**data)
+    db.execute(
+        "DELETE FROM pending_invites WHERE user_id = ? AND thread_id = ?",
+        (user_id, thread_id),
+    )
+    db.execute(
+        """INSERT INTO pending_invites (id, user_id, thread_id, attendee_emails,
+           event_summary, event_start, event_end, add_google_meet, location, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (invite_id, user_id, thread_id, json.dumps(attendee_emails),
+         event_summary, _ts(event_start), _ts(event_end), int(add_google_meet),
+         location, now),
+    )
+    db.commit()
+    row = db.execute("SELECT * FROM pending_invites WHERE id = ?", (invite_id,)).fetchone()
+    return _row_to_invite(row)
 
 
 def get_pending_invite_by_thread(user_id: str, thread_id: str) -> PendingInviteRow | None:
-    user = get_user_by_id(user_id)
-    if not user:
+    row = _get_db().execute(
+        "SELECT * FROM pending_invites WHERE user_id = ? AND thread_id = ?",
+        (user_id, thread_id),
+    ).fetchone()
+    if row is None:
         return None
-    ref = _user_ref(user.email).collection("pending_invites").document(thread_id)
-    doc = ref.get()
-    if not doc.exists:
-        return None
-    return PendingInviteRow(**doc.to_dict())
+    return _row_to_invite(row)
 
 
 def update_pending_invite(
@@ -483,42 +494,29 @@ def update_pending_invite(
     """Update only the provided fields on a pending invite."""
     updates: dict = {}
     if attendee_emails is not None:
-        updates["attendee_emails"] = attendee_emails
+        updates["attendee_emails"] = json.dumps(attendee_emails)
     if event_summary is not None:
         updates["event_summary"] = event_summary
     if event_start is not None:
-        updates["event_start"] = event_start
+        updates["event_start"] = _ts(event_start)
     if event_end is not None:
-        updates["event_end"] = event_end
+        updates["event_end"] = _ts(event_end)
     if add_google_meet is not None:
-        updates["add_google_meet"] = add_google_meet
+        updates["add_google_meet"] = int(add_google_meet)
     if location is not None:
         updates["location"] = location
     if not updates:
         return
 
-    # Search all users' pending_invites for matching invite_id
-    for user_doc in _get_db().collection("users").stream():
-        invites = (
-            user_doc.reference.collection("pending_invites")
-            .where("id", "==", invite_id)
-            .limit(1)
-            .stream()
-        )
-        for invite_doc in invites:
-            invite_doc.reference.update(updates)
-            return
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    _get_db().execute(
+        f"UPDATE pending_invites SET {set_clause} WHERE id = ?",
+        (*updates.values(), invite_id),
+    )
+    _get_db().commit()
 
 
 def delete_pending_invite(invite_id: str) -> None:
     """Delete a pending invite by its UUID."""
-    for user_doc in _get_db().collection("users").stream():
-        invites = (
-            user_doc.reference.collection("pending_invites")
-            .where("id", "==", invite_id)
-            .limit(1)
-            .stream()
-        )
-        for invite_doc in invites:
-            invite_doc.reference.delete()
-            return
+    _get_db().execute("DELETE FROM pending_invites WHERE id = ?", (invite_id,))
+    _get_db().commit()

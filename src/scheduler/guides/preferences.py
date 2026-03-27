@@ -150,8 +150,7 @@ async def run_preferences_agent(backend: GuideBackend) -> None:
         permission_mode="bypassPermissions",
         model="claude-sonnet-4-6",
         env={
-            "ANTHROPIC_VERTEX_PROJECT_ID": config.gcp_project_id,
-            "CLOUD_ML_REGION": config.gcp_region,
+            "ANTHROPIC_API_KEY": config.anthropic_api_key,
         },
     )
 
