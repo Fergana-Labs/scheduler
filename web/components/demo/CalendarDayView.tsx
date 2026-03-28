@@ -42,8 +42,10 @@ function dateKey(iso: string): string {
   return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
 }
 
-function formatDateLabel(iso: string): string {
-  const dt = new Date(iso);
+function formatDateLabel(dateStr: string): string {
+  // dateStr is "YYYY-MM-DD" — parse as local date, not UTC
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
   return dt.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
