@@ -2642,19 +2642,30 @@ def demo_chat(req: DemoChatRequest, request: Request):
     if is_complete and agreed_start:
         proposed_dates_raw = [agreed_start]
 
-    # Parse dates and fetch events for the full range
+    # Parse dates and fetch events for the full range, using user's timezone
+    import zoneinfo
+
+    try:
+        user_tzinfo = zoneinfo.ZoneInfo(user_tz)
+    except (KeyError, Exception):
+        user_tzinfo = timezone.utc
+
     parsed_dates = []
     for d in proposed_dates_raw:
         try:
-            parsed_dates.append(dateutil_parser.parse(d))
+            dt = dateutil_parser.parse(d)
+            # If naive, localize to user's timezone
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=user_tzinfo)
+            parsed_dates.append(dt)
         except (ValueError, OverflowError):
             continue
 
     if not parsed_dates:
-        parsed_dates = [now + timedelta(days=1)]
+        parsed_dates = [now.astimezone(user_tzinfo) + timedelta(days=1)]
 
     range_start = min(parsed_dates).replace(hour=0, minute=0, second=0, microsecond=0)
-    range_end = max(parsed_dates).replace(hour=23, minute=59, second=59) + timedelta(seconds=1)
+    range_end = max(parsed_dates).replace(hour=23, minute=59, second=59, microsecond=0) + timedelta(seconds=1)
 
     all_events = calendar.get_all_events(
         time_min=range_start, time_max=range_end, include_primary=True

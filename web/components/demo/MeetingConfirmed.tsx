@@ -106,9 +106,20 @@ export default function MeetingConfirmed({ eventSummary, agreedTimeStart, agreed
         </div>
       ) : (
         <div className="mt-4">
-          <div className="text-xs text-gray-500">
-            Want to actually schedule a meeting to help you get started? Enter your email and we&apos;ll send a real invite.
-          </div>
+          <p className="text-sm font-medium text-gray-800">
+            Enter your email and we&apos;ll send a real invite to help you get started with Scheduled.
+          </p>
+          <p className="mt-1 text-xs text-gray-500">
+            Or{' '}
+            <a
+              href={SIGNUP_URL}
+              onClick={() => trackPageEvent('demo_cta_signup_click')}
+              className="font-medium text-[#43614a] underline underline-offset-2"
+            >
+              get started in 2 minutes by clicking here
+            </a>
+            .
+          </p>
           <div className="mt-2 flex gap-2">
             <input
               type="email"
