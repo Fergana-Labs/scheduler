@@ -103,6 +103,7 @@ export default function DemoPage() {
               <ChatPhase
                 onStep={handleStep}
                 onDraftReady={handleDraftReady}
+                onSendDraft={handleSendDraft}
                 draftSent={draftSent}
                 isComplete={isComplete}
                 autopilot={autopilotEnabled}
@@ -116,7 +117,6 @@ export default function DemoPage() {
             >
               <SidePanel
                 step={sidePanelStep}
-                onSendDraft={handleSendDraft}
                 autopilot={autopilotEnabled}
               />
             </div>

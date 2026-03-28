@@ -15,7 +15,6 @@ export type SidePanelStep =
 
 interface Props {
   step: SidePanelStep;
-  onSendDraft?: () => void;
   autopilot?: boolean;
 }
 
@@ -67,7 +66,7 @@ const STEP_META: Record<SidePanelStep, { icon: React.ReactNode; title: string; d
 
 const SPINNER_STEPS: SidePanelStep[] = ['received', 'checking-calendar', 'drafting', 'draft-ready'];
 
-export default function SidePanel({ step, onSendDraft, autopilot }: Props) {
+export default function SidePanel({ step, autopilot }: Props) {
   const [entries, setEntries] = useState<StepEntry[]>([]);
   const roundRef = useRef(0);
 
@@ -174,16 +173,7 @@ export default function SidePanel({ step, onSendDraft, autopilot }: Props) {
         </div>
       )}
 
-      {/* Send draft button — only when not on autopilot */}
-      {step === 'draft-ready' && onSendDraft && !autopilot && (
-        <button
-          onClick={onSendDraft}
-          className="inline-flex w-full items-center justify-center gap-1.5 rounded-full bg-[#43614a] px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-[#527559] active:scale-[0.98]"
-        >
-          <Send className="h-3.5 w-3.5" />
-          Send draft from Sam
-        </button>
-      )}
+      {/* Send draft button moved to ChatPhase — sidebar is status-only */}
     </div>
   );
 }

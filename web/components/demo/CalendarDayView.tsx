@@ -38,7 +38,8 @@ function formatHour(hour: number): string {
 }
 
 function dateKey(iso: string): string {
-  return new Date(iso).toISOString().split('T')[0];
+  const dt = new Date(iso);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
 }
 
 function formatDateLabel(iso: string): string {

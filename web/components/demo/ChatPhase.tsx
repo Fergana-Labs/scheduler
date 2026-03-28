@@ -50,12 +50,13 @@ interface Message {
 interface Props {
   onStep: (step: SidePanelStep, data?: Partial<DemoResponse>) => void;
   onDraftReady: (data: DemoResponse) => void;
+  onSendDraft: () => void;
   draftSent: boolean;
   isComplete: boolean;
   autopilot: boolean;
 }
 
-export default function ChatPhase({ onStep, onDraftReady, draftSent, isComplete, autopilot }: Props) {
+export default function ChatPhase({ onStep, onDraftReady, onSendDraft, draftSent, isComplete, autopilot }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -315,6 +316,15 @@ export default function ChatPhase({ onStep, onDraftReady, draftSent, isComplete,
               <div className="mt-2 text-sm leading-relaxed text-gray-700 [&_ul]:ml-4 [&_ul]:list-disc [&_ul]:space-y-0.5 [&_ol]:ml-4 [&_ol]:list-decimal [&_ol]:space-y-0.5 [&_p]:mb-1 [&_p:last-child]:mb-0">
                 <ReactMarkdown>{msg.content}</ReactMarkdown>
               </div>
+              {msg.isDraft && !autopilot && (
+                <button
+                  onClick={onSendDraft}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-[#43614a] px-4 py-2 text-xs font-medium text-white transition-all hover:bg-[#527559] active:scale-[0.98]"
+                >
+                  <Send className="h-3 w-3" />
+                  Send draft from Sam
+                </button>
+              )}
             </div>
           );
         })}

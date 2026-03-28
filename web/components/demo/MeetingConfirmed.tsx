@@ -107,7 +107,7 @@ export default function MeetingConfirmed({ eventSummary, agreedTimeStart, agreed
       ) : (
         <div className="mt-4">
           <div className="text-xs text-gray-500">
-            Want to actually book this time? Enter your email:
+            Want to actually schedule a meeting to help you get started? Enter your email and we&apos;ll send a real invite.
           </div>
           <div className="mt-2 flex gap-2">
             <input
