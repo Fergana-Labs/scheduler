@@ -179,51 +179,9 @@ async def _gmail_poll_loop():
         await asyncio.sleep(config.watcher_poll_interval)
 
 
-async def _self_heal_on_startup():
-    """Reconstruct user state from env vars if SQLite DB is empty (self-hosted cold start)."""
-    email = config.user_email
-    refresh_token = config.google_refresh_token
-    if not email or not refresh_token:
-        logger.info("self_heal: USER_EMAIL or GOOGLE_REFRESH_TOKEN not set, skipping")
-        return
-
-    from scheduler.db import (
-        get_user_by_email, upsert_user, update_gmail_history_id,
-        update_scheduled_calendar_id, update_system_enabled,
-    )
-
-    user = get_user_by_email(email)
-    if user and user.gmail_history_id:
-        logger.info("self_heal: user %s already exists with history_id, skipping", email)
-        return
-
-    logger.info("self_heal: reconstructing user %s from env vars", email)
-    user, _ = upsert_user(email, refresh_token)
-    creds = load_credentials(user.id)
-
-    try:
-        history_id = GmailClient(creds).get_current_history_id()
-        update_gmail_history_id(user.id, history_id)
-        logger.info("self_heal: gmail history_id=%s", history_id)
-    except Exception:
-        logger.exception("self_heal: failed to get gmail history_id")
-
-    try:
-        cal_id = CalendarClient(creds, config.scheduled_calendar_name).get_or_create_scheduled_calendar()
-        if cal_id:
-            update_scheduled_calendar_id(user.id, cal_id)
-            logger.info("self_heal: scheduled_calendar_id=%s", cal_id)
-    except Exception:
-        logger.exception("self_heal: failed to set up calendar")
-
-    update_system_enabled(user.id, True)
-    logger.info("self_heal: user %s ready for polling", email)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if _is_self_hosted_mode():
-        await _self_heal_on_startup()
         task = asyncio.create_task(_gmail_poll_loop())
     else:
         task = asyncio.create_task(_watch_renewal_loop())
