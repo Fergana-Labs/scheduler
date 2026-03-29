@@ -533,16 +533,20 @@ def store_composed_draft(
     body: str,
     was_autopilot: bool = False,
     raw_body: str | None = None,
+    refresh_count: int = 0,
+    suggested_windows: list[dict] | None = None,
 ) -> None:
     """Insert a row into composed_drafts with anonymized content."""
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO composed_drafts
-                (user_id, thread_id, draft_id, thread_context, original_subject, original_body, was_autopilot, raw_body)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (user_id, thread_id, draft_id, thread_context, original_subject, original_body,
+                 was_autopilot, raw_body, refresh_count, suggested_windows)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (user_id, thread_id, draft_id, json.dumps(thread_context), subject, body, was_autopilot, raw_body),
+            (user_id, thread_id, draft_id, json.dumps(thread_context), subject, body,
+             was_autopilot, raw_body, refresh_count, json.dumps(suggested_windows or [])),
         )
         conn.commit()
 
@@ -590,7 +594,11 @@ def update_composed_draft_sent(
 
 
 def get_stale_unsent_drafts(hours: int = 48) -> list[dict]:
-    """Get unsent composed drafts older than the given hours, for users with auto-delete enabled."""
+    """Get unsent composed drafts older than the given hours, for users with auto-delete enabled.
+
+    Excludes drafts still eligible for morning refresh (refresh_count < 3) —
+    those are handled by the refresh loop, not the auto-delete.
+    """
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -600,6 +608,7 @@ def get_stale_unsent_drafts(hours: int = 48) -> list[dict]:
             WHERE cd.sent_at IS NULL
               AND cd.composed_at < now() - make_interval(hours => %s)
               AND u.draft_auto_delete_enabled = TRUE
+              AND cd.refresh_count >= 3
             """,
             (hours,),
         )
@@ -615,6 +624,32 @@ def mark_draft_auto_deleted(draft_id: str) -> None:
             (draft_id,),
         )
         conn.commit()
+
+
+def get_drafts_eligible_for_refresh(max_refresh_count: int = 3) -> list[dict]:
+    """Get unsent drafts whose suggested times are stale (all in the past).
+
+    A draft is eligible for refresh when:
+    - It has suggested_windows and ALL of them are in the past, OR
+    - It has no suggested_windows (availability mode) and is older than 24 hours
+    """
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT cd.id, cd.user_id, cd.draft_id, cd.thread_id, cd.original_subject,
+                   cd.refresh_count, cd.raw_body, cd.suggested_windows, cd.composed_at,
+                   u.email AS user_email, u.autopilot_enabled, u.calendar_ids
+            FROM composed_drafts cd
+            JOIN users u ON u.id = cd.user_id
+            WHERE cd.sent_at IS NULL
+              AND cd.refresh_count < %s
+              AND u.draft_auto_delete_enabled = TRUE
+              AND u.system_enabled = TRUE
+            """,
+            (max_refresh_count,),
+        )
+        cols = [desc[0] for desc in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
 _TZ = "America/Los_Angeles"
@@ -772,7 +807,7 @@ def get_funnel_data_daily(days: int = 7, include_current: bool = False) -> list[
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-_ALL_EVENTS = ('user_created', 'onboarding_completed', 'draft_composed', 'draft_sent', 'email_classified', 'setting_changed')
+_ALL_EVENTS = ('user_created', 'onboarding_completed', 'draft_composed', 'draft_sent', 'setting_changed')
 _EMAIL_EVENTS = ('draft_sent',)
 _RETENTION_EVENTS = ('user_created', 'onboarding_completed')
 

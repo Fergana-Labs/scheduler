@@ -110,6 +110,227 @@ def _cleanup_stale_drafts() -> int:
     return deleted
 
 
+def _is_morning_window(user_tz_str: str) -> bool:
+    """Return True if it's currently 6:00–9:00 AM in the user's timezone."""
+    from zoneinfo import ZoneInfo
+
+    try:
+        tz = ZoneInfo(user_tz_str)
+    except Exception:
+        return False
+    local_now = datetime.now(timezone.utc).astimezone(tz)
+    return 6 <= local_now.hour < 9
+
+
+def _draft_body_matches(raw_body: str | None, gmail_body: str) -> bool:
+    """Check if a Gmail draft body still matches what we composed (user hasn't edited)."""
+    if not raw_body:
+        return True  # no raw_body stored — can't compare, assume unchanged
+    # Normalize whitespace for comparison (Gmail may reformat)
+    original_norm = " ".join(raw_body.split())
+    gmail_norm = " ".join(gmail_body.split())
+    # Strip HTML tags from Gmail body (our raw_body is plain text, Gmail may wrap in HTML)
+    gmail_plain = re.sub(r'<br\s*/?>', '\n', gmail_norm)
+    gmail_plain = re.sub(r'<[^>]+>', '', gmail_plain)
+    gmail_plain = " ".join(gmail_plain.split())
+    import difflib
+    return difflib.SequenceMatcher(None, original_norm, gmail_plain).ratio() >= 0.8
+
+
+def _draft_needs_refresh_today(windows: list[dict], user_tz_str: str) -> bool:
+    """Return True if the earliest suggested time is today or earlier.
+
+    The idea: if a draft proposes 2pm Thursday, it should be refreshed by 9am
+    Thursday morning — the user shouldn't wake up and see a draft with a time
+    that's later today (or already passed). Times for tomorrow or later are fine.
+    """
+    from zoneinfo import ZoneInfo
+
+    if not windows:
+        return False  # no windows = availability mode, handled separately
+
+    try:
+        tz = ZoneInfo(user_tz_str)
+    except Exception:
+        tz = ZoneInfo("UTC")
+
+    today = datetime.now(timezone.utc).astimezone(tz).date()
+
+    from datetime import date as date_type
+    for w in windows:
+        try:
+            window_date = date_type.fromisoformat(w["date"])
+            if window_date <= today:
+                return True  # at least one proposed time is today or earlier
+        except (KeyError, ValueError):
+            continue
+
+    return False  # all proposed times are tomorrow or later
+
+
+def _refresh_stale_drafts() -> int:
+    """Delete stale Gmail drafts and recompose them with fresh availability."""
+    from scheduler.classifier.intent import classify_email, SchedulingIntent
+    from scheduler.db import get_drafts_eligible_for_refresh, get_user_by_id, mark_draft_auto_deleted
+
+    candidates = get_drafts_eligible_for_refresh()
+    refreshed = 0
+
+    for row in candidates:
+        user_id = str(row["user_id"])
+        draft_id = row["draft_id"]
+        thread_id = row["thread_id"]
+        user_email = row["user_email"]
+
+        try:
+            creds = load_credentials(user_id)
+        except Exception:
+            logger.warning("draft_refresh: creds failed for user=%s, skipping", user_id, exc_info=True)
+            continue
+
+        gmail = GmailClient(creds)
+        user = get_user_by_id(user_id)
+        extra_ids = (user.calendar_ids or []) if user else []
+        calendar = CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=extra_ids)
+
+        # Check timezone window — only refresh during user's morning
+        user_tz = calendar.get_user_timezone()
+        if not _is_morning_window(user_tz):
+            continue
+
+        # Check if any suggested time is today or earlier (needs refresh before user's day)
+        windows = row.get("suggested_windows") or []
+        if isinstance(windows, str):
+            import json as _json
+            windows = _json.loads(windows)
+        if windows:
+            if not _draft_needs_refresh_today(windows, user_tz):
+                continue  # all proposed times are tomorrow or later, still valid
+        else:
+            # No suggested windows (availability mode) — fall back to 24h age check
+            from datetime import timedelta
+            composed_at = row.get("composed_at")
+            if composed_at and (datetime.now(timezone.utc) - composed_at.replace(tzinfo=timezone.utc)) < timedelta(hours=24):
+                continue
+
+        # Check if user acted on the draft (edited or deleted)
+        try:
+            gmail_draft = gmail.get_draft(draft_id)
+        except Exception:
+            logger.warning("draft_refresh: failed to fetch draft %s, skipping", draft_id, exc_info=True)
+            continue
+
+        if gmail_draft is None:
+            # User deleted the draft — clean up DB row, don't recompose
+            logger.info("draft_refresh: draft %s deleted by user, cleaning up", draft_id)
+            mark_draft_auto_deleted(row["id"])
+            continue
+
+        if not _draft_body_matches(row.get("raw_body"), gmail_draft["body"]):
+            # User edited the draft — leave their version alone
+            logger.info("draft_refresh: draft %s edited by user, skipping refresh", draft_id)
+            continue
+
+        # Delete old Gmail draft
+        try:
+            gmail.delete_draft(draft_id)
+        except Exception:
+            logger.warning("draft_refresh: failed to delete old draft %s", draft_id, exc_info=True)
+
+        # Re-fetch the email thread
+        try:
+            thread_emails = gmail.get_thread(thread_id)
+        except Exception:
+            logger.warning("draft_refresh: thread %s gone, cleaning up draft", thread_id, exc_info=True)
+            mark_draft_auto_deleted(row["id"])
+            continue
+
+        if not thread_emails:
+            mark_draft_auto_deleted(row["id"])
+            continue
+
+        # Check if thread was resolved (user sent a reply)
+        resolved = False
+        for t_email in thread_emails:
+            if t_email.sender and user_email in t_email.sender:
+                composed_at = row.get("composed_at")
+                if composed_at and t_email.date > composed_at:
+                    logger.info("draft_refresh: thread %s resolved (user replied), cleaning up", thread_id)
+                    mark_draft_auto_deleted(row["id"])
+                    resolved = True
+                    break
+        if resolved:
+            continue
+
+        # Build thread_messages context (same as webhook handler)
+        email = thread_emails[-1]  # latest message in thread
+        thread_messages = []
+        for t_email in thread_emails:
+            if "DRAFT" in t_email.label_ids:
+                continue  # skip unsent drafts
+            thread_messages.append({
+                "sender": t_email.sender,
+                "subject": t_email.subject,
+                "body": _strip_html(t_email.body) if t_email.body else "",
+                "date": t_email.date.isoformat(),
+            })
+
+        # Re-classify
+        classification = classify_email(
+            email.subject, email.body, email.sender,
+            thread_messages=thread_messages,
+            recipient=email.recipient, cc=email.cc,
+            user_email=user_email,
+        )
+
+        if classification.intent == SchedulingIntent.DOESNT_NEED_DRAFT:
+            logger.info("draft_refresh: thread %s no longer needs draft, cleaning up", thread_id)
+            mark_draft_auto_deleted(row["id"])
+            continue
+
+        # Delete old composed_drafts row
+        mark_draft_auto_deleted(row["id"])
+
+        # Recompose with fresh availability
+        try:
+            compose_result = _compose_draft_for_runtime(
+                user_id=user_id,
+                email=email,
+                classification=classification,
+                gmail=gmail,
+                calendar=calendar,
+                autopilot=user.autopilot_enabled if user else False,
+                user_email=user_email,
+                thread_messages=thread_messages,
+                refresh_count=row["refresh_count"] + 1,
+            )
+            if compose_result and compose_result.get("draft_id"):
+                logger.info("draft_refresh: refreshed draft for thread %s (refresh #%d)", thread_id, row["refresh_count"] + 1)
+                refreshed += 1
+            else:
+                logger.info("draft_refresh: thread %s resolved during recomposition, no new draft", thread_id)
+        except Exception:
+            logger.exception("draft_refresh: failed to recompose draft for thread %s", thread_id)
+
+    return refreshed
+
+
+_DRAFT_REFRESH_INTERVAL = 1800  # 30 minutes
+
+
+async def _draft_refresh_loop():
+    """Background loop: refresh stale drafts before users' mornings."""
+    await asyncio.sleep(120)  # let server finish starting
+    while True:
+        try:
+            refreshed = await asyncio.to_thread(_refresh_stale_drafts)
+            if refreshed:
+                logger.info("draft_refresh_loop: refreshed %d stale drafts", refreshed)
+        except Exception:
+            logger.exception("draft_refresh_loop: failed")
+        await asyncio.sleep(_DRAFT_REFRESH_INTERVAL)
+
+
 async def _watch_renewal_loop():
     """Background loop: renew Gmail watches and clean up old processed messages."""
     await asyncio.sleep(60)  # let server finish starting
@@ -138,8 +359,10 @@ async def _watch_renewal_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(_watch_renewal_loop())
+    refresh_task = asyncio.create_task(_draft_refresh_loop())
     yield
     task.cancel()
+    refresh_task.cancel()
 
 
 app = FastAPI(title="Scheduler Control Plane", lifespan=lifespan)
@@ -948,6 +1171,8 @@ def gmail_draft(req: CreateDraftRequest, session: dict = Depends(get_session)):
         try:
             thread_emails = gmail.get_thread(req.thread_id)
             for t_email in thread_emails:
+                if "DRAFT" in t_email.label_ids:
+                    continue  # skip unsent drafts
                 thread_messages.append({
                     "sender": t_email.sender,
                     "subject": t_email.subject,
@@ -1271,6 +1496,8 @@ def _process_scheduling_link_submission(user_id: str, link_id: str) -> None:
         try:
             thread_emails = gmail.get_thread(link.thread_id)
             for t_email in thread_emails:
+                if "DRAFT" in t_email.label_ids:
+                    continue  # skip unsent drafts
                 thread_messages.append({
                     "sender": t_email.sender,
                     "subject": t_email.subject,
@@ -1574,6 +1801,8 @@ def _run_onboarding_for_runtime(user_id: str) -> None:
             _run_onboarding_all(user_id)
             update_system_enabled(user_id, True)
             update_onboarding_status(user_id, "done")
+            from scheduler import analytics
+            analytics.track(user_id, "onboarding_completed", {})
             logger.info("onboarding: system enabled for user=%s", user_id)
             with _onboarding_lock:
                 _onboarding_status.pop(user_id, None)
@@ -1626,6 +1855,8 @@ def _run_onboarding_for_runtime(user_id: str) -> None:
 
             update_system_enabled(user_id, True)
             update_onboarding_status(user_id, "done")
+            from scheduler import analytics
+            analytics.track(user_id, "onboarding_completed", {})
             logger.info("onboarding[e2b]: system enabled for user=%s", user_id)
 
             with _onboarding_lock:
@@ -1652,13 +1883,14 @@ def _compose_draft_for_runtime(
     autopilot: bool,
     user_email: str = "",
     thread_messages: list[dict] | None = None,
+    refresh_count: int = 0,
 ) -> dict | None:
     runtime = config.agent_runtime.strip().lower()
 
     if runtime == "local":
         from scheduler.drafts.composer import DraftComposer, LocalDraftBackend
 
-        backend = LocalDraftBackend(gmail, calendar, user_id=user_id, thread_messages=thread_messages)
+        backend = LocalDraftBackend(gmail, calendar, user_id=user_id, thread_messages=thread_messages, refresh_count=refresh_count)
         composer = DraftComposer(backend, user_id, autopilot=autopilot, user_email=user_email)
         return composer.compose_and_create_draft(email, classification)
 
@@ -1875,6 +2107,8 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
             try:
                 thread_emails = gmail.get_thread(email.thread_id)
                 for t_email in thread_emails:
+                    if "DRAFT" in t_email.label_ids:
+                        continue  # skip unsent drafts
                     thread_messages.append({
                         "sender": t_email.sender,
                         "subject": t_email.subject,
