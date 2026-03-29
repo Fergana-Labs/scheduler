@@ -108,6 +108,8 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             reasoning_emails_enabled INTEGER NOT NULL DEFAULT 0,
             calendar_ids TEXT,
             onboarding_status TEXT,
+            display_name TEXT,
+            draft_auto_delete_enabled INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -168,6 +170,8 @@ class UserRow:
     reasoning_emails_enabled: bool = False
     calendar_ids: list[str] | None = None
     onboarding_status: str | None = None
+    display_name: str | None = None
+    draft_auto_delete_enabled: bool = True
 
 
 @dataclass
@@ -237,6 +241,8 @@ def _row_to_user(row: sqlite3.Row) -> UserRow:
         reasoning_emails_enabled=bool(row["reasoning_emails_enabled"]),
         calendar_ids=json.loads(row["calendar_ids"]) if row["calendar_ids"] else None,
         onboarding_status=row["onboarding_status"],
+        display_name=row["display_name"],
+        draft_auto_delete_enabled=bool(row["draft_auto_delete_enabled"]),
         created_at=_parse_ts(row["created_at"]),
         updated_at=_parse_ts(row["updated_at"]),
     )
@@ -398,6 +404,14 @@ def update_process_sales_emails(user_id: str, enabled: bool) -> None:
 
 def update_reasoning_emails_enabled(user_id: str, enabled: bool) -> None:
     _update_user_field(user_id, reasoning_emails_enabled=int(enabled))
+
+
+def update_display_name(user_id: str, display_name: str) -> None:
+    _update_user_field(user_id, display_name=display_name)
+
+
+def update_draft_auto_delete(user_id: str, enabled: bool) -> None:
+    _update_user_field(user_id, draft_auto_delete_enabled=int(enabled))
 
 
 def update_scheduled_calendar_id(user_id: str, scheduled_calendar_id: str) -> None:

@@ -252,13 +252,13 @@ async def setup_init(body: SetupInitRequest, authorization: str = Header(default
 
     try:
         creds = await asyncio.to_thread(load_credentials, user.id)
-        if creds:
-            gmail = GmailClient(creds)
-            history_id = await asyncio.to_thread(gmail.get_current_history_id)
-            await asyncio.to_thread(update_gmail_history_id, user.id, history_id)
-            logger.info("setup_init: gmail history_id=%s for %s", history_id, user.email)
+        gmail = GmailClient(creds)
+        history_id = await asyncio.to_thread(gmail.get_current_history_id)
+        await asyncio.to_thread(update_gmail_history_id, user.id, history_id)
+        logger.info("setup_init: gmail history_id=%s for %s", history_id, user.email)
     except Exception:
         logger.exception("setup_init: failed to init gmail history_id")
+        raise HTTPException(status_code=500, detail="Gmail initialization failed — retry setup")
 
     _setup_completed = True
     return {"status": "ok", "user_id": user.id, "email": user.email}
@@ -1891,11 +1891,11 @@ def _handle_sent_message_for_invite(user_id: str, email, gmail: GmailClient, cal
     delete_pending_invite(pending.id)
 
 
-def _get_new_message_ids(user_id: str, history_id: str | None = None) -> list[str]:
+def _get_new_message_ids(user_id: str) -> list[str]:
     """Get new Gmail message IDs since the stored history ID and advance the baseline.
 
-    history_id: the new baseline to store (webhook mode, from Pub/Sub).
-                When None (poll mode), fetches the current history ID from Gmail.
+    Uses the history ID returned by Gmail's History API as the new baseline,
+    so no messages are lost between fetching and advancing.
     """
     from scheduler.db import get_user_by_id, update_gmail_history_id
 
@@ -1905,16 +1905,16 @@ def _get_new_message_ids(user_id: str, history_id: str | None = None) -> list[st
 
     creds = load_credentials(user_id)
     gmail = GmailClient(creds)
-    new_baseline = history_id or gmail.get_current_history_id()
 
     try:
-        new_message_ids = gmail.get_history(user.gmail_history_id)
+        new_message_ids, new_history_id = gmail.get_history(user.gmail_history_id)
     except Exception:
         logger.warning("gmail: history expired for user=%s, resetting", user.email)
-        update_gmail_history_id(user_id, new_baseline)
+        new_history_id = gmail.get_current_history_id()
+        update_gmail_history_id(user_id, new_history_id)
         return []
 
-    update_gmail_history_id(user_id, new_baseline)
+    update_gmail_history_id(user_id, new_history_id)
     return new_message_ids
 
 
@@ -2137,7 +2137,7 @@ async def gmail_webhook(request: Request, background_tasks: BackgroundTasks):
         # Return 200 so Pub/Sub doesn't retry for unknown users
         return {"status": "ignored", "reason": "unknown user"}
 
-    message_ids = await asyncio.to_thread(_get_new_message_ids, str(user.id), history_id)
+    message_ids = await asyncio.to_thread(_get_new_message_ids, str(user.id))
     if message_ids:
         background_tasks.add_task(_process_messages, str(user.id), email_address, message_ids)
 

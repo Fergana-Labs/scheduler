@@ -401,7 +401,7 @@ class GmailClient:
         profile = service.users().getProfile(userId="me").execute()
         return str(profile["historyId"])
 
-    def get_history(self, start_history_id: str) -> list[str]:
+    def get_history(self, start_history_id: str) -> tuple[list[str], str]:
         """Get message IDs added to the inbox since a given history ID.
 
         Args:
@@ -409,10 +409,12 @@ class GmailClient:
                               a previous push notification).
 
         Returns:
-            List of new message IDs.
+            Tuple of (message_ids, latest_history_id). The latest_history_id
+            should be stored as the new baseline for the next call.
         """
         service = self._get_service()
         message_ids = []
+        latest_history_id = start_history_id
         page_token = None
 
         while True:
@@ -425,6 +427,7 @@ class GmailClient:
                 kwargs["pageToken"] = page_token
 
             result = service.users().history().list(**kwargs).execute()
+            latest_history_id = str(result.get("historyId", latest_history_id))
 
             for record in result.get("history", []):
                 for msg_added in record.get("messagesAdded", []):
@@ -434,7 +437,7 @@ class GmailClient:
             if not page_token:
                 break
 
-        return message_ids
+        return message_ids, latest_history_id
 
     def search(self, query: str, max_results: int = 100) -> list[Email]:
         """Search emails using Gmail search syntax.
