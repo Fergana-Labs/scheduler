@@ -43,17 +43,24 @@ fi
 gcloud billing projects link $PROJECT_ID --billing-account=$BILLING_ACCOUNT
 
 # Enable APIs
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com storage.googleapis.com
 
 # Create a GCS bucket for persistent SQLite storage
 GCS_BUCKET="scheduled-${PROJECT_ID}-data"
 gcloud storage buckets create "gs://${GCS_BUCKET}" --location=us-central1 --quiet 2>/dev/null || true
 
+# Grant Cloud Run's default service account access to the bucket
+PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
+gcloud storage buckets add-iam-policy-binding "gs://${GCS_BUCKET}" \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/storage.objectAdmin" --quiet
+
 # Clone and deploy
 git clone https://github.com/Fergana-Labs/scheduled.git /tmp/scheduled-setup
-cd /tmp/scheduled-setup && git checkout self-hosted
+cd /tmp/scheduled-setup
 
 SESSION_SECRET=$(openssl rand -hex 32)
+SETUP_TOKEN=$(openssl rand -hex 32)
 
 gcloud run deploy scheduler \
   --source . \
@@ -69,6 +76,8 @@ ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY,\
 GOOGLE_CLIENT_ID=1098804761920-k7qgt7gvhf10pub9sisviu11puk7j4rk.apps.googleusercontent.com,\
 GOOGLE_CLIENT_SECRET=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,\
 SESSION_SECRET=$SESSION_SECRET,\
+SETUP_TOKEN=$SETUP_TOKEN,\
+SCHEDULER_DEPLOYMENT_MODE=self_hosted,\
 GCS_BUCKET=$GCS_BUCKET"
 
 CLOUD_RUN_URL=$(gcloud run services describe scheduler --region=us-central1 --format='value(status.url)')
@@ -147,23 +156,31 @@ OAUTH_SCRIPT
 
 ---
 
-## Phase 4: Set User Credentials
+## Phase 4: Initialize User via Setup Endpoint
 
 ```bash
 OAUTH_DATA=$(cat /tmp/scheduled_oauth.json)
 USER_EMAIL=$(echo "$OAUTH_DATA" | python3 -c "import sys,json; print(json.load(sys.stdin)['email'])")
 REFRESH_TOKEN=$(echo "$OAUTH_DATA" | python3 -c "import sys,json; print(json.load(sys.stdin)['refresh_token'])")
 
+# Update Cloud Run with the public URL for CORS/redirects
 gcloud run services update scheduler --region=us-central1 \
   --update-env-vars="\
-USER_EMAIL=$USER_EMAIL,\
-GOOGLE_REFRESH_TOKEN=$REFRESH_TOKEN,\
 CONTROL_PLANE_PUBLIC_URL=$CLOUD_RUN_URL,\
 WEB_APP_URL=$CLOUD_RUN_URL"
 
-rm -f /tmp/scheduled_oauth.json
-echo "Credentials set — new revision deploying..."
+echo "Waiting for new revision to deploy..."
 sleep 15
+
+# Create the user and initialize Gmail polling via the setup endpoint
+curl -sf -X POST "$CLOUD_RUN_URL/api/setup/init" \
+  -H "Authorization: Bearer $SETUP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"email\": \"$USER_EMAIL\", \"refresh_token\": \"$REFRESH_TOKEN\"}"
+
+echo ""
+rm -f /tmp/scheduled_oauth.json
+echo "User initialized — Gmail polling will start shortly."
 ```
 
 ---
