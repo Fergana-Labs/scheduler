@@ -1825,7 +1825,7 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
     )
 
     from scheduler.classifier.intent import classify_email, SchedulingIntent
-    from scheduler.classifier.newsletter import is_mass_email
+    from scheduler.classifier.newsletter import is_mass_email, is_automated_calendar_email
     from scheduler.db import try_claim_message
 
     calendar = CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=user.calendar_ids or [])
@@ -1868,6 +1868,11 @@ def _process_new_messages(user_id: str, email_address: str, history_id: str) -> 
             # Skip newsletters / mass emails (before classifier, saves API cost)
             if is_mass_email(email.headers, email.sender):
                 logger.info("gmail_webhook: message %s is a mass email/newsletter, skipping", message_id)
+                continue
+
+            # Skip automated calendar notifications (GCal invites, updates, cancellations)
+            if is_automated_calendar_email(email.headers, email.sender, email.body):
+                logger.info("gmail_webhook: message %s is an automated calendar email, skipping", message_id)
                 continue
 
             # Fetch full thread for classifier context

@@ -28,6 +28,25 @@ _GCAL_SENDER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_SCHEDULING_TOOL_SENDERS = re.compile(
+    r"^(notifications?@calendly\.com"
+    r"|notifications?@cal\.com"
+    r"|no-?reply@zoom\.us"
+    r"|no-?reply@meet\.google\.com"
+    r")$",
+    re.IGNORECASE,
+)
+
+_GCAL_INVITE_BODY_PATTERN = re.compile(
+    r"Invitation from Google Calendar|"
+    r"has invited you to the following event|"
+    r"Going \(yes - maybe - no\)|"
+    r"This event has been changed|"
+    r"This event has been canceled|"
+    r"You are receiving this email at the account .+ because you are subscribed",
+    re.IGNORECASE,
+)
+
 
 def _extract_email(sender: str) -> str:
     """Extract the bare email address from a 'Name <addr>' string."""
@@ -67,4 +86,17 @@ def is_mass_email(headers: dict[str, str], sender: str) -> bool:
     if _GCAL_SENDER_PATTERN.match(addr):
         return True
 
+    # Scheduling tool notification senders (Calendly, Cal.com, Zoom)
+    if _SCHEDULING_TOOL_SENDERS.match(addr):
+        return True
+
     return False
+
+
+def is_automated_calendar_email(headers: dict[str, str], sender: str, body: str) -> bool:
+    """Return True if this looks like an automated calendar invite/notification.
+
+    Catches Google Calendar invites sent "on behalf of" the organizer, where
+    the sender is a real person's address but the body is GCal boilerplate.
+    """
+    return bool(_GCAL_INVITE_BODY_PATTERN.search(body))
