@@ -262,6 +262,20 @@ class GmailClient:
         )
         return draft["id"]
 
+    def get_draft(self, draft_id: str) -> dict | None:
+        """Fetch a draft by ID. Returns {"id": ..., "body": ...} or None if not found."""
+        from googleapiclient.errors import HttpError
+
+        try:
+            service = self._get_service()
+            draft = service.users().drafts().get(userId="me", id=draft_id, format="full").execute()
+            body = self._extract_body(draft.get("message", {}).get("payload", {}))
+            return {"id": draft_id, "body": body}
+        except HttpError as e:
+            if e.resp.status == 404:
+                return None
+            raise
+
     def delete_draft(self, draft_id: str) -> None:
         """Delete a draft by its ID."""
         service = self._get_service()

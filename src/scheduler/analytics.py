@@ -32,6 +32,8 @@ def record_draft_composed(
     subject: str,
     body: str,
     was_autopilot: bool = False,
+    refresh_count: int = 0,
+    suggested_windows: list[dict] | None = None,
 ) -> None:
     """Anonymize and store a composed draft. Runs in a daemon thread."""
 
@@ -57,6 +59,8 @@ def record_draft_composed(
                 body=anon_body,
                 was_autopilot=was_autopilot,
                 raw_body=plain_body,
+                refresh_count=refresh_count,
+                suggested_windows=suggested_windows,
             )
         except Exception:
             logger.debug("analytics.record_draft_composed: failed for thread %s", thread_id, exc_info=True)

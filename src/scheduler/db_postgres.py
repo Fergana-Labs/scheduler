@@ -533,16 +533,20 @@ def store_composed_draft(
     body: str,
     was_autopilot: bool = False,
     raw_body: str | None = None,
+    refresh_count: int = 0,
+    suggested_windows: list[dict] | None = None,
 ) -> None:
     """Insert a row into composed_drafts with anonymized content."""
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO composed_drafts
-                (user_id, thread_id, draft_id, thread_context, original_subject, original_body, was_autopilot, raw_body)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (user_id, thread_id, draft_id, thread_context, original_subject, original_body,
+                 was_autopilot, raw_body, refresh_count, suggested_windows)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (user_id, thread_id, draft_id, json.dumps(thread_context), subject, body, was_autopilot, raw_body),
+            (user_id, thread_id, draft_id, json.dumps(thread_context), subject, body,
+             was_autopilot, raw_body, refresh_count, json.dumps(suggested_windows or [])),
         )
         conn.commit()
 
@@ -590,7 +594,11 @@ def update_composed_draft_sent(
 
 
 def get_stale_unsent_drafts(hours: int = 48) -> list[dict]:
-    """Get unsent composed drafts older than the given hours, for users with auto-delete enabled."""
+    """Get unsent composed drafts older than the given hours, for users with auto-delete enabled.
+
+    Excludes drafts still eligible for morning refresh (refresh_count < 3) —
+    those are handled by the refresh loop, not the auto-delete.
+    """
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -600,6 +608,7 @@ def get_stale_unsent_drafts(hours: int = 48) -> list[dict]:
             WHERE cd.sent_at IS NULL
               AND cd.composed_at < now() - make_interval(hours => %s)
               AND u.draft_auto_delete_enabled = TRUE
+              AND cd.refresh_count >= 3
             """,
             (hours,),
         )
@@ -615,6 +624,32 @@ def mark_draft_auto_deleted(draft_id: str) -> None:
             (draft_id,),
         )
         conn.commit()
+
+
+def get_drafts_eligible_for_refresh(max_refresh_count: int = 3) -> list[dict]:
+    """Get unsent drafts whose suggested times are stale (all in the past).
+
+    A draft is eligible for refresh when:
+    - It has suggested_windows and ALL of them are in the past, OR
+    - It has no suggested_windows (availability mode) and is older than 24 hours
+    """
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT cd.id, cd.user_id, cd.draft_id, cd.thread_id, cd.original_subject,
+                   cd.refresh_count, cd.raw_body, cd.suggested_windows, cd.composed_at,
+                   u.email AS user_email, u.autopilot_enabled, u.calendar_ids
+            FROM composed_drafts cd
+            JOIN users u ON u.id = cd.user_id
+            WHERE cd.sent_at IS NULL
+              AND cd.refresh_count < %s
+              AND u.draft_auto_delete_enabled = TRUE
+              AND u.system_enabled = TRUE
+            """,
+            (max_refresh_count,),
+        )
+        cols = [desc[0] for desc in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
 _TZ = "America/Los_Angeles"
@@ -772,7 +807,187 @@ def get_funnel_data_daily(days: int = 7, include_current: bool = False) -> list[
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-_ALL_EVENTS = ('user_created', 'onboarding_completed', 'draft_composed', 'draft_sent', 'email_classified', 'setting_changed')
+def get_demo_funnel_data(weeks: int = 12, include_current: bool = False) -> list[dict]:
+    """Weekly demo funnel: demo views → messages sent → draft sent → complete → booked → CTA signup."""
+    with _conn() as conn, conn.cursor() as cur:
+        end_expr = "date_trunc('week', (now() AT TIME ZONE %s))" if include_current else "date_trunc('week', (now() AT TIME ZONE %s)) - interval '1 week'"
+        cur.execute(
+            f"""
+            WITH week_series AS (
+                SELECT generate_series(
+                    date_trunc('week', (now() AT TIME ZONE %s) - make_interval(weeks => %s)),
+                    {end_expr},
+                    '1 week'::interval
+                ) AS week
+            ),
+            demo_views AS (
+                SELECT date_trunc('week', created_at AT TIME ZONE %s) AS week,
+                       count(DISTINCT properties->>'session_id') FILTER (WHERE properties->>'session_id' IS NOT NULL)
+                       + count(*) FILTER (WHERE properties->>'session_id' IS NULL) AS cnt
+                FROM page_events
+                WHERE event = 'demo_page_view'
+                  AND created_at >= now() - make_interval(weeks => %s)
+                GROUP BY 1
+            ),
+            demo_messages AS (
+                SELECT date_trunc('week', created_at AT TIME ZONE %s) AS week,
+                       count(DISTINCT properties->>'session_id') FILTER (WHERE properties->>'session_id' IS NOT NULL)
+                       + count(*) FILTER (WHERE properties->>'session_id' IS NULL) AS cnt
+                FROM page_events
+                WHERE event = 'demo_message_sent'
+                  AND created_at >= now() - make_interval(weeks => %s)
+                GROUP BY 1
+            ),
+            demo_sends AS (
+                SELECT date_trunc('week', created_at AT TIME ZONE %s) AS week,
+                       count(DISTINCT properties->>'session_id') FILTER (WHERE properties->>'session_id' IS NOT NULL)
+                       + count(*) FILTER (WHERE properties->>'session_id' IS NULL) AS cnt
+                FROM page_events
+                WHERE event = 'demo_send_clicked'
+                  AND created_at >= now() - make_interval(weeks => %s)
+                GROUP BY 1
+            ),
+            demo_complete AS (
+                SELECT date_trunc('week', created_at AT TIME ZONE %s) AS week,
+                       count(DISTINCT properties->>'session_id') FILTER (WHERE properties->>'session_id' IS NOT NULL)
+                       + count(*) FILTER (WHERE properties->>'session_id' IS NULL) AS cnt
+                FROM page_events
+                WHERE event = 'demo_conversation_complete'
+                  AND created_at >= now() - make_interval(weeks => %s)
+                GROUP BY 1
+            ),
+            demo_booked AS (
+                SELECT date_trunc('week', created_at AT TIME ZONE %s) AS week,
+                       count(DISTINCT properties->>'session_id') FILTER (WHERE properties->>'session_id' IS NOT NULL)
+                       + count(*) FILTER (WHERE properties->>'session_id' IS NULL) AS cnt
+                FROM page_events
+                WHERE event = 'demo_book_clicked'
+                  AND created_at >= now() - make_interval(weeks => %s)
+                GROUP BY 1
+            ),
+            demo_cta AS (
+                SELECT date_trunc('week', created_at AT TIME ZONE %s) AS week,
+                       count(DISTINCT properties->>'session_id') FILTER (WHERE properties->>'session_id' IS NOT NULL)
+                       + count(*) FILTER (WHERE properties->>'session_id' IS NULL) AS cnt
+                FROM page_events
+                WHERE event = 'demo_cta_signup_click'
+                  AND created_at >= now() - make_interval(weeks => %s)
+                GROUP BY 1
+            )
+            SELECT
+                ws.week,
+                COALESCE(dv.cnt, 0) AS demo_views,
+                COALESCE(dm.cnt, 0) AS demo_messages,
+                COALESCE(ds.cnt, 0) AS demo_sends,
+                COALESCE(dc.cnt, 0) AS demo_complete,
+                COALESCE(db.cnt, 0) AS demo_booked,
+                COALESCE(dt.cnt, 0) AS demo_cta_signups
+            FROM week_series ws
+            LEFT JOIN demo_views dv ON dv.week = ws.week
+            LEFT JOIN demo_messages dm ON dm.week = ws.week
+            LEFT JOIN demo_sends ds ON ds.week = ws.week
+            LEFT JOIN demo_complete dc ON dc.week = ws.week
+            LEFT JOIN demo_booked db ON db.week = ws.week
+            LEFT JOIN demo_cta dt ON dt.week = ws.week
+            ORDER BY ws.week
+            """,
+            (_TZ, weeks, _TZ, _TZ, weeks, _TZ, weeks, _TZ, weeks, _TZ, weeks, _TZ, weeks, _TZ, weeks),
+        )
+        cols = [desc[0] for desc in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def get_demo_funnel_data_daily(days: int = 7, include_current: bool = False) -> list[dict]:
+    """Daily demo funnel: demo views → messages sent → draft sent → complete → booked → CTA signup."""
+    with _conn() as conn, conn.cursor() as cur:
+        end_expr = "date_trunc('day', (now() AT TIME ZONE %s))" if include_current else "date_trunc('day', (now() AT TIME ZONE %s)) - interval '1 day'"
+        cur.execute(
+            f"""
+            WITH day_series AS (
+                SELECT generate_series(
+                    date_trunc('day', (now() AT TIME ZONE %s) - make_interval(days => %s)),
+                    {end_expr},
+                    '1 day'::interval
+                ) AS day
+            ),
+            demo_views AS (
+                SELECT date_trunc('day', created_at AT TIME ZONE %s) AS day,
+                       count(DISTINCT properties->>'session_id') FILTER (WHERE properties->>'session_id' IS NOT NULL)
+                       + count(*) FILTER (WHERE properties->>'session_id' IS NULL) AS cnt
+                FROM page_events
+                WHERE event = 'demo_page_view'
+                  AND created_at >= now() - make_interval(days => %s)
+                GROUP BY 1
+            ),
+            demo_messages AS (
+                SELECT date_trunc('day', created_at AT TIME ZONE %s) AS day,
+                       count(DISTINCT properties->>'session_id') FILTER (WHERE properties->>'session_id' IS NOT NULL)
+                       + count(*) FILTER (WHERE properties->>'session_id' IS NULL) AS cnt
+                FROM page_events
+                WHERE event = 'demo_message_sent'
+                  AND created_at >= now() - make_interval(days => %s)
+                GROUP BY 1
+            ),
+            demo_sends AS (
+                SELECT date_trunc('day', created_at AT TIME ZONE %s) AS day,
+                       count(DISTINCT properties->>'session_id') FILTER (WHERE properties->>'session_id' IS NOT NULL)
+                       + count(*) FILTER (WHERE properties->>'session_id' IS NULL) AS cnt
+                FROM page_events
+                WHERE event = 'demo_send_clicked'
+                  AND created_at >= now() - make_interval(days => %s)
+                GROUP BY 1
+            ),
+            demo_complete AS (
+                SELECT date_trunc('day', created_at AT TIME ZONE %s) AS day,
+                       count(DISTINCT properties->>'session_id') FILTER (WHERE properties->>'session_id' IS NOT NULL)
+                       + count(*) FILTER (WHERE properties->>'session_id' IS NULL) AS cnt
+                FROM page_events
+                WHERE event = 'demo_conversation_complete'
+                  AND created_at >= now() - make_interval(days => %s)
+                GROUP BY 1
+            ),
+            demo_booked AS (
+                SELECT date_trunc('day', created_at AT TIME ZONE %s) AS day,
+                       count(DISTINCT properties->>'session_id') FILTER (WHERE properties->>'session_id' IS NOT NULL)
+                       + count(*) FILTER (WHERE properties->>'session_id' IS NULL) AS cnt
+                FROM page_events
+                WHERE event = 'demo_book_clicked'
+                  AND created_at >= now() - make_interval(days => %s)
+                GROUP BY 1
+            ),
+            demo_cta AS (
+                SELECT date_trunc('day', created_at AT TIME ZONE %s) AS day,
+                       count(DISTINCT properties->>'session_id') FILTER (WHERE properties->>'session_id' IS NOT NULL)
+                       + count(*) FILTER (WHERE properties->>'session_id' IS NULL) AS cnt
+                FROM page_events
+                WHERE event = 'demo_cta_signup_click'
+                  AND created_at >= now() - make_interval(days => %s)
+                GROUP BY 1
+            )
+            SELECT
+                ds.day AS week,
+                COALESCE(dv.cnt, 0) AS demo_views,
+                COALESCE(dm.cnt, 0) AS demo_messages,
+                COALESCE(ds2.cnt, 0) AS demo_sends,
+                COALESCE(dc.cnt, 0) AS demo_complete,
+                COALESCE(db.cnt, 0) AS demo_booked,
+                COALESCE(dt.cnt, 0) AS demo_cta_signups
+            FROM day_series ds
+            LEFT JOIN demo_views dv ON dv.day = ds.day
+            LEFT JOIN demo_messages dm ON dm.day = ds.day
+            LEFT JOIN demo_sends ds2 ON ds2.day = ds.day
+            LEFT JOIN demo_complete dc ON dc.day = ds.day
+            LEFT JOIN demo_booked db ON db.day = ds.day
+            LEFT JOIN demo_cta dt ON dt.day = ds.day
+            ORDER BY ds.day
+            """,
+            (_TZ, days, _TZ, _TZ, days, _TZ, days, _TZ, days, _TZ, days, _TZ, days, _TZ, days),
+        )
+        cols = [desc[0] for desc in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+_ALL_EVENTS = ('user_created', 'onboarding_completed', 'draft_composed', 'draft_sent', 'setting_changed')
 _EMAIL_EVENTS = ('draft_sent',)
 _RETENTION_EVENTS = ('user_created', 'onboarding_completed')
 

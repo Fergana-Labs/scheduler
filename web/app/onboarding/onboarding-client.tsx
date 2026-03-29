@@ -5,13 +5,14 @@ import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { CheckCircle, Loader2 } from 'lucide-react';
 import { api, captureSessionFromURL, getSession } from '@/lib/api';
-import { track } from '@/lib/analytics';
+import { track, setGAUserId } from '@/lib/analytics';
 import PendingState from '@/components/onboarding/PendingState';
 import FailedState from '@/components/onboarding/FailedState';
 
 interface UserInfo {
   user_id: string;
   email: string;
+  needs_reauth?: boolean;
 }
 
 interface OnboardingClientProps {
@@ -33,7 +34,13 @@ export default function OnboardingClient({ needsGoogle }: OnboardingClientProps)
     captureSessionFromURL();
     api<UserInfo>('/auth/me')
       .then((data) => {
+        if (data.needs_reauth) {
+          const connectUrl = `${process.env.NEXT_PUBLIC_CONTROL_PLANE_URL}/auth/google/connect?token=${getSession()}`;
+          window.location.href = `/permissions-required?retry_url=${encodeURIComponent(connectUrl)}`;
+          return;
+        }
         setUser(data);
+        setGAUserId(data.user_id);
         track('page_view', { page: 'onboarding' });
         setLoading(false);
       })

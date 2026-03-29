@@ -116,6 +116,30 @@ def _create_scheduling_link_for_draft(
     user_timezone: str,
 ) -> str | None:
     """Analyze a draft and create the appropriate scheduling link. Returns the link URL or None."""
+    try:
+        analysis = _analyze_draft_for_scheduling(draft_body, attendee_email, user_timezone)
+    except Exception:
+        logger.debug("Failed to analyze draft for scheduling link", exc_info=True)
+        return None
+    return _create_scheduling_link_from_analysis(
+        user_id=user_id,
+        analysis=analysis,
+        attendee_email=attendee_email,
+        thread_id=thread_id,
+        subject=subject,
+        user_timezone=user_timezone,
+    )
+
+
+def _create_scheduling_link_from_analysis(
+    user_id: str,
+    analysis: dict,
+    attendee_email: str,
+    thread_id: str | None,
+    subject: str,
+    user_timezone: str,
+) -> str | None:
+    """Create a scheduling link from a pre-computed analysis. Returns the link URL or None."""
     from scheduler.db import get_user_by_id
 
     user = get_user_by_id(user_id)
@@ -126,8 +150,6 @@ def _create_scheduling_link_for_draft(
     from scheduler.db import create_scheduling_link as db_create
 
     try:
-        analysis = _analyze_draft_for_scheduling(draft_body, attendee_email, user_timezone)
-
         mode = analysis.get("mode", "availability")
 
         # Confirmation emails (single agreed time) just get "Sent by Scheduled"
@@ -207,11 +229,12 @@ class DraftBackend(Protocol):
 class LocalDraftBackend:
     """Draft backend that talks directly to Gmail/Calendar and local DB state."""
 
-    def __init__(self, gmail_client: GmailClient, calendar_client: CalendarClient, user_id: str, thread_messages: list[dict] | None = None):
+    def __init__(self, gmail_client: GmailClient, calendar_client: CalendarClient, user_id: str, thread_messages: list[dict] | None = None, refresh_count: int = 0):
         self._gmail = gmail_client
         self._calendar = calendar_client
         self._user_id = user_id
         self._thread_messages = thread_messages or []
+        self._refresh_count = refresh_count
 
     def load_guide(self, name: str) -> str | None:
         from scheduler.guides import load_guide
@@ -256,12 +279,22 @@ class LocalDraftBackend:
 
     def create_draft(self, args: dict, scheduling_link_url: str | None = None) -> dict:
         body = args["body"]
+        user_tz = self._calendar.get_user_timezone()
 
-        if not scheduling_link_url:
-            user_tz = self._calendar.get_user_timezone()
-            scheduling_link_url = _create_scheduling_link_for_draft(
+        # Analyze draft once — used for both scheduling link and staleness tracking
+        suggested_windows: list[dict] = []
+        try:
+            analysis = _analyze_draft_for_scheduling(
+                body, args.get("to", ""), user_tz,
+            )
+            suggested_windows = analysis.get("suggested_windows", [])
+        except Exception:
+            analysis = None
+
+        if not scheduling_link_url and analysis:
+            scheduling_link_url = _create_scheduling_link_from_analysis(
                 user_id=self._user_id,
-                draft_body=body,
+                analysis=analysis,
                 attendee_email=args.get("to", ""),
                 thread_id=args.get("thread_id"),
                 subject=args.get("subject", "Meeting"),
@@ -287,6 +320,8 @@ class LocalDraftBackend:
             thread_messages=self._thread_messages,
             subject=args["subject"],
             body=body,
+            refresh_count=self._refresh_count,
+            suggested_windows=suggested_windows,
         )
 
         return {"draft_id": draft_id}
