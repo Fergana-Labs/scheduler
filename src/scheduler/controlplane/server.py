@@ -401,10 +401,14 @@ async def lifespan(app: FastAPI):
         task = asyncio.create_task(_gmail_poll_loop())
     else:
         task = asyncio.create_task(_watch_renewal_loop())
-    refresh_task = asyncio.create_task(_draft_refresh_loop())
+    # Draft refresh only works with Postgres (composed_drafts table)
+    refresh_task = None
+    if not _is_self_hosted_mode():
+        refresh_task = asyncio.create_task(_draft_refresh_loop())
     yield
     task.cancel()
-    refresh_task.cancel()
+    if refresh_task:
+        refresh_task.cancel()
 
 
 app = FastAPI(title="Scheduler Control Plane", lifespan=lifespan)
