@@ -29,6 +29,16 @@ interface FunnelRow {
   first_draft_sent: number;
 }
 
+interface DemoFunnelRow {
+  week: string;
+  demo_views: number;
+  demo_messages: number;
+  demo_sends: number;
+  demo_complete: number;
+  demo_booked: number;
+  demo_cta_signups: number;
+}
+
 interface CohortRow {
   week: string;
   size: number;
@@ -99,9 +109,7 @@ function pct(a: number, b: number): string {
 
 const WEEK_OPTIONS = [1, 4, 8, 12, 24, 52] as const;
 
-function FunnelSection() {
-  const [weeks, setWeeks] = useState<number>(12);
-  const [includeCurrent, setIncludeCurrent] = useState(false);
+function SignupFunnel({ weeks, includeCurrent }: { weeks: number; includeCurrent: boolean }) {
   const [data, setData] = useState<FunnelRow[] | null>(null);
   const [loading, setLoading] = useState(true);
   const isDaily = weeks === 1;
@@ -155,8 +163,142 @@ function FunnelSection() {
   ];
 
   return (
+    <>
+      <div className="mb-6 flex flex-wrap gap-4">
+        {stats.map((s) => (
+          <div key={s.label} className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-2.5">
+            <div className="text-xs text-gray-500">{s.label}</div>
+            <div className="text-xl font-semibold">{s.value}</div>
+          </div>
+        ))}
+      </div>
+      <ResponsiveContainer width="100%" height={350}>
+        <BarChart data={chartData}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="week" tick={{ fontSize: 12 }} />
+          <YAxis allowDecimals={false} />
+          <Tooltip />
+          <Legend />
+          <Bar dataKey="Page Views" fill="#d1d5db" />
+          <Bar dataKey="Signup Clicks" fill="#9ca3af" />
+          <Bar dataKey="Signups" fill="#43614a" />
+          <Bar dataKey="Onboarded" fill="#6b9e76" />
+          <Bar dataKey="First Draft Sent" fill="#a3d4ae" />
+        </BarChart>
+      </ResponsiveContainer>
+    </>
+  );
+}
+
+function DemoFunnel({ weeks, includeCurrent }: { weeks: number; includeCurrent: boolean }) {
+  const [data, setData] = useState<DemoFunnelRow[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const isDaily = weeks === 1;
+
+  useEffect(() => {
+    setLoading(true);
+    setData(null);
+    const currentParam = includeCurrent ? '&include_current=true' : '';
+    const url = isDaily
+      ? `/web/api/v1/admin/funnel/demo/daily?days=7${currentParam}`
+      : `/web/api/v1/admin/funnel/demo?weeks=${weeks}${currentParam}`;
+    api<{ data: DemoFunnelRow[] }>(url)
+      .then((res) => setData(res.data))
+      .finally(() => setLoading(false));
+  }, [weeks, includeCurrent, isDaily]);
+
+  if (loading || !data) {
+    return (
+      <div className="flex justify-center py-20">
+        <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+      </div>
+    );
+  }
+
+  const chartData = data.map((r) => ({
+    week: formatWeek(r.week),
+    'Demo Views': r.demo_views,
+    'Messages Sent': r.demo_messages,
+    'Draft Sent': r.demo_sends,
+    'Completed': r.demo_complete,
+    'Booked': r.demo_booked,
+    'CTA Signup': r.demo_cta_signups,
+  }));
+
+  const totals = data.reduce(
+    (acc, r) => ({
+      views: acc.views + r.demo_views,
+      messages: acc.messages + r.demo_messages,
+      sends: acc.sends + r.demo_sends,
+      complete: acc.complete + r.demo_complete,
+      booked: acc.booked + r.demo_booked,
+      cta: acc.cta + r.demo_cta_signups,
+    }),
+    { views: 0, messages: 0, sends: 0, complete: 0, booked: 0, cta: 0 }
+  );
+
+  const stats = [
+    { label: 'Demo Views', value: totals.views },
+    { label: 'Views → Messages', value: pct(totals.messages, totals.views) },
+    { label: 'Messages → Send', value: pct(totals.sends, totals.messages) },
+    { label: 'Send → Complete', value: pct(totals.complete, totals.sends) },
+    { label: 'Complete → Booked', value: pct(totals.booked, totals.complete) },
+    { label: 'Booked → CTA Signup', value: pct(totals.cta, totals.booked) },
+  ];
+
+  return (
+    <>
+      <div className="mb-6 flex flex-wrap gap-4">
+        {stats.map((s) => (
+          <div key={s.label} className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-2.5">
+            <div className="text-xs text-gray-500">{s.label}</div>
+            <div className="text-xl font-semibold">{s.value}</div>
+          </div>
+        ))}
+      </div>
+      <ResponsiveContainer width="100%" height={350}>
+        <BarChart data={chartData}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="week" tick={{ fontSize: 12 }} />
+          <YAxis allowDecimals={false} />
+          <Tooltip />
+          <Legend />
+          <Bar dataKey="Demo Views" fill="#d1d5db" />
+          <Bar dataKey="Messages Sent" fill="#9ca3af" />
+          <Bar dataKey="Draft Sent" fill="#6b7280" />
+          <Bar dataKey="Completed" fill="#43614a" />
+          <Bar dataKey="Booked" fill="#6b9e76" />
+          <Bar dataKey="CTA Signup" fill="#a3d4ae" />
+        </BarChart>
+      </ResponsiveContainer>
+    </>
+  );
+}
+
+type FunnelBranch = 'signup' | 'demo';
+
+function FunnelSection() {
+  const [weeks, setWeeks] = useState<number>(12);
+  const [includeCurrent, setIncludeCurrent] = useState(false);
+  const [branch, setBranch] = useState<FunnelBranch>('signup');
+  const isDaily = weeks === 1;
+
+  return (
     <div>
       <div className="mb-4 flex items-center gap-4">
+        <div className="flex gap-1 rounded-lg border border-gray-200 p-0.5">
+          {(['signup', 'demo'] as const).map((b) => (
+            <button
+              key={b}
+              onClick={() => setBranch(b)}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                branch === b ? 'bg-[#43614a] text-white' : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              {b === 'signup' ? 'Signup Funnel' : 'Demo Funnel'}
+            </button>
+          ))}
+        </div>
         <div className="flex gap-1">
           {WEEK_OPTIONS.map((w) => (
             <button
@@ -180,28 +322,11 @@ function FunnelSection() {
           Include current {isDaily ? 'day' : 'week'}
         </label>
       </div>
-      <div className="mb-6 flex flex-wrap gap-4">
-        {stats.map((s) => (
-          <div key={s.label} className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-2.5">
-            <div className="text-xs text-gray-500">{s.label}</div>
-            <div className="text-xl font-semibold">{s.value}</div>
-          </div>
-        ))}
-      </div>
-      <ResponsiveContainer width="100%" height={350}>
-        <BarChart data={chartData}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="week" tick={{ fontSize: 12 }} />
-          <YAxis allowDecimals={false} />
-          <Tooltip />
-          <Legend />
-          <Bar dataKey="Page Views" fill="#d1d5db" />
-          <Bar dataKey="Signup Clicks" fill="#9ca3af" />
-          <Bar dataKey="Signups" fill="#43614a" />
-          <Bar dataKey="Onboarded" fill="#6b9e76" />
-          <Bar dataKey="First Draft Sent" fill="#a3d4ae" />
-        </BarChart>
-      </ResponsiveContainer>
+      {branch === 'signup' ? (
+        <SignupFunnel weeks={weeks} includeCurrent={includeCurrent} />
+      ) : (
+        <DemoFunnel weeks={weeks} includeCurrent={includeCurrent} />
+      )}
     </div>
   );
 }
@@ -692,11 +817,11 @@ function Definitions() {
   return (
     <div className="space-y-8 text-sm text-gray-700 leading-relaxed">
       <section>
-        <h3 className="text-base font-semibold text-gray-800 mb-3">Funnel</h3>
+        <h3 className="text-base font-semibold text-gray-800 mb-3">Signup Funnel</h3>
         <p className="mb-3">Shows weekly conversion from landing page visit through activation. Each bar represents one calendar week.</p>
         <dl className="space-y-2">
-          <div><dt className="font-medium inline">Page Views</dt> <dd className="inline">— Number of times the landing page was loaded. Tracked anonymously via the <code className="rounded bg-gray-100 px-1 text-xs">page_events</code> table (no user ID required). One page load = one event, includes repeat visits.</dd></div>
-          <div><dt className="font-medium inline">Signup Clicks</dt> <dd className="inline">— Number of times the &quot;Get Started&quot; CTA button was clicked on the landing page. Also tracked anonymously. Does not deduplicate — a user clicking twice counts as two.</dd></div>
+          <div><dt className="font-medium inline">Page Views</dt> <dd className="inline">— Number of times the landing page was loaded. Tracked anonymously via the <code className="rounded bg-gray-100 px-1 text-xs">page_events</code> table (no user ID required). Deduplicated by session ID where available.</dd></div>
+          <div><dt className="font-medium inline">Signup Clicks</dt> <dd className="inline">— Number of times the &quot;Get Started&quot; CTA button was clicked on the landing page. Also tracked anonymously. Deduplicated by session ID where available.</dd></div>
           <div><dt className="font-medium inline">Signups</dt> <dd className="inline">— New user accounts created, from <code className="rounded bg-gray-100 px-1 text-xs">users.created_at</code>. Counted by the week the account was created, regardless of auth method (Google OAuth or Auth0).</dd></div>
           <div><dt className="font-medium inline">Onboarded</dt> <dd className="inline">— Distinct users who completed onboarding (Gmail connected, calendar synced, guides generated). Counted from <code className="rounded bg-gray-100 px-1 text-xs">onboarding_completed</code> events in <code className="rounded bg-gray-100 px-1 text-xs">analytics_events</code>.</dd></div>
           <div><dt className="font-medium inline">First Draft Sent</dt> <dd className="inline">— Users who sent their first composed draft. Uses the earliest <code className="rounded bg-gray-100 px-1 text-xs">draft_sent</code> event per user, grouped by the week that first send occurred.</dd></div>
@@ -704,6 +829,19 @@ function Definitions() {
         <div className="mt-3 rounded border border-gray-200 bg-gray-50 p-3 text-xs text-gray-500">
           <strong>Conversion rates</strong> in the summary cards are computed over the entire time range (not per-week). E.g., &quot;Clicks → Signups&quot; = total signups / total signup clicks across all visible weeks.
         </div>
+      </section>
+
+      <section>
+        <h3 className="text-base font-semibold text-gray-800 mb-3">Demo Funnel</h3>
+        <p className="mb-3">Tracks the interactive demo at <code className="rounded bg-gray-100 px-1 text-xs">/demo</code> as a separate acquisition branch that feeds into signups. All events are anonymous, tracked via <code className="rounded bg-gray-100 px-1 text-xs">page_events</code> with session IDs.</p>
+        <dl className="space-y-2">
+          <div><dt className="font-medium inline">Demo Views</dt> <dd className="inline">— Number of times the demo page was loaded (<code className="rounded bg-gray-100 px-1 text-xs">demo_page_view</code>). Deduplicated by session ID where available.</dd></div>
+          <div><dt className="font-medium inline">Messages Sent</dt> <dd className="inline">— Number of messages users sent in the demo conversation (<code className="rounded bg-gray-100 px-1 text-xs">demo_message_sent</code>). One per message, not per session — a user sending 3 messages counts as 3.</dd></div>
+          <div><dt className="font-medium inline">Draft Sent</dt> <dd className="inline">— User clicked &quot;Send&quot; on the AI-composed draft in the demo (<code className="rounded bg-gray-100 px-1 text-xs">demo_send_clicked</code>).</dd></div>
+          <div><dt className="font-medium inline">Completed</dt> <dd className="inline">— Demo conversation reached a confirmed meeting time (<code className="rounded bg-gray-100 px-1 text-xs">demo_conversation_complete</code>).</dd></div>
+          <div><dt className="font-medium inline">Booked</dt> <dd className="inline">— User entered their email and booked a real calendar invite (<code className="rounded bg-gray-100 px-1 text-xs">demo_book_clicked</code>).</dd></div>
+          <div><dt className="font-medium inline">CTA Signup</dt> <dd className="inline">— User clicked the signup CTA shown after booking (<code className="rounded bg-gray-100 px-1 text-xs">demo_cta_signup_click</code>). This is where the demo funnel feeds into the signup funnel.</dd></div>
+        </dl>
       </section>
 
       <section>
@@ -752,9 +890,9 @@ function Definitions() {
         <dl className="space-y-2">
           <div><dt className="font-medium inline"><code className="rounded bg-gray-100 px-1 text-xs">analytics_events</code></dt> <dd className="inline">— Generic event log. Requires <code className="rounded bg-gray-100 px-1 text-xs">user_id</code>. Events: <code className="rounded bg-gray-100 px-1 text-xs">user_created</code>, <code className="rounded bg-gray-100 px-1 text-xs">email_classified</code>, <code className="rounded bg-gray-100 px-1 text-xs">draft_composed</code>, <code className="rounded bg-gray-100 px-1 text-xs">draft_sent</code>, <code className="rounded bg-gray-100 px-1 text-xs">onboarding_completed</code>, <code className="rounded bg-gray-100 px-1 text-xs">onboarding_failed</code>, <code className="rounded bg-gray-100 px-1 text-xs">setting_changed</code>. Retained for 90 days.</dd></div>
           <div><dt className="font-medium inline"><code className="rounded bg-gray-100 px-1 text-xs">composed_drafts</code></dt> <dd className="inline">— One row per composed draft. Stores anonymized thread context, original and sent body, edit metrics. Retained for 90 days.</dd></div>
-          <div><dt className="font-medium inline"><code className="rounded bg-gray-100 px-1 text-xs">page_events</code></dt> <dd className="inline">— Anonymous page-level events (no user ID). Only allows <code className="rounded bg-gray-100 px-1 text-xs">landing_page_view</code> and <code className="rounded bg-gray-100 px-1 text-xs">signup_click</code> via allowlist.</dd></div>
+          <div><dt className="font-medium inline"><code className="rounded bg-gray-100 px-1 text-xs">page_events</code></dt> <dd className="inline">— Anonymous page-level events (no user ID). Allowlisted events: <code className="rounded bg-gray-100 px-1 text-xs">landing_page_view</code>, <code className="rounded bg-gray-100 px-1 text-xs">signup_click</code>, <code className="rounded bg-gray-100 px-1 text-xs">demo_page_view</code>, <code className="rounded bg-gray-100 px-1 text-xs">demo_message_sent</code>, <code className="rounded bg-gray-100 px-1 text-xs">demo_send_clicked</code>, <code className="rounded bg-gray-100 px-1 text-xs">demo_conversation_complete</code>, <code className="rounded bg-gray-100 px-1 text-xs">demo_book_clicked</code>, <code className="rounded bg-gray-100 px-1 text-xs">demo_cta_signup_click</code>.</dd></div>
           <div><dt className="font-medium inline"><code className="rounded bg-gray-100 px-1 text-xs">users</code></dt> <dd className="inline">— User accounts. <code className="rounded bg-gray-100 px-1 text-xs">created_at</code> used for cohort grouping and signup counts.</dd></div>
-          <div><dt className="font-medium inline">Google Analytics (GA4)</dt> <dd className="inline">— Tracks anonymous page views and UTM attribution on the marketing site. Separate from the admin dashboard — view in the GA4 console.</dd></div>
+          <div><dt className="font-medium inline">Google Analytics (GA4)</dt> <dd className="inline">— Tracks page views, UTM attribution, and the <code className="rounded bg-gray-100 px-1 text-xs">signup_click</code> custom event on the marketing site. Authenticated users (onboarding and settings pages) have their <code className="rounded bg-gray-100 px-1 text-xs">user_id</code> set via <code className="rounded bg-gray-100 px-1 text-xs">gtag(&apos;set&apos;)</code>, enabling User-ID reporting and cross-device tracking in GA4. View in the GA4 console.</dd></div>
         </dl>
       </section>
     </div>

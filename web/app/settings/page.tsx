@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { Loader2, LogOut } from 'lucide-react';
 import { api, captureSessionFromURL, clearSession, getSession } from '@/lib/api';
-import { track } from '@/lib/analytics';
+import { track, setGAUserId } from '@/lib/analytics';
 import ReadyState from '@/components/onboarding/ReadyState';
 import DisconnectedState from '@/components/onboarding/DisconnectedState';
 
@@ -39,6 +39,7 @@ export default function SettingsPage() {
       try {
         const userInfo = await api<UserInfo>('/auth/me');
         setUser(userInfo);
+        setGAUserId(userInfo.user_id);
         track('page_view', { page: 'settings' });
 
         if (userInfo.needs_reauth) {

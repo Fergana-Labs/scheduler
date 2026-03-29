@@ -1,3 +1,9 @@
+declare global {
+  interface Window {
+    gtag?: (...args: unknown[]) => void;
+  }
+}
+
 import { api } from './api';
 
 const BASE_URL = process.env.NEXT_PUBLIC_CONTROL_PLANE_URL || '';
@@ -10,6 +16,12 @@ function getSessionId(): string {
     sessionStorage.setItem(key, id);
   }
   return id;
+}
+
+export function setGAUserId(userId: string) {
+  if (typeof window !== 'undefined' && typeof window.gtag === 'function') {
+    window.gtag('set', { user_id: userId });
+  }
 }
 
 export function track(event: string, properties?: Record<string, unknown>) {

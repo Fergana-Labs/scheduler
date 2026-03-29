@@ -2343,7 +2343,11 @@ def web_track_event(req: TrackEventRequest, request: Request):
     return {"status": "ok"}
 
 
-_PAGE_EVENT_ALLOWLIST = {"landing_page_view", "signup_click"}
+_PAGE_EVENT_ALLOWLIST = {
+    "landing_page_view", "signup_click",
+    "demo_page_view", "demo_message_sent", "demo_send_clicked",
+    "demo_conversation_complete", "demo_book_clicked", "demo_cta_signup_click",
+}
 
 
 @app.post("/web/api/v1/events/page")
@@ -2378,6 +2382,26 @@ def admin_funnel(weeks: int = 12, include_current: bool = False, admin: dict = D
 def admin_funnel_daily(days: int = 7, include_current: bool = False, admin: dict = Depends(_require_admin)):
     from scheduler.db import get_funnel_data_daily
     data = get_funnel_data_daily(days=days, include_current=include_current)
+    for row in data:
+        if row.get("week"):
+            row["week"] = row["week"].isoformat()
+    return {"data": data}
+
+
+@app.get("/web/api/v1/admin/funnel/demo")
+def admin_funnel_demo(weeks: int = 12, include_current: bool = False, admin: dict = Depends(_require_admin)):
+    from scheduler.db import get_demo_funnel_data
+    data = get_demo_funnel_data(weeks=weeks, include_current=include_current)
+    for row in data:
+        if row.get("week"):
+            row["week"] = row["week"].isoformat()
+    return {"data": data}
+
+
+@app.get("/web/api/v1/admin/funnel/demo/daily")
+def admin_funnel_demo_daily(days: int = 7, include_current: bool = False, admin: dict = Depends(_require_admin)):
+    from scheduler.db import get_demo_funnel_data_daily
+    data = get_demo_funnel_data_daily(days=days, include_current=include_current)
     for row in data:
         if row.get("week"):
             row["week"] = row["week"].isoformat()

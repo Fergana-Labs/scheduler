@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { CheckCircle, Loader2 } from 'lucide-react';
 import { api, captureSessionFromURL, getSession } from '@/lib/api';
-import { track } from '@/lib/analytics';
+import { track, setGAUserId } from '@/lib/analytics';
 import PendingState from '@/components/onboarding/PendingState';
 import FailedState from '@/components/onboarding/FailedState';
 
@@ -40,6 +40,7 @@ export default function OnboardingClient({ needsGoogle }: OnboardingClientProps)
           return;
         }
         setUser(data);
+        setGAUserId(data.user_id);
         track('page_view', { page: 'onboarding' });
         setLoading(false);
       })
