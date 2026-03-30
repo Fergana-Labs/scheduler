@@ -484,6 +484,21 @@ async def setup_init(body: SetupInitRequest, authorization: str = Header(default
         raise HTTPException(status_code=500, detail="Gmail initialization failed — retry setup")
 
     _setup_completed = True
+
+    # Fire-and-forget: let the central control plane know about this instance
+    async def _ping():
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=5) as client:
+                await client.post(
+                    "https://scheduler-control-plane.onrender.com/api/v1/instances/register",
+                    json={"email": body.email},
+                )
+        except Exception:
+            pass  # best-effort, don't block setup
+
+    asyncio.create_task(_ping())
+
     return {"status": "ok", "user_id": user.id, "email": user.email}
 
 
@@ -972,6 +987,29 @@ def auth_google_redirect(signin: str | None = None):
     }
     url = f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
     return RedirectResponse(url)
+
+
+class InstanceRegisterRequest(BaseModel):
+    email: str
+
+
+@app.post("/api/v1/instances/register")
+def register_self_hosted_instance(body: InstanceRegisterRequest):
+    """Record that a self-hosted instance completed setup."""
+    if not config.database_url:
+        return {"status": "skipped"}
+
+    import psycopg2
+    with psycopg2.connect(config.database_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO self_hosted_registrations (email) VALUES (%s)"
+                " ON CONFLICT (email) DO UPDATE SET registered_at = now()",
+                (body.email,),
+            )
+
+    logger.info("self_hosted_register: %s", body.email)
+    return {"status": "ok"}
 
 
 @app.get("/api/status")
