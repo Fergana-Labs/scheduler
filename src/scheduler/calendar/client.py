@@ -16,6 +16,7 @@ class Event:
     end: datetime
     description: str = ""
     source: str = ""  # Where this commitment was found (gmail, text, slack, etc.)
+    response_status: str = ""  # User's response: accepted, tentative, needsAction, declined
 
 
 def _parse_event_datetime(event_data: dict, field: str) -> datetime:
@@ -32,6 +33,18 @@ def _parse_event_datetime(event_data: dict, field: str) -> datetime:
     return datetime.fromisoformat(event_data[field]["date"]).replace(tzinfo=timezone.utc)
 
 
+def _user_response_status(event_data: dict) -> str:
+    """Extract the current user's response status from an event's attendee list.
+
+    Returns one of: 'accepted', 'tentative', 'needsAction', 'declined', or ''
+    (empty string if the user is the organizer with no attendee entry, e.g. their own event).
+    """
+    for attendee in event_data.get("attendees", []):
+        if attendee.get("self"):
+            return attendee.get("responseStatus", "")
+    return ""
+
+
 def _event_from_api(event_data: dict) -> Event:
     """Convert a Google Calendar API event dict to our Event dataclass."""
     return Event(
@@ -40,6 +53,7 @@ def _event_from_api(event_data: dict) -> Event:
         start=_parse_event_datetime(event_data, "start"),
         end=_parse_event_datetime(event_data, "end"),
         description=event_data.get("description", ""),
+        response_status=_user_response_status(event_data),
     )
 
 
@@ -136,10 +150,25 @@ class CalendarClient:
 
         return calendars
 
+    # Response statuses that should NOT block availability.
+    # 'declined' = user said no, 'tentative' = user hasn't committed,
+    # 'needsAction' = user hasn't responded yet (e.g. a freshly-received invite).
+    _NON_BLOCKING_STATUSES = frozenset({"declined", "tentative", "needsAction"})
+
     def _list_events(
-        self, calendar_id: str, time_min: datetime, time_max: datetime
+        self,
+        calendar_id: str,
+        time_min: datetime,
+        time_max: datetime,
+        include_tentative: bool = False,
     ) -> list[Event]:
-        """List events from a single calendar in a time range."""
+        """List events from a single calendar in a time range.
+
+        Args:
+            include_tentative: If True, return all events regardless of response
+                status. If False (default), filter out events the user has not
+                accepted (tentative, needsAction, declined).
+        """
         service = self._get_service()
         events = []
         page_token = None
@@ -155,7 +184,9 @@ class CalendarClient:
             ).execute()
 
             for item in result.get("items", []):
-                events.append(_event_from_api(item))
+                event = _event_from_api(item)
+                if include_tentative or event.response_status not in self._NON_BLOCKING_STATUSES:
+                    events.append(event)
 
             page_token = result.get("nextPageToken")
             if not page_token:
@@ -164,7 +195,11 @@ class CalendarClient:
         return events
 
     def get_all_events(
-        self, time_min: datetime, time_max: datetime, include_primary: bool = True
+        self,
+        time_min: datetime,
+        time_max: datetime,
+        include_primary: bool = True,
+        include_tentative: bool = False,
     ) -> list[Event]:
         """Get all events across primary calendar and scheduled calendar.
 
@@ -175,21 +210,24 @@ class CalendarClient:
             time_min: Start of the time range.
             time_max: End of the time range.
             include_primary: Whether to also check the user's primary calendar.
+            include_tentative: If True, include events the user hasn't accepted
+                (tentative, needsAction, declined). Defaults to False so that
+                unconfirmed invites don't block availability.
 
         Returns:
             All events in the time range, from both calendars, sorted by start time.
         """
         scheduled_id = self.get_or_create_scheduled_calendar()
-        events = self._list_events(scheduled_id, time_min, time_max)
+        events = self._list_events(scheduled_id, time_min, time_max, include_tentative=include_tentative)
 
         if include_primary:
-            primary_events = self._list_events("primary", time_min, time_max)
+            primary_events = self._list_events("primary", time_min, time_max, include_tentative=include_tentative)
             events.extend(primary_events)
 
         for cal_id in self._extra_calendar_ids:
             if cal_id == "primary" or cal_id == scheduled_id:
                 continue
-            events.extend(self._list_events(cal_id, time_min, time_max))
+            events.extend(self._list_events(cal_id, time_min, time_max, include_tentative=include_tentative))
 
         events.sort(key=lambda e: e.start)
         return events

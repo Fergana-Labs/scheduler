@@ -256,6 +256,7 @@ class LocalDraftBackend:
                 "end": e.end.isoformat(),
                 "description": e.description,
                 "source": e.source,
+                "response_status": e.response_status,
             }
             for e in events
         ]

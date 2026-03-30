@@ -1250,6 +1250,7 @@ def _serialize_event(event) -> dict:
         "start": event.start.isoformat(),
         "end": event.end.isoformat(),
         "description": event.description,
+        "response_status": event.response_status,
     }
 
 
