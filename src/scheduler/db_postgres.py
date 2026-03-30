@@ -1515,6 +1515,30 @@ def confirm_scheduling_link(
         conn.commit()
 
 
+def update_scheduling_link_windows(
+    link_id: str,
+    suggested_windows: list[dict],
+    duration_minutes: int | None = None,
+    event_summary: str | None = None,
+) -> None:
+    """Update the suggested_windows (and optionally duration/summary) on a pending scheduling link."""
+    with _conn() as conn, conn.cursor() as cur:
+        parts = ["suggested_windows = %s"]
+        params: list = [json.dumps(suggested_windows)]
+        if duration_minutes is not None:
+            parts.append("duration_minutes = %s")
+            params.append(duration_minutes)
+        if event_summary is not None:
+            parts.append("event_summary = %s")
+            params.append(event_summary)
+        params.append(link_id)
+        cur.execute(
+            f"UPDATE scheduling_links SET {', '.join(parts)} WHERE id = %s AND status = 'pending'",
+            params,
+        )
+        conn.commit()
+
+
 def cleanup_expired_scheduling_links() -> int:
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(

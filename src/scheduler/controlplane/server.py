@@ -2212,6 +2212,61 @@ def onboarding_run(request: Request, background_tasks: BackgroundTasks):
 
 
 
+def _sync_scheduling_link_on_send(user_id: str, email, user_timezone: str) -> None:
+    """If the sent email contains a scheduling link, re-analyze the body and update the link's windows."""
+    import re
+    from scheduler.config import config
+    from scheduler.db import get_scheduling_link, update_scheduling_link_windows
+    from scheduler.drafts.composer import _analyze_draft_for_scheduling
+
+    body = email.body or ""
+    # Extract scheduling link ID from the email body
+    pattern = re.escape(config.web_app_url) + r"/schedule/([0-9a-f\-]{36})"
+    match = re.search(pattern, body)
+    if not match:
+        return
+
+    link_id = match.group(1)
+    link = get_scheduling_link(link_id)
+    if not link or link.status != "pending":
+        return
+
+    # Strip the footer before analyzing so the LLM sees the actual email content
+    footer_start = body.find("Use <a href=")
+    if footer_start == -1:
+        footer_start = body.find("sent by <a href=")
+    clean_body = body[:footer_start].strip() if footer_start > 0 else body
+
+    # Strip HTML tags for analysis
+    clean_body = re.sub(r"<[^>]+>", "", clean_body)
+    clean_body = clean_body.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ").replace("&#39;", "'").replace("&quot;", '"')
+
+    try:
+        analysis = _analyze_draft_for_scheduling(clean_body, link.attendee_email or "", user_timezone)
+    except Exception:
+        logger.debug("_sync_scheduling_link_on_send: failed to analyze sent body for link %s", link_id, exc_info=True)
+        return
+
+    new_windows = analysis.get("suggested_windows", [])
+    if not new_windows:
+        return
+
+    # Compare with existing windows — only update if different
+    import json as _json
+    old_windows_str = _json.dumps(link.suggested_windows or [], sort_keys=True)
+    new_windows_str = _json.dumps(new_windows, sort_keys=True)
+    if old_windows_str == new_windows_str:
+        return
+
+    logger.info("_sync_scheduling_link_on_send: updating link %s windows: %s -> %s", link_id, old_windows_str, new_windows_str)
+    update_scheduling_link_windows(
+        link_id,
+        suggested_windows=new_windows,
+        duration_minutes=analysis.get("duration_minutes"),
+        event_summary=analysis.get("event_summary"),
+    )
+
+
 def _handle_sent_message_for_invite(user_id: str, email, gmail: GmailClient, calendar: CalendarClient) -> None:
     """Check if a user-sent message should trigger a pending calendar invite."""
     from scheduler.classifier.intent import verify_sent_message_for_invite
@@ -2351,6 +2406,11 @@ def _process_messages(user_id: str, email_address: str, message_ids: list[str]) 
             logger.info("gmail: message %s sender=%s user=%s thread=%s subject=%s labels=%s", message_id, email.sender, email_address, email.thread_id, getattr(email, 'subject', ''), email.label_ids)
             if email.sender and email_address in email.sender:
                 _handle_sent_message_for_invite(user_id, email, gmail, calendar)
+                try:
+                    user_tz = calendar.get_user_timezone()
+                    _sync_scheduling_link_on_send(user_id, email, user_tz)
+                except Exception:
+                    logger.debug("gmail: failed to sync scheduling link for message %s", message_id, exc_info=True)
                 try:
                     from scheduler import analytics
                     analytics.record_draft_sent(user_id, email.thread_id, email.body, email.date, message_id=message_id, sender=email.sender)
