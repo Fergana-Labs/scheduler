@@ -257,6 +257,7 @@ class LocalDraftBackend:
                 "description": e.description,
                 "source": e.source,
                 "response_status": e.response_status,
+                "organizer_email": e.organizer_email,
             }
             for e in events
         ]
@@ -612,7 +613,15 @@ class DraftComposer:
             "   - If a time was confirmed but no calendar invite was sent, draft a confirmation reply.\n"
             "   - If a meeting was cancelled/rescheduled but the calendar still has the old event, note this discrepancy.\n"
             "3. Inspect the user's availability using get_calendar_events over a reasonable window "
-            "(for example, the next 14 days).\n"
+            "(for example, the next 14 days). Each event includes response_status and organizer_email. "
+            "Use these to reason about conflicts intelligently:\n"
+            "   - Events with response_status 'tentative' or 'needsAction' are NOT confirmed commitments. "
+            "If the organizer_email matches the person emailing in this thread, the calendar hold is "
+            "almost certainly part of THIS conversation — do NOT treat it as a conflict.\n"
+            "   - Even for accepted events: if the event summary and organizer match the person/topic "
+            "in the current thread, the 'conflict' IS the meeting being discussed — do not reject the time.\n"
+            "   - Only treat an event as a real conflict if it is a DIFFERENT commitment (different "
+            "organizer, different topic) with response_status 'accepted' or '' (user's own event).\n"
             "4. Based on the thread context, draft the appropriate response:\n"
             "   - If someone is requesting a meeting or proposing times: propose concrete meeting times "
             "that respect the user's existing commitments. "

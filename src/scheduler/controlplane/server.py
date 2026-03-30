@@ -1251,6 +1251,7 @@ def _serialize_event(event) -> dict:
         "end": event.end.isoformat(),
         "description": event.description,
         "response_status": event.response_status,
+        "organizer_email": event.organizer_email,
     }
 
 
@@ -1604,7 +1605,10 @@ def confirm_scheduling_link_public(link_id: str, req: ConfirmTimeRequest):
     calendar = CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=extra_ids)
 
     existing = calendar.get_all_events(selected_start, selected_end, include_primary=True)
-    if existing:
+    # Only treat confirmed commitments as conflicts — tentative/unresponded
+    # invites should not block a booking page slot.
+    confirmed = [e for e in existing if e.response_status not in ("declined", "tentative", "needsAction")]
+    if confirmed:
         raise HTTPException(
             status_code=409,
             detail="This time slot is no longer available. Please select another time.",

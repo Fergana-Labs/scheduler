@@ -17,6 +17,7 @@ class Event:
     description: str = ""
     source: str = ""  # Where this commitment was found (gmail, text, slack, etc.)
     response_status: str = ""  # User's response: accepted, tentative, needsAction, declined
+    organizer_email: str = ""  # Email of the event organizer
 
 
 def _parse_event_datetime(event_data: dict, field: str) -> datetime:
@@ -54,6 +55,7 @@ def _event_from_api(event_data: dict) -> Event:
         end=_parse_event_datetime(event_data, "end"),
         description=event_data.get("description", ""),
         response_status=_user_response_status(event_data),
+        organizer_email=event_data.get("organizer", {}).get("email", ""),
     )
 
 
@@ -150,25 +152,10 @@ class CalendarClient:
 
         return calendars
 
-    # Response statuses that should NOT block availability.
-    # 'declined' = user said no, 'tentative' = user hasn't committed,
-    # 'needsAction' = user hasn't responded yet (e.g. a freshly-received invite).
-    _NON_BLOCKING_STATUSES = frozenset({"declined", "tentative", "needsAction"})
-
     def _list_events(
-        self,
-        calendar_id: str,
-        time_min: datetime,
-        time_max: datetime,
-        include_tentative: bool = False,
+        self, calendar_id: str, time_min: datetime, time_max: datetime
     ) -> list[Event]:
-        """List events from a single calendar in a time range.
-
-        Args:
-            include_tentative: If True, return all events regardless of response
-                status. If False (default), filter out events the user has not
-                accepted (tentative, needsAction, declined).
-        """
+        """List events from a single calendar in a time range."""
         service = self._get_service()
         events = []
         page_token = None
@@ -184,9 +171,7 @@ class CalendarClient:
             ).execute()
 
             for item in result.get("items", []):
-                event = _event_from_api(item)
-                if include_tentative or event.response_status not in self._NON_BLOCKING_STATUSES:
-                    events.append(event)
+                events.append(_event_from_api(item))
 
             page_token = result.get("nextPageToken")
             if not page_token:
@@ -195,11 +180,7 @@ class CalendarClient:
         return events
 
     def get_all_events(
-        self,
-        time_min: datetime,
-        time_max: datetime,
-        include_primary: bool = True,
-        include_tentative: bool = False,
+        self, time_min: datetime, time_max: datetime, include_primary: bool = True
     ) -> list[Event]:
         """Get all events across primary calendar and scheduled calendar.
 
@@ -210,24 +191,21 @@ class CalendarClient:
             time_min: Start of the time range.
             time_max: End of the time range.
             include_primary: Whether to also check the user's primary calendar.
-            include_tentative: If True, include events the user hasn't accepted
-                (tentative, needsAction, declined). Defaults to False so that
-                unconfirmed invites don't block availability.
 
         Returns:
             All events in the time range, from both calendars, sorted by start time.
         """
         scheduled_id = self.get_or_create_scheduled_calendar()
-        events = self._list_events(scheduled_id, time_min, time_max, include_tentative=include_tentative)
+        events = self._list_events(scheduled_id, time_min, time_max)
 
         if include_primary:
-            primary_events = self._list_events("primary", time_min, time_max, include_tentative=include_tentative)
+            primary_events = self._list_events("primary", time_min, time_max)
             events.extend(primary_events)
 
         for cal_id in self._extra_calendar_ids:
             if cal_id == "primary" or cal_id == scheduled_id:
                 continue
-            events.extend(self._list_events(cal_id, time_min, time_max, include_tentative=include_tentative))
+            events.extend(self._list_events(cal_id, time_min, time_max))
 
         events.sort(key=lambda e: e.start)
         return events
