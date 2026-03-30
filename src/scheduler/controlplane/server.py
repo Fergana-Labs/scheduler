@@ -2213,37 +2213,42 @@ def onboarding_run(request: Request, background_tasks: BackgroundTasks):
 
 
 def _sync_scheduling_link_on_send(user_id: str, email, user_timezone: str) -> None:
-    """If the sent email contains a scheduling link, re-analyze the body and update the link's windows."""
+    """Re-analyze the sent email and update the scheduling link's windows if they changed."""
     import re
-    from scheduler.db import get_scheduling_link, update_scheduling_link_windows
+    from scheduler.db import get_scheduling_link_by_thread, update_scheduling_link_windows
     from scheduler.drafts.composer import _analyze_draft_for_scheduling
 
+    thread_id = email.thread_id
+    if not thread_id:
+        return
+
+    link = get_scheduling_link_by_thread(user_id, thread_id)
+    if not link:
+        return
+
     body = email.body or ""
-    # Extract scheduling link ID from the email body.
-    # Match /schedule/<uuid> regardless of the domain (www vs non-www, etc.)
-    match = re.search(r"/schedule/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", body)
-    if not match:
-        return
 
-    link_id = match.group(1)
-    link = get_scheduling_link(link_id)
-    if not link or link.status != "pending":
-        return
-
-    # Strip the footer before analyzing so the LLM sees the actual email content
-    footer_start = body.find("Use <a href=")
-    if footer_start == -1:
-        footer_start = body.find("sent by <a href=")
-    clean_body = body[:footer_start].strip() if footer_start > 0 else body
+    # Strip the Scheduled footer so the LLM only sees the actual email content
+    footer_markers = [
+        "Use Scheduled to find a time automatically",
+        "sent by Scheduled",
+        "Use <a href=",
+        "sent by <a href=",
+    ]
+    for marker in footer_markers:
+        idx = body.find(marker)
+        if idx > 0:
+            body = body[:idx].strip()
+            break
 
     # Strip HTML tags for analysis
-    clean_body = re.sub(r"<[^>]+>", "", clean_body)
+    clean_body = re.sub(r"<[^>]+>", "", body)
     clean_body = clean_body.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ").replace("&#39;", "'").replace("&quot;", '"')
 
     try:
         analysis = _analyze_draft_for_scheduling(clean_body, link.attendee_email or "", user_timezone)
     except Exception:
-        logger.debug("_sync_scheduling_link_on_send: failed to analyze sent body for link %s", link_id, exc_info=True)
+        logger.debug("_sync_scheduling_link_on_send: failed to analyze sent body for link %s", link.id, exc_info=True)
         return
 
     new_windows = analysis.get("suggested_windows", [])
@@ -2257,9 +2262,9 @@ def _sync_scheduling_link_on_send(user_id: str, email, user_timezone: str) -> No
     if old_windows_str == new_windows_str:
         return
 
-    logger.info("_sync_scheduling_link_on_send: updating link %s windows: %s -> %s", link_id, old_windows_str, new_windows_str)
+    logger.info("_sync_scheduling_link_on_send: updating link %s windows: %s -> %s", link.id, old_windows_str, new_windows_str)
     update_scheduling_link_windows(
-        link_id,
+        link.id,
         suggested_windows=new_windows,
         duration_minutes=analysis.get("duration_minutes"),
         event_summary=analysis.get("event_summary"),

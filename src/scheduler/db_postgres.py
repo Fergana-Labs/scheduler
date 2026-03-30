@@ -1477,6 +1477,20 @@ def get_scheduling_link(link_id: str) -> SchedulingLinkRow | None:
         return _scheduling_link_from_row(cols, row)
 
 
+def get_scheduling_link_by_thread(user_id: str, thread_id: str) -> SchedulingLinkRow | None:
+    """Get the most recent pending scheduling link for a thread."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM scheduling_links WHERE user_id = %s AND thread_id = %s AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+            (user_id, thread_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in cur.description]
+        return _scheduling_link_from_row(cols, row)
+
+
 def submit_recipient_availability(
     link_id: str,
     availability: list[dict],
