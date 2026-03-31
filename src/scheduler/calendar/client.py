@@ -81,6 +81,12 @@ class CalendarClient:
             self._service = build("calendar", "v3", credentials=self._credentials)
         return self._service
 
+    def close(self):
+        """Close the cached service and its httplib2 connection."""
+        if self._service is not None:
+            self._service.close()
+            self._service = None
+
     def get_user_timezone(self) -> str:
         """IANA timezone string from the user's primary calendar. Falls back to UTC."""
         if self._user_timezone:

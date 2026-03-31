@@ -1,6 +1,7 @@
 """Gmail API client for reading emails and creating drafts."""
 
 import base64
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from email.mime.text import MIMEText
@@ -37,15 +38,23 @@ class GmailClient:
         """Initialize with Google OAuth2 credentials."""
         self._credentials = credentials
 
+    @contextmanager
     def _get_service(self):
-        """Build a fresh Gmail API service.
+        """Build a fresh Gmail API service and close it when done.
 
         A new service (and underlying httplib2.Http connection) is created on
         every call because httplib2 is not thread-safe.  Reusing a cached
         service across the Starlette/FastAPI thread-pool causes SSL errors
         (DECRYPTION_FAILED_OR_BAD_RECORD_MAC / WRONG_VERSION_NUMBER).
+
+        Used as a context manager to ensure the httplib2 connection is closed,
+        preventing memory leaks from accumulated unclosed connections.
         """
-        return build("gmail", "v1", credentials=self._credentials)
+        service = build("gmail", "v1", credentials=self._credentials)
+        try:
+            yield service
+        finally:
+            service.close()
 
     def _extract_body(self, payload: dict) -> str:
         """Recursively walk the Gmail message payload to find body text.
@@ -110,46 +119,46 @@ class GmailClient:
 
     def _list_message_stubs(self, query: str | None, max_results: int) -> list[dict]:
         """Paginate through messages.list and return id/threadId stubs."""
-        service = self._get_service()
-        stubs = []
-        page_token = None
+        with self._get_service() as service:
+            stubs = []
+            page_token = None
 
-        while len(stubs) < max_results:
-            kwargs = {
-                "userId": "me",
-                "maxResults": min(max_results - len(stubs), 500),
-            }
-            if query:
-                kwargs["q"] = query
-            if page_token:
-                kwargs["pageToken"] = page_token
+            while len(stubs) < max_results:
+                kwargs = {
+                    "userId": "me",
+                    "maxResults": min(max_results - len(stubs), 500),
+                }
+                if query:
+                    kwargs["q"] = query
+                if page_token:
+                    kwargs["pageToken"] = page_token
 
-            result = service.users().messages().list(**kwargs).execute()
+                result = service.users().messages().list(**kwargs).execute()
 
-            for msg in result.get("messages", []):
-                stubs.append(msg)
-                if len(stubs) >= max_results:
+                for msg in result.get("messages", []):
+                    stubs.append(msg)
+                    if len(stubs) >= max_results:
+                        break
+
+                page_token = result.get("nextPageToken")
+                if not page_token:
                     break
 
-            page_token = result.get("nextPageToken")
-            if not page_token:
-                break
-
-        return stubs
+            return stubs
 
     def _fetch_messages(self, stubs: list[dict]) -> list[Email]:
         """Hydrate message stubs into full Email objects."""
-        service = self._get_service()
-        emails = []
-        for stub in stubs:
-            msg_data = (
-                service.users()
-                .messages()
-                .get(userId="me", id=stub["id"], format="full")
-                .execute()
-            )
-            emails.append(self._parse_message(msg_data))
-        return emails
+        with self._get_service() as service:
+            emails = []
+            for stub in stubs:
+                msg_data = (
+                    service.users()
+                    .messages()
+                    .get(userId="me", id=stub["id"], format="full")
+                    .execute()
+                )
+                emails.append(self._parse_message(msg_data))
+            return emails
 
     def get_recent_emails(self, max_results: int = 50, since: datetime | None = None) -> list[Email]:
         """Fetch recent emails from the inbox.
@@ -180,14 +189,14 @@ class GmailClient:
 
         for attempt in range(retries):
             try:
-                service = self._get_service()
-                msg_data = (
-                    service.users()
-                    .messages()
-                    .get(userId="me", id=message_id, format="full")
-                    .execute()
-                )
-                return self._parse_message(msg_data)
+                with self._get_service() as service:
+                    msg_data = (
+                        service.users()
+                        .messages()
+                        .get(userId="me", id=message_id, format="full")
+                        .execute()
+                    )
+                    return self._parse_message(msg_data)
             except HttpError as e:
                 if e.resp.status == 404 and attempt < retries - 1:
                     time.sleep(delay * (attempt + 1))
@@ -196,14 +205,14 @@ class GmailClient:
 
     def get_thread(self, thread_id: str) -> list[Email]:
         """Fetch all messages in a thread."""
-        service = self._get_service()
-        thread_data = (
-            service.users()
-            .threads()
-            .get(userId="me", id=thread_id, format="full")
-            .execute()
-        )
-        return [self._parse_message(m) for m in thread_data.get("messages", [])]
+        with self._get_service() as service:
+            thread_data = (
+                service.users()
+                .threads()
+                .get(userId="me", id=thread_id, format="full")
+                .execute()
+            )
+            return [self._parse_message(m) for m in thread_data.get("messages", [])]
 
     def create_draft(self, thread_id: str, to: str, subject: str, body: str, content_type: str = "plain", cc: str = "") -> str:
         """Create a draft reply in a thread.
@@ -217,60 +226,59 @@ class GmailClient:
         Returns:
             The ID of the created draft.
         """
-        service = self._get_service()
-
-        # Fetch thread to get Message-Id of last message for threading headers
-        thread_data = (
-            service.users()
-            .threads()
-            .get(userId="me", id=thread_id, format="metadata", metadataHeaders=["Message-Id"])
-            .execute()
-        )
-        messages = thread_data.get("messages", [])
-        message_id_header = ""
-        if messages:
-            last_msg = messages[-1]
-            for header in last_msg.get("payload", {}).get("headers", []):
-                if header["name"].lower() == "message-id":
-                    message_id_header = header["value"]
-                    break
-
-        # Strip leading/trailing whitespace — LLM tool calls often include
-        # stray indentation which shows up as an indent in the Gmail draft.
-        body = body.strip()
-
-        # Build MIME message
-        mime_msg = MIMEText(body, content_type)
-        mime_msg["To"] = to
-        if cc:
-            mime_msg["Cc"] = cc
-        mime_msg["Subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
-        if message_id_header:
-            mime_msg["In-Reply-To"] = message_id_header
-            mime_msg["References"] = message_id_header
-
-        raw = base64.urlsafe_b64encode(mime_msg.as_bytes()).decode("ascii")
-
-        draft = (
-            service.users()
-            .drafts()
-            .create(
-                userId="me",
-                body={"message": {"raw": raw, "threadId": thread_id}},
+        with self._get_service() as service:
+            # Fetch thread to get Message-Id of last message for threading headers
+            thread_data = (
+                service.users()
+                .threads()
+                .get(userId="me", id=thread_id, format="metadata", metadataHeaders=["Message-Id"])
+                .execute()
             )
-            .execute()
-        )
-        return draft["id"]
+            messages = thread_data.get("messages", [])
+            message_id_header = ""
+            if messages:
+                last_msg = messages[-1]
+                for header in last_msg.get("payload", {}).get("headers", []):
+                    if header["name"].lower() == "message-id":
+                        message_id_header = header["value"]
+                        break
+
+            # Strip leading/trailing whitespace — LLM tool calls often include
+            # stray indentation which shows up as an indent in the Gmail draft.
+            body = body.strip()
+
+            # Build MIME message
+            mime_msg = MIMEText(body, content_type)
+            mime_msg["To"] = to
+            if cc:
+                mime_msg["Cc"] = cc
+            mime_msg["Subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
+            if message_id_header:
+                mime_msg["In-Reply-To"] = message_id_header
+                mime_msg["References"] = message_id_header
+
+            raw = base64.urlsafe_b64encode(mime_msg.as_bytes()).decode("ascii")
+
+            draft = (
+                service.users()
+                .drafts()
+                .create(
+                    userId="me",
+                    body={"message": {"raw": raw, "threadId": thread_id}},
+                )
+                .execute()
+            )
+            return draft["id"]
 
     def get_draft(self, draft_id: str) -> dict | None:
         """Fetch a draft by ID. Returns {"id": ..., "body": ...} or None if not found."""
         from googleapiclient.errors import HttpError
 
         try:
-            service = self._get_service()
-            draft = service.users().drafts().get(userId="me", id=draft_id, format="full").execute()
-            body = self._extract_body(draft.get("message", {}).get("payload", {}))
-            return {"id": draft_id, "body": body}
+            with self._get_service() as service:
+                draft = service.users().drafts().get(userId="me", id=draft_id, format="full").execute()
+                body = self._extract_body(draft.get("message", {}).get("payload", {}))
+                return {"id": draft_id, "body": body}
         except HttpError as e:
             if e.resp.status == 404:
                 return None
@@ -278,8 +286,8 @@ class GmailClient:
 
     def delete_draft(self, draft_id: str) -> None:
         """Delete a draft by its ID."""
-        service = self._get_service()
-        service.users().drafts().delete(userId="me", id=draft_id).execute()
+        with self._get_service() as service:
+            service.users().drafts().delete(userId="me", id=draft_id).execute()
 
     def send_email(self, thread_id: str, to: str, subject: str, body: str, content_type: str = "plain", cc: str = "") -> str:
         """Send an email reply in a thread (actually sends, does not create a draft).
@@ -294,92 +302,90 @@ class GmailClient:
         Returns:
             The ID of the sent message.
         """
-        service = self._get_service()
-
-        # Fetch thread to get Message-Id of last message for threading headers
-        thread_data = (
-            service.users()
-            .threads()
-            .get(userId="me", id=thread_id, format="metadata", metadataHeaders=["Message-Id"])
-            .execute()
-        )
-        messages = thread_data.get("messages", [])
-        message_id_header = ""
-        if messages:
-            last_msg = messages[-1]
-            for header in last_msg.get("payload", {}).get("headers", []):
-                if header["name"].lower() == "message-id":
-                    message_id_header = header["value"]
-                    break
-
-        # Strip leading/trailing whitespace — LLM tool calls often include
-        # stray indentation which shows up as an indent in the sent email.
-        body = body.strip()
-
-        # Build MIME message
-        mime_msg = MIMEText(body, content_type)
-        mime_msg["To"] = to
-        if cc:
-            mime_msg["Cc"] = cc
-        mime_msg["Subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
-        if message_id_header:
-            mime_msg["In-Reply-To"] = message_id_header
-            mime_msg["References"] = message_id_header
-
-        raw = base64.urlsafe_b64encode(mime_msg.as_bytes()).decode("ascii")
-
-        sent = (
-            service.users()
-            .messages()
-            .send(
-                userId="me",
-                body={"raw": raw, "threadId": thread_id},
+        with self._get_service() as service:
+            # Fetch thread to get Message-Id of last message for threading headers
+            thread_data = (
+                service.users()
+                .threads()
+                .get(userId="me", id=thread_id, format="metadata", metadataHeaders=["Message-Id"])
+                .execute()
             )
-            .execute()
-        )
-        return sent["id"]
+            messages = thread_data.get("messages", [])
+            message_id_header = ""
+            if messages:
+                last_msg = messages[-1]
+                for header in last_msg.get("payload", {}).get("headers", []):
+                    if header["name"].lower() == "message-id":
+                        message_id_header = header["value"]
+                        break
+
+            # Strip leading/trailing whitespace — LLM tool calls often include
+            # stray indentation which shows up as an indent in the sent email.
+            body = body.strip()
+
+            # Build MIME message
+            mime_msg = MIMEText(body, content_type)
+            mime_msg["To"] = to
+            if cc:
+                mime_msg["Cc"] = cc
+            mime_msg["Subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
+            if message_id_header:
+                mime_msg["In-Reply-To"] = message_id_header
+                mime_msg["References"] = message_id_header
+
+            raw = base64.urlsafe_b64encode(mime_msg.as_bytes()).decode("ascii")
+
+            sent = (
+                service.users()
+                .messages()
+                .send(
+                    userId="me",
+                    body={"raw": raw, "threadId": thread_id},
+                )
+                .execute()
+            )
+            return sent["id"]
 
     def insert_message(self, thread_id: str, to: str, from_addr: str, subject: str, body: str) -> str:
         """Insert a message into the thread without sending or triggering a notification."""
-        service = self._get_service()
-
-        # Get Message-Id of last message for threading headers
-        thread_data = (
-            service.users()
-            .threads()
-            .get(userId="me", id=thread_id, format="metadata", metadataHeaders=["Message-Id"])
-            .execute()
-        )
-        messages = thread_data.get("messages", [])
-        message_id_header = ""
-        if messages:
-            last_msg = messages[-1]
-            for header in last_msg.get("payload", {}).get("headers", []):
-                if header["name"].lower() == "message-id":
-                    message_id_header = header["value"]
-                    break
-
-        mime_msg = MIMEText(body.strip())
-        mime_msg["To"] = to
-        mime_msg["From"] = from_addr
-        mime_msg["Subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
-        if message_id_header:
-            mime_msg["In-Reply-To"] = message_id_header
-            mime_msg["References"] = message_id_header
-
-        raw = base64.urlsafe_b64encode(mime_msg.as_bytes()).decode("ascii")
-
-        result = (
-            service.users()
-            .messages()
-            .insert(
-                userId="me",
-                body={"raw": raw, "threadId": thread_id, "labelIds": []},
-                internalDateSource="receivedTime",
+        with self._get_service() as service:
+            # Get Message-Id of last message for threading headers
+            thread_data = (
+                service.users()
+                .threads()
+                .get(userId="me", id=thread_id, format="metadata", metadataHeaders=["Message-Id"])
+                .execute()
             )
-            .execute()
-        )
-        return result["id"]
+            messages = thread_data.get("messages", [])
+            message_id_header = ""
+            if messages:
+                last_msg = messages[-1]
+                for header in last_msg.get("payload", {}).get("headers", []):
+                    if header["name"].lower() == "message-id":
+                        message_id_header = header["value"]
+                        break
+
+            mime_msg = MIMEText(body.strip())
+            mime_msg["To"] = to
+            mime_msg["From"] = from_addr
+            mime_msg["Subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
+            if message_id_header:
+                mime_msg["In-Reply-To"] = message_id_header
+                mime_msg["References"] = message_id_header
+
+            raw = base64.urlsafe_b64encode(mime_msg.as_bytes()).decode("ascii")
+
+            result = (
+                service.users()
+                .messages()
+                .insert(
+                    userId="me",
+                    body={"raw": raw, "threadId": thread_id, "labelIds": []},
+                    internalDateSource="receivedTime",
+                )
+                .execute()
+            )
+            return result["id"]
 
     def watch(self, topic_name: str) -> dict:
         """Start receiving push notifications for new emails.
@@ -394,26 +400,26 @@ class GmailClient:
         Returns:
             Dict with 'historyId' (str) and 'expiration' (epoch ms str).
         """
-        service = self._get_service()
-        result = (
-            service.users()
-            .watch(
-                userId="me",
-                body={
-                    "topicName": topic_name,
-                    "labelFilterBehavior": "include",
-                    "labelIds": ["INBOX", "SENT"],
-                },
+        with self._get_service() as service:
+            result = (
+                service.users()
+                .watch(
+                    userId="me",
+                    body={
+                        "topicName": topic_name,
+                        "labelFilterBehavior": "include",
+                        "labelIds": ["INBOX", "SENT"],
+                    },
+                )
+                .execute()
             )
-            .execute()
-        )
-        return {"historyId": result["historyId"], "expiration": result["expiration"]}
+            return {"historyId": result["historyId"], "expiration": result["expiration"]}
 
     def get_current_history_id(self) -> str:
         """Get the current history ID from the user's Gmail profile."""
-        service = self._get_service()
-        profile = service.users().getProfile(userId="me").execute()
-        return str(profile["historyId"])
+        with self._get_service() as service:
+            profile = service.users().getProfile(userId="me").execute()
+            return str(profile["historyId"])
 
     def get_history(self, start_history_id: str) -> tuple[list[str], str]:
         """Get message IDs added to the inbox since a given history ID.
@@ -426,32 +432,32 @@ class GmailClient:
             Tuple of (message_ids, latest_history_id). The latest_history_id
             should be stored as the new baseline for the next call.
         """
-        service = self._get_service()
-        message_ids = []
-        latest_history_id = start_history_id
-        page_token = None
+        with self._get_service() as service:
+            message_ids = []
+            latest_history_id = start_history_id
+            page_token = None
 
-        while True:
-            kwargs = {
-                "userId": "me",
-                "startHistoryId": start_history_id,
-                "historyTypes": ["messageAdded"],
-            }
-            if page_token:
-                kwargs["pageToken"] = page_token
+            while True:
+                kwargs = {
+                    "userId": "me",
+                    "startHistoryId": start_history_id,
+                    "historyTypes": ["messageAdded"],
+                }
+                if page_token:
+                    kwargs["pageToken"] = page_token
 
-            result = service.users().history().list(**kwargs).execute()
-            latest_history_id = str(result.get("historyId", latest_history_id))
+                result = service.users().history().list(**kwargs).execute()
+                latest_history_id = str(result.get("historyId", latest_history_id))
 
-            for record in result.get("history", []):
-                for msg_added in record.get("messagesAdded", []):
-                    message_ids.append(msg_added["message"]["id"])
+                for record in result.get("history", []):
+                    for msg_added in record.get("messagesAdded", []):
+                        message_ids.append(msg_added["message"]["id"])
 
-            page_token = result.get("nextPageToken")
-            if not page_token:
-                break
+                page_token = result.get("nextPageToken")
+                if not page_token:
+                    break
 
-        return message_ids, latest_history_id
+            return message_ids, latest_history_id
 
     def search(self, query: str, max_results: int = 100) -> list[Email]:
         """Search emails using Gmail search syntax.

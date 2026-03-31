@@ -326,6 +326,40 @@ async def _draft_refresh_loop():
         await asyncio.sleep(_DRAFT_REFRESH_INTERVAL)
 
 
+def _cleanup_in_memory_caches() -> None:
+    """Purge expired entries from all module-level dicts to prevent memory leaks."""
+    now = time.time()
+
+    # OAuth states older than 10 minutes (callback timeout is 600s)
+    expired = [k for k, ts in _oauth_states.items() if now - ts > 600]
+    for k in expired:
+        del _oauth_states[k]
+
+    expired = [k for k, ts in _google_connect_states.items() if now - ts > 600]
+    for k in expired:
+        del _google_connect_states[k]
+
+    # Demo rate limiter: remove IPs with no recent hits
+    expired = [ip for ip, hits in _demo_rate.items() if not hits or all(now - t > _DEMO_RATE_WINDOW for t in hits)]
+    for ip in expired:
+        del _demo_rate[ip]
+
+    # Unknown gmail webhook cache: remove expired entries
+    expired = [e for e, exp_at in _unknown_gmail_webhook_emails.items() if exp_at <= now]
+    for e in expired:
+        del _unknown_gmail_webhook_emails[e]
+
+    # Onboarding status: remove failed entries older than 10 minutes
+    with _onboarding_lock:
+        expired = [uid for uid, s in _onboarding_status.items()
+                   if s.get("status") == "failed" and now - s.get("failed_at", 0) > 600]
+        for uid in expired:
+            del _onboarding_status[uid]
+
+    # Sessions
+    _cleanup_expired_sessions()
+
+
 async def _watch_renewal_loop():
     """Background loop: renew Gmail watches and clean up old processed messages."""
     await asyncio.sleep(60)  # let server finish starting
@@ -346,6 +380,7 @@ async def _watch_renewal_loop():
             deleted_drafts = await asyncio.to_thread(_cleanup_stale_drafts)
             if deleted_drafts:
                 logger.info("watch_renewal_loop: auto-deleted %d stale drafts", deleted_drafts)
+            _cleanup_in_memory_caches()
         except Exception:
             logger.exception("watch_renewal_loop: failed")
         await asyncio.sleep(_WATCH_RENEWAL_INTERVAL)
@@ -392,6 +427,7 @@ async def _gmail_poll_loop():
                     logger.info("gmail_poll: cleaned up %d old processed_messages rows", deleted)
             except Exception:
                 logger.exception("gmail_poll: cleanup failed")
+            _cleanup_in_memory_caches()
 
         global _last_poll_at
         _last_poll_at = time.time()
@@ -1260,11 +1296,14 @@ def register_session(session_token: str, user_id: str) -> None:
 
 
 def _cleanup_expired_sessions() -> None:
-    """Remove sessions older than _SESSION_TTL."""
+    """Remove sessions older than _SESSION_TTL and close their API connections."""
     now = time.time()
     expired = [tok for tok, s in sessions.items() if now - s["created_at"] > _SESSION_TTL]
     for tok in expired:
-        del sessions[tok]
+        session = sessions.pop(tok)
+        cal = session.get("calendar")
+        if cal:
+            cal.close()
 
 
 def get_session(authorization: str = Header(default="")) -> dict:
@@ -2151,7 +2190,7 @@ def _run_onboarding_for_runtime(user_id: str) -> None:
         except Exception:
             logger.exception("onboarding: could not even set failed status in DB for user=%s", user_id)
         with _onboarding_lock:
-            _onboarding_status[user_id] = {"status": "failed", "error": str(e)}
+            _onboarding_status[user_id] = {"status": "failed", "error": str(e), "failed_at": time.time()}
 
 
 def _compose_draft_for_runtime(
