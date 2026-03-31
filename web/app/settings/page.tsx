@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
-import { Loader2, LogOut } from 'lucide-react';
+import { AlertTriangle, Loader2, LogOut } from 'lucide-react';
 import { api, captureSessionFromURL, clearSession, getSession } from '@/lib/api';
 import { track, setGAUserId } from '@/lib/analytics';
 import ReadyState from '@/components/onboarding/ReadyState';
@@ -12,6 +12,7 @@ import DisconnectedState from '@/components/onboarding/DisconnectedState';
 interface UserInfo {
   user_id: string;
   email: string;
+  google_email?: string | null;
   needs_reauth?: boolean;
 }
 
@@ -123,6 +124,24 @@ export default function SettingsPage() {
               Sign out
             </button>
           </div>
+
+          {user.google_email && user.google_email !== user.email && (
+            <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <div className="flex items-start gap-3">
+                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-amber-100">
+                  <AlertTriangle className="h-4 w-4 text-amber-600" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-gray-900">
+                    Connected Google Account: {user.google_email}
+                  </p>
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    Your sign-in email ({user.email}) differs from your connected Google account. Scheduled will monitor your Google account for incoming emails.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {disconnected ? (
             <>

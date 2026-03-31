@@ -45,6 +45,7 @@ class UserRow:
     onboarding_status: str | None = None
     display_name: str | None = None
     draft_auto_delete_enabled: bool = True
+    google_email: str | None = None
 
 
 _USER_ROW_FIELDS.update(f.name for f in fields(UserRow))
@@ -57,6 +58,16 @@ def _conn():
 def get_user_by_email(email: str) -> UserRow | None:
     with _conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT * FROM users WHERE email = %s", (email,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in cur.description]
+        return _row_to_user(cols, row)
+
+
+def get_user_by_google_email(google_email: str) -> UserRow | None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM users WHERE google_email = %s", (google_email,))
         row = cur.fetchone()
         if not row:
             return None
@@ -1392,6 +1403,15 @@ def update_display_name(user_id: str, display_name: str) -> None:
         cur.execute(
             "UPDATE users SET display_name = %s, updated_at = now() WHERE id = %s",
             (display_name, user_id),
+        )
+        conn.commit()
+
+
+def update_google_email(user_id: str, google_email: str) -> None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET google_email = %s, updated_at = now() WHERE id = %s",
+            (google_email, user_id),
         )
         conn.commit()
 

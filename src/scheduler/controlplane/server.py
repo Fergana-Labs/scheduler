@@ -916,7 +916,7 @@ def auth_google_connect_callback(
         access_token_expires_at=expires_at,
     )
 
-    # Fetch and store display name from Google profile
+    # Fetch and store display name + Google email from Google profile
     try:
         import httpx as _httpx
         _userinfo = _httpx.get(
@@ -924,12 +924,17 @@ def auth_google_connect_callback(
             headers={"Authorization": f"Bearer {google_access_token}"},
         )
         if _userinfo.status_code == 200:
-            _name = _userinfo.json().get("name")
+            _info = _userinfo.json()
+            _name = _info.get("name")
+            _google_email = _info.get("email")
             if _name:
                 from scheduler.db import update_display_name
                 update_display_name(user_id, _name)
+            if _google_email:
+                from scheduler.db import update_google_email
+                update_google_email(user_id, _google_email)
     except Exception:
-        logger.debug("Failed to fetch display_name during google connect for user=%s", user_id)
+        logger.debug("Failed to fetch userinfo during google connect for user=%s", user_id)
 
     # Check onboarding status
     from scheduler.db import get_user_by_id as _get_user
@@ -1216,6 +1221,7 @@ def auth_me(session: dict = Depends(get_authenticated_user)):
     return {
         "user_id": user_id,
         "email": session["email"],
+        "google_email": db_user.google_email if db_user else None,
         "needs_reauth": needs_reauth,
     }
 
@@ -2595,12 +2601,20 @@ async def gmail_webhook(request: Request, background_tasks: BackgroundTasks):
 
     user = await asyncio.to_thread(get_user_by_email, email_address)
     if not user:
+        # Fallback: try google_email column (handles Auth0 email != Gmail email)
+        from scheduler.db import get_user_by_google_email
+        user = await asyncio.to_thread(get_user_by_google_email, email_address)
+    if not user:
         _cache_unknown_gmail_webhook_email(email_address)
         logger.warning("gmail_webhook: unknown email %s", email_address)
         # Return 200 so Pub/Sub doesn't retry for unknown users
         return {"status": "ignored", "reason": "unknown user"}
 
-    message_ids = await asyncio.to_thread(_get_new_message_ids, str(user.id))
+    try:
+        message_ids = await asyncio.to_thread(_get_new_message_ids, str(user.id))
+    except ValueError:
+        logger.warning("gmail_webhook: user %s has no refresh token, skipping", user.email)
+        return {"status": "ok"}
     if message_ids:
         background_tasks.add_task(_process_messages, str(user.id), email_address, message_ids)
 

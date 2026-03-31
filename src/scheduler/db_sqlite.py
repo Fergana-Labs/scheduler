@@ -110,6 +110,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             onboarding_status TEXT,
             display_name TEXT,
             draft_auto_delete_enabled INTEGER NOT NULL DEFAULT 1,
+            google_email TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -172,6 +173,7 @@ class UserRow:
     onboarding_status: str | None = None
     display_name: str | None = None
     draft_auto_delete_enabled: bool = True
+    google_email: str | None = None
 
 
 @dataclass
@@ -243,6 +245,7 @@ def _row_to_user(row: sqlite3.Row) -> UserRow:
         onboarding_status=row["onboarding_status"],
         display_name=row["display_name"],
         draft_auto_delete_enabled=bool(row["draft_auto_delete_enabled"]),
+        google_email=row["google_email"],
         created_at=_parse_ts(row["created_at"]),
         updated_at=_parse_ts(row["updated_at"]),
     )
@@ -281,6 +284,13 @@ def _row_to_invite(row: sqlite3.Row) -> PendingInviteRow:
 
 def get_user_by_email(email: str) -> UserRow | None:
     row = _get_db().execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    if row is None:
+        return None
+    return _row_to_user(row)
+
+
+def get_user_by_google_email(google_email: str) -> UserRow | None:
+    row = _get_db().execute("SELECT * FROM users WHERE google_email = ?", (google_email,)).fetchone()
     if row is None:
         return None
     return _row_to_user(row)
@@ -408,6 +418,10 @@ def update_reasoning_emails_enabled(user_id: str, enabled: bool) -> None:
 
 def update_display_name(user_id: str, display_name: str) -> None:
     _update_user_field(user_id, display_name=display_name)
+
+
+def update_google_email(user_id: str, google_email: str) -> None:
+    _update_user_field(user_id, google_email=google_email)
 
 
 def update_draft_auto_delete(user_id: str, enabled: bool) -> None:
