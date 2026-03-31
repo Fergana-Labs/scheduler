@@ -34,6 +34,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
+from google.auth.exceptions import RefreshError
+
 from scheduler.auth.google_auth import SCOPES, load_credentials
 from scheduler.calendar.client import CalendarClient, Event
 from scheduler.config import config
@@ -2409,9 +2411,20 @@ def _get_new_message_ids(user_id: str) -> list[str]:
 
     try:
         new_message_ids, new_history_id = gmail.get_history(user.gmail_history_id)
+    except RefreshError:
+        logger.warning("gmail: invalid_grant for user=%s, marking for re-auth", user.email)
+        from scheduler.db import update_onboarding_status
+        update_onboarding_status(user_id, "failed")
+        return []
     except Exception:
         logger.warning("gmail: history expired for user=%s, resetting", user.email)
-        new_history_id = gmail.get_current_history_id()
+        try:
+            new_history_id = gmail.get_current_history_id()
+        except RefreshError:
+            logger.warning("gmail: invalid_grant for user=%s during reset, marking for re-auth", user.email)
+            from scheduler.db import update_onboarding_status
+            update_onboarding_status(user_id, "failed")
+            return []
         update_gmail_history_id(user_id, new_history_id)
         return []
 
@@ -2649,10 +2662,14 @@ async def gmail_webhook(request: Request, background_tasks: BackgroundTasks):
         # Return 200 so Pub/Sub doesn't retry for unknown users
         return {"status": "ignored", "reason": "unknown user"}
 
+    if user.onboarding_status == "failed":
+        logger.info("gmail_webhook: user %s pending re-auth, skipping", user.email)
+        return {"status": "ok"}
+
     try:
         message_ids = await asyncio.to_thread(_get_new_message_ids, str(user.id))
-    except ValueError:
-        logger.warning("gmail_webhook: user %s has no refresh token, skipping", user.email)
+    except (ValueError, RefreshError):
+        logger.warning("gmail_webhook: user %s has no/invalid refresh token, skipping", user.email)
         return {"status": "ok"}
     if message_ids:
         background_tasks.add_task(_process_messages, str(user.id), email_address, message_ids)
