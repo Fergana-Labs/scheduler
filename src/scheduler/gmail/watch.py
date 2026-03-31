@@ -92,9 +92,21 @@ def renew_all_watches() -> dict:
             setup_gmail_watch(user_id)
             renewed += 1
         except RefreshError as e:
-            logger.warning("gmail_watch: invalid_grant for user=%s, marking for re-auth: %s", user_id, e)
-            update_onboarding_status(str(user_id), "failed")
-            failed.append((user_id, str(e)))
+            # Retry once — a single RefreshError can be transient (Google rate
+            # limiting, brief outage).  Only mark the user for re-auth if the
+            # retry also fails with RefreshError.
+            logger.warning("gmail_watch: RefreshError for user=%s, retrying once: %s", user_id, e)
+            try:
+                setup_gmail_watch(user_id)
+                renewed += 1
+                logger.info("gmail_watch: retry succeeded for user=%s", user_id)
+            except RefreshError as e2:
+                logger.warning("gmail_watch: retry also failed for user=%s, marking for re-auth: %s", user_id, e2)
+                update_onboarding_status(str(user_id), "failed")
+                failed.append((user_id, str(e2)))
+            except Exception as e2:
+                logger.error("gmail_watch: retry failed with non-auth error for user=%s: %s", user_id, e2)
+                failed.append((user_id, str(e2)))
         except Exception as e:
             logger.error("gmail_watch: failed to renew for user=%s: %s", user_id, e)
             failed.append((user_id, str(e)))

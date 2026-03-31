@@ -2412,19 +2412,33 @@ def _get_new_message_ids(user_id: str) -> list[str]:
     try:
         new_message_ids, new_history_id = gmail.get_history(user.gmail_history_id)
     except RefreshError:
-        logger.warning("gmail: invalid_grant for user=%s, marking for re-auth", user.email)
-        from scheduler.db import update_onboarding_status
-        update_onboarding_status(user_id, "failed")
-        return []
+        # Retry once — transient RefreshErrors happen (Google rate limits, brief outages).
+        # Only mark user for re-auth if the retry also fails.
+        logger.warning("gmail: RefreshError for user=%s, retrying once", user.email)
+        try:
+            creds = load_credentials(user_id)
+            gmail = GmailClient(creds)
+            new_message_ids, new_history_id = gmail.get_history(user.gmail_history_id)
+        except RefreshError:
+            logger.warning("gmail: retry also failed for user=%s, marking for re-auth", user.email)
+            from scheduler.db import update_onboarding_status
+            update_onboarding_status(user_id, "failed")
+            return []
     except Exception:
         logger.warning("gmail: history expired for user=%s, resetting", user.email)
         try:
             new_history_id = gmail.get_current_history_id()
         except RefreshError:
-            logger.warning("gmail: invalid_grant for user=%s during reset, marking for re-auth", user.email)
-            from scheduler.db import update_onboarding_status
-            update_onboarding_status(user_id, "failed")
-            return []
+            logger.warning("gmail: RefreshError during reset for user=%s, retrying once", user.email)
+            try:
+                creds = load_credentials(user_id)
+                gmail = GmailClient(creds)
+                new_history_id = gmail.get_current_history_id()
+            except RefreshError:
+                logger.warning("gmail: retry also failed for user=%s, marking for re-auth", user.email)
+                from scheduler.db import update_onboarding_status
+                update_onboarding_status(user_id, "failed")
+                return []
         update_gmail_history_id(user_id, new_history_id)
         return []
 
