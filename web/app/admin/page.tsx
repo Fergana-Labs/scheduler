@@ -830,7 +830,7 @@ function AuthHealthSection() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api('/admin/auth-health').then((res) => {
+    api<{ data: AuthHealthRow[] }>('/admin/auth-health').then((res) => {
       setData(res.data);
       setLoading(false);
     });
