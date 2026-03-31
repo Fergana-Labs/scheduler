@@ -133,10 +133,10 @@ export default function SettingsPage() {
                 </div>
                 <div>
                   <p className="text-sm font-medium text-gray-900">
-                    Connected Google Account: {user.google_email}
+                    Scheduled will monitor {user.google_email} for incoming emails.
                   </p>
                   <p className="mt-0.5 text-xs text-gray-500">
-                    Your sign-in email ({user.email}) differs from your connected Google account. Scheduled will monitor your Google account for incoming emails.
+                    This differs from your sign-in email ({user.email}).
                   </p>
                 </div>
               </div>
