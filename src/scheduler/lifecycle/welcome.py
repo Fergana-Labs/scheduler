@@ -1,6 +1,5 @@
 """Lifecycle welcome email: send a personalized Postmark email, then create an example draft reply."""
 
-import json
 import logging
 import time
 from datetime import datetime, timedelta
@@ -10,15 +9,40 @@ from anthropic import Anthropic
 
 from scheduler.auth.google_auth import load_credentials
 from scheduler.calendar.client import CalendarClient
+from scheduler.classifier.intent import ClassificationResult, SchedulingIntent
 from scheduler.config import config
-from scheduler.db import get_user_by_id
+from scheduler.db import create_scheduling_link, get_user_by_id
+from scheduler.drafts.composer import _apply_footer
 from scheduler.gmail.client import GmailClient
 from scheduler.guides import load_guide
 from scheduler.guides.defaults import DEFAULT_EMAIL_STYLE, DEFAULT_SCHEDULING_PREFERENCES
+from scheduler.lifecycle.reasoning import send_reasoning_email
 
 logger = logging.getLogger(__name__)
 
 POSTMARK_SEND_URL = "https://api.postmarkapp.com/email"
+
+WELCOME_SUBJECT = "Welcome to Scheduled!"
+
+WELCOME_TEMPLATE = """\
+Hello and welcome to Scheduled!
+
+We're excited you are here! Our goal is to empower you to focus on what matters by automating away the mind-numbing tasks that have become our lives. We image a world where humans don't have to spend another minute doing such mundane tasks (trust us, one of us used to be a management consultant, so we've had our fair share of sleep-less nights aligning boxes and scheduling meetings).
+
+Unlike other scheduling tools like Calendly, Cal.com, or Fxyer, our product philosophy is built around seamlessly fitting into your existing scheduling preferences and workflow. If you head over to https://tryscheduled.com/settings, you will find guides based on what we have learned from how you have scheduled in the past. These will be used by our agent to help you schedule future meetings.
+
+Note that we take privacy very seriously and this is the only personal data of yours we store on our server, which can be verified by looking through our open source codebase.
+
+{personalized_snippet}
+
+You are all set for now. Expect to see drafts written by our agent pop-up automatically in threads where scheduling is a concern. We handle all of the background work of checking against your calendar, preferences, and sending invites for you. Feel free to edit these drafts or just send as is.
+
+If this resonates, we would love to hop on a quick 15 minute call to get you up to speed and to see how else we can build this to match your needs. Just reply to the email (there should be a draft auto-populated below) and we'll use scheduled to automatically find a time.
+
+Warmly,
+
+Sam
+CEO and Co-Founder of Scheduled (https://tryscheduled.com) by Fergana Labs (https://ferganalabs.com)"""
 
 
 def _get_anthropic_client() -> Anthropic:
@@ -47,64 +71,48 @@ def generate_welcome_email(
     client: Anthropic | None = None,
     has_real_guides: bool = True,
 ) -> dict:
-    """Generate a welcome email. Pure generation — no side effects.
+    """Generate a welcome email using a fixed template with a personalized snippet.
 
     Returns {"subject": "...", "body": "..."}.
     """
-    if client is None:
-        client = _get_anthropic_client()
-
     if has_real_guides:
-        welcome_system = (
-            "You are writing a warm, personalized welcome email from Sam at Scheduled "
-            "(sam@tryscheduled.com) to a new user. The email should suggest hopping on a "
-            "quick chat to help them get the most out of Scheduled.\n\n"
-            "You have the user's scheduling preferences and email style guides below. "
-            "Use their scheduling preferences and email style to make the email feel personal, "
+        if client is None:
+            client = _get_anthropic_client()
+
+        snippet_system = (
+            "You are writing 1-2 personalized sentences for a welcome email from Sam at Scheduled. "
+            "These sentences will be inserted into a template email to make it feel personal.\n\n"
+            "The perspective should be from 'we' (the Scheduled team) observing the user's "
+            "scheduling patterns — e.g., 'We see you tend to do XYZ meetings when XYZ' or similar.\n\n"
+            "You have the user's scheduling preferences below. Use them to write the snippet, "
             "but follow these privacy rules strictly:\n"
             "- Never reference specific meeting names, attendee names, or calendar details.\n"
-            "- Never reveal inferred behavioral patterns (e.g., \"you tend to prefer mornings\", "
-            "\"you like to keep Fridays light\"). Use patterns to inform tone, not content.\n"
-            "- A stranger reading this email should learn nothing about the user's "
-            "calendar, contacts, or habits.\n\n"
-            "Keep it brief, friendly, and genuine — like a real person wrote it, not a template.\n\n"
+            "- You can mention general scheduling patterns (e.g., 'We noticed you tend to keep "
+            "meetings short and prefer afternoons') but never specific events or people.\n"
+            "- A stranger reading these sentences should learn nothing about the user's "
+            "specific calendar, contacts, or habits.\n\n"
             f"## User's Scheduling Preferences\n{scheduling_prefs}\n\n"
-            f"## User's Email Style\n{email_style}\n\n"
-            "Respond with a JSON object only:\n"
-            '{"subject": "...", "body": "..."}\n'
-            "The body should be plain text (no HTML). Sign off as Sam."
-        )
-    else:
-        welcome_system = (
-            "You are writing a warm welcome email from Sam at Scheduled "
-            "(sam@tryscheduled.com) to a new user. The email should:\n"
-            "- Welcome them to Scheduled\n"
-            "- Briefly explain that Scheduled reads their emails and drafts "
-            "scheduling replies for them\n"
-            "- Mention that the system will get better as it learns their style "
-            "over time\n"
-            "- Suggest hopping on a quick chat if they want help getting started\n\n"
-            "Do NOT reference any specific scheduling preferences, meeting times, "
-            "or communication style — we don't have that data for this user yet. "
-            "Keep it brief, friendly, and genuine.\n\n"
-            "Respond with a JSON object only:\n"
-            '{"subject": "...", "body": "..."}\n'
-            "The body should be plain text (no HTML). Sign off as Sam."
+            "Respond with ONLY the 1-2 sentences, nothing else. No quotes, no JSON, no preamble."
         )
 
-    resp = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1024,
-        temperature=0.7,
-        system=welcome_system,
-        messages=[
-            {
-                "role": "user",
-                "content": f"Write a welcome email to {user_email}.",
-            }
-        ],
-    )
-    return json.loads(_extract_text(resp))
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=256,
+            temperature=0.7,
+            system=snippet_system,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"Write a personalized snippet for {user_email}.",
+                }
+            ],
+        )
+        snippet = _extract_text(resp)
+    else:
+        snippet = "We'll learn your scheduling preferences over time as you use Scheduled."
+
+    body = WELCOME_TEMPLATE.format(personalized_snippet=snippet)
+    return {"subject": WELCOME_SUBJECT, "body": body}
 
 
 def generate_draft_reply(
@@ -165,16 +173,18 @@ def generate_draft_reply(
 
 
 def send_lifecycle_email(user_id: str) -> None:
-    """Send a personalized welcome email and create an example draft reply.
+    """Send a welcome email, create an example draft reply with scheduling link, and send a reasoning email.
 
     Steps:
     1. Load user info and guides
-    2. Generate welcome email via Anthropic
+    2. Generate personalized snippet and assemble welcome email from template
     3. Send via Postmark
     4. Poll Gmail for the arriving email
     5. Fetch calendar availability
     6. Generate example draft reply via Anthropic
-    7. Create draft in Gmail
+    7. Create scheduling link and apply footer to draft
+    8. Create draft in Gmail
+    9. Send example reasoning email in the thread
     """
     # (a) Load user + guides
     user = get_user_by_id(user_id)
@@ -286,7 +296,27 @@ def send_lifecycle_email(user_id: str) -> None:
         logger.exception("lifecycle: failed to generate draft reply for user=%s", user_id)
         return
 
-    # (g) Create draft in Gmail
+    # (g) Create scheduling link and apply footer to draft
+    scheduling_link_url = None
+    try:
+        user_tz = calendar.get_user_timezone()
+        link = create_scheduling_link(
+            user_id=user_id,
+            attendee_email=sender,
+            mode="availability",
+            event_summary="Welcome Call",
+            duration_minutes=15,
+            tz=user_tz,
+            thread_id=thread_id,
+        )
+        scheduling_link_url = f"{config.web_app_url}/schedule/{link.id}"
+        logger.info("lifecycle: created scheduling link for user=%s link_id=%s", user_id, link.id)
+    except Exception:
+        logger.exception("lifecycle: failed to create scheduling link for user=%s", user_id)
+
+    draft_body, content_type = _apply_footer(draft_body, user_id, scheduling_link_url)
+
+    # (h) Create draft in Gmail
     try:
         reply_subject = f"Re: {subject}" if not subject.startswith("Re:") else subject
         draft_id = gmail.create_draft(
@@ -294,7 +324,33 @@ def send_lifecycle_email(user_id: str) -> None:
             to=sender,
             subject=reply_subject,
             body=draft_body,
+            content_type=content_type,
         )
         logger.info("lifecycle: created example draft for user=%s draft_id=%s", user_id, draft_id)
     except Exception:
         logger.exception("lifecycle: failed to create draft for user=%s", user_id)
+        return
+
+    # (i) Send example reasoning email
+    try:
+        tomorrow = now + timedelta(days=1)
+        proposed_time = tomorrow.replace(hour=10, minute=0, second=0, microsecond=0)
+        classification = ClassificationResult(
+            intent=SchedulingIntent.NEEDS_DRAFT,
+            confidence=0.95,
+            summary="Schedule a welcome call with Sam from Scheduled",
+            proposed_times=[proposed_time.strftime("%B %d, %Y %I:%M %p")],
+            participants=[sender],
+            duration_minutes=15,
+        )
+        send_reasoning_email(
+            user_email=user.email,
+            thread_id=thread_id,
+            subject=subject,
+            classification=classification,
+            calendar=calendar,
+            gmail=gmail,
+        )
+        logger.info("lifecycle: sent example reasoning email for user=%s", user_id)
+    except Exception:
+        logger.exception("lifecycle: failed to send reasoning email for user=%s", user_id)
