@@ -87,6 +87,9 @@ class CalendarClient:
     def __exit__(self, *exc):
         self.close()
 
+    def __del__(self):
+        self.close()
+
     def close(self):
         """Close the cached service and its httplib2 connection."""
         if self._service is not None:

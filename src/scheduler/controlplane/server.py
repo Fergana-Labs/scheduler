@@ -1325,6 +1325,9 @@ def _cleanup_expired_sessions() -> None:
         cal = session.get("calendar")
         if cal:
             cal.close()
+        gm = session.get("gmail")
+        if gm:
+            gm.close()
 
 
 def get_session(authorization: str = Header(default="")) -> dict:

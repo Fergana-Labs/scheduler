@@ -49,6 +49,9 @@ class GmailClient:
     def __exit__(self, *exc):
         self.close()
 
+    def __del__(self):
+        self.close()
+
     def close(self):
         """Close the underlying httplib2 connection."""
         if self._service is not None:
