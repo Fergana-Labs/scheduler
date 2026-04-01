@@ -57,15 +57,25 @@ def build_reasoning_body(
     day_start = min(dates).replace(hour=0, minute=0, second=0, microsecond=0)
     day_end = max(dates).replace(hour=23, minute=59, second=59, microsecond=0) + timedelta(seconds=1)
 
-    date_label = day_start.strftime("%B %-d, %Y")
-    if day_start.date() != (day_end - timedelta(seconds=1)).date():
+    spans_multiple_days = day_start.date() != (day_end - timedelta(seconds=1)).date()
+
+    if spans_multiple_days:
         date_label = f"{day_start.strftime('%B %-d')} – {(day_end - timedelta(seconds=1)).strftime('%B %-d, %Y')}"
+    else:
+        date_label = day_start.strftime("%B %-d, %Y")
 
     if events:
-        events_lines = "\n".join(
-            f"  - {_format_time(ev.start)} – {_format_time(ev.end)}: {ev.summary}"
-            for ev in sorted(events, key=lambda e: e.start)
-        )
+        sorted_events = sorted(events, key=lambda e: e.start)
+        lines = []
+        current_day = None
+        for ev in sorted_events:
+            if spans_multiple_days and ev.start.date() != current_day:
+                current_day = ev.start.date()
+                lines.append(f"  {ev.start.strftime('%A, %B %-d')}:")
+            lines.append(
+                f"  - {_format_time(ev.start)} – {_format_time(ev.end)}: {ev.summary}"
+            )
+        events_lines = "\n".join(lines)
     else:
         events_lines = "  No other meetings"
 

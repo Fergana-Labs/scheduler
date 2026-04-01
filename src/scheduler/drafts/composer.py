@@ -252,6 +252,7 @@ class LocalDraftBackend:
             {
                 "id": e.id,
                 "summary": e.summary,
+                "day": e.start.strftime("%A, %B %-d"),
                 "start": e.start.isoformat(),
                 "end": e.end.isoformat(),
                 "description": e.description,
