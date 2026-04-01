@@ -595,6 +595,24 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
+# Auto-restart after 50K requests to reclaim leaked per-request memory from
+# uvicorn/h11/FastAPI/starlette.  Equivalent to uvicorn --limit-max-requests
+# but works without changing the Render start command.
+_MAX_REQUESTS = 50_000
+_request_count = 0
+
+
+@app.middleware("http")
+async def _limit_max_requests(request: Request, call_next):
+    global _request_count
+    _request_count += 1
+    response = await call_next(request)
+    if _request_count >= _MAX_REQUESTS:
+        logger.info("limit_max_requests: reached %d requests, exiting for restart", _request_count)
+        # Defer exit so the response can be sent first
+        asyncio.get_event_loop().call_later(1.0, os._exit, 0)
+    return response
+
 
 # --- Self-hosted setup + settings (only active in self-hosted mode) ---
 
