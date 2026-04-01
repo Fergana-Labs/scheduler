@@ -3327,9 +3327,33 @@ def admin_memory_profile(request: Request):
     ]
 
     current, peak = tracemalloc.get_traced_memory()
+
+    import resource
+    rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+
+    try:
+        fd_count = len(os.listdir("/proc/self/fd"))
+    except FileNotFoundError:
+        fd_count = -1  # not Linux
+
+    all_objects = gc.get_objects()
+    type_counts: dict[str, int] = {}
+    for obj in all_objects:
+        t = type(obj).__name__
+        type_counts[t] = type_counts.get(t, 0) + 1
+    total_objects = len(all_objects)
+    del all_objects
+    top_types = sorted(type_counts.items(), key=lambda x: -x[1])[:20]
+
     return {
         "current_mb": round(current / 1024 / 1024, 1),
         "peak_mb": round(peak / 1024 / 1024, 1),
+        "rss_mb": round(rss_mb, 1),
+        "c_level_mb": round(rss_mb - current / 1024 / 1024, 1),
+        "open_fds": fd_count,
+        "thread_count": threading.active_count(),
+        "total_python_objects": total_objects,
+        "top_object_types": [{"type": t, "count": c} for t, c in top_types],
         "top_by_file": top_files,
         "top_by_line": top_lines,
     }
