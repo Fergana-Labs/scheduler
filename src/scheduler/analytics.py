@@ -4,13 +4,17 @@ import difflib
 import html
 import logging
 import re
-import threading
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
+# Bounded thread pool instead of unbounded Thread() per event.
+# Caps stack memory and avoids spawning hundreds of threads under load.
+_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analytics")
+
 
 def track(user_id: str, event: str, properties: dict | None = None) -> None:
-    """Fire-and-forget: insert an analytics event in a daemon thread."""
+    """Fire-and-forget: insert an analytics event via bounded thread pool."""
 
     def _insert():
         try:
@@ -20,8 +24,7 @@ def track(user_id: str, event: str, properties: dict | None = None) -> None:
         except Exception:
             logger.debug("analytics.track: failed to insert event %s", event, exc_info=True)
 
-    t = threading.Thread(target=_insert, daemon=True)
-    t.start()
+    _executor.submit(_insert)
 
 
 def record_draft_composed(
@@ -65,8 +68,7 @@ def record_draft_composed(
         except Exception:
             logger.debug("analytics.record_draft_composed: failed for thread %s", thread_id, exc_info=True)
 
-    t = threading.Thread(target=_store, daemon=True)
-    t.start()
+    _executor.submit(_store)
 
 
 def record_draft_sent(
@@ -151,5 +153,4 @@ def record_draft_sent(
         except Exception:
             logger.debug("analytics.record_draft_sent: failed for thread %s", thread_id, exc_info=True)
 
-    t = threading.Thread(target=_update, daemon=True)
-    t.start()
+    _executor.submit(_update)

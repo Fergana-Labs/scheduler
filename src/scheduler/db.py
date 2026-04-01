@@ -1,17 +1,50 @@
 """Database client for user credential storage."""
 
 import json
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from dataclasses import dataclass, fields
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 
 from scheduler.config import config
 
 psycopg2.extras.register_uuid()
 
 _USER_ROW_FIELDS: set[str] = set()  # populated after class definition
+
+# Connection pool — reuses connections instead of creating one per query.
+# Per-query psycopg2.connect() leaked connections until GC ran and caused
+# unnecessary TCP+SSL handshake overhead.
+_pool: psycopg2.pool.ThreadedConnectionPool | None = None
+
+
+def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    global _pool
+    if _pool is None or _pool.closed:
+        _pool = psycopg2.pool.ThreadedConnectionPool(
+            minconn=2,
+            maxconn=20,
+            dsn=config.database_url,
+        )
+    return _pool
+
+
+@contextmanager
+def _pooled_conn():
+    """Get a connection from the pool, return it when done."""
+    pool = _get_pool()
+    conn = pool.getconn()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        pool.putconn(conn)
 
 
 def _row_to_user(cols, row) -> "UserRow":
@@ -53,11 +86,12 @@ _USER_ROW_FIELDS.update(f.name for f in fields(UserRow))
 
 
 def _conn():
+    """Legacy helper — prefer _pooled_conn() for new code."""
     return psycopg2.connect(config.database_url)
 
 
 def get_user_by_email(email: str) -> UserRow | None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT * FROM users WHERE email = %s", (email,))
         row = cur.fetchone()
         if not row:
@@ -67,7 +101,7 @@ def get_user_by_email(email: str) -> UserRow | None:
 
 
 def get_user_by_google_email(google_email: str) -> UserRow | None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT * FROM users WHERE google_email = %s", (google_email,))
         row = cur.fetchone()
         if not row:
@@ -77,7 +111,7 @@ def get_user_by_google_email(google_email: str) -> UserRow | None:
 
 
 def get_user_by_id(user_id: str) -> UserRow | None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT * FROM users WHERE id = %s", (user_id,))
         row = cur.fetchone()
         if not row:
@@ -94,7 +128,7 @@ def upsert_user(
     scheduled_calendar_id: str | None = None,
 ) -> tuple[UserRow, bool]:
     """Upsert a user. Returns (user, is_new) where is_new is True for fresh inserts."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO users (email, google_refresh_token, google_access_token,
@@ -126,7 +160,7 @@ def update_user_tokens(
     google_access_token: str,
     access_token_expires_at: datetime | None = None,
 ) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             UPDATE users SET google_access_token = %s, access_token_expires_at = %s,
@@ -139,7 +173,7 @@ def update_user_tokens(
 
 
 def update_gmail_history_id(user_id: str, history_id: str) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE users SET gmail_history_id = %s, updated_at = now() WHERE id = %s",
             (history_id, user_id),
@@ -148,7 +182,7 @@ def update_gmail_history_id(user_id: str, history_id: str) -> None:
 
 
 def get_user_by_auth0_sub(auth0_sub: str) -> UserRow | None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT * FROM users WHERE auth0_sub = %s", (auth0_sub,))
         row = cur.fetchone()
         if not row:
@@ -158,7 +192,7 @@ def get_user_by_auth0_sub(auth0_sub: str) -> UserRow | None:
 
 
 def create_user_from_auth0(email: str, auth0_sub: str) -> UserRow:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO users (email, auth0_sub)
@@ -174,7 +208,7 @@ def create_user_from_auth0(email: str, auth0_sub: str) -> UserRow:
 
 
 def set_auth0_sub(user_id: str, auth0_sub: str) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE users SET auth0_sub = %s, updated_at = now() WHERE id = %s",
             (auth0_sub, user_id),
@@ -188,7 +222,7 @@ def update_google_tokens(
     google_access_token: str | None = None,
     access_token_expires_at: datetime | None = None,
 ) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             UPDATE users SET
@@ -204,14 +238,14 @@ def update_google_tokens(
 
 
 def get_all_user_ids() -> list[str]:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT id FROM users")
         return [str(row[0]) for row in cur.fetchall()]
 
 
 def get_stuck_onboarding_users() -> list[UserRow]:
     """Return users with Google tokens but onboarding not completed (null, pending, or running)."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """SELECT * FROM users
                WHERE google_refresh_token IS NOT NULL
@@ -222,7 +256,7 @@ def get_stuck_onboarding_users() -> list[UserRow]:
 
 
 def update_scheduled_branding(user_id: str, enabled: bool) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE users SET scheduled_branding_enabled = %s, updated_at = now() WHERE id = %s",
             (enabled, user_id),
@@ -231,7 +265,7 @@ def update_scheduled_branding(user_id: str, enabled: bool) -> None:
 
 
 def update_system_enabled(user_id: str, enabled: bool) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE users SET system_enabled = %s, updated_at = now() WHERE id = %s",
             (enabled, user_id),
@@ -240,7 +274,7 @@ def update_system_enabled(user_id: str, enabled: bool) -> None:
 
 
 def update_autopilot(user_id: str, enabled: bool) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE users SET autopilot_enabled = %s, updated_at = now() WHERE id = %s",
             (enabled, user_id),
@@ -249,7 +283,7 @@ def update_autopilot(user_id: str, enabled: bool) -> None:
 
 
 def update_process_sales_emails(user_id: str, enabled: bool) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE users SET process_sales_emails = %s, updated_at = now() WHERE id = %s",
             (enabled, user_id),
@@ -258,7 +292,7 @@ def update_process_sales_emails(user_id: str, enabled: bool) -> None:
 
 
 def update_reasoning_emails_enabled(user_id: str, enabled: bool) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE users SET reasoning_emails_enabled = %s, updated_at = now() WHERE id = %s",
             (enabled, user_id),
@@ -267,7 +301,7 @@ def update_reasoning_emails_enabled(user_id: str, enabled: bool) -> None:
 
 
 def update_draft_auto_delete(user_id: str, enabled: bool) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE users SET draft_auto_delete_enabled = %s, updated_at = now() WHERE id = %s",
             (enabled, user_id),
@@ -276,7 +310,7 @@ def update_draft_auto_delete(user_id: str, enabled: bool) -> None:
 
 
 def update_scheduled_calendar_id(user_id: str, scheduled_calendar_id: str) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE users SET scheduled_calendar_id = %s, updated_at = now() WHERE id = %s",
             (scheduled_calendar_id, user_id),
@@ -298,7 +332,7 @@ class GuideRow:
 
 
 def upsert_guide(user_id: str, name: str, content: str) -> GuideRow:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO guides (user_id, name, content)
@@ -317,7 +351,7 @@ def upsert_guide(user_id: str, name: str, content: str) -> GuideRow:
 
 
 def get_guide(user_id: str, name: str) -> GuideRow | None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT * FROM guides WHERE user_id = %s AND name = %s",
             (user_id, name),
@@ -330,7 +364,7 @@ def get_guide(user_id: str, name: str) -> GuideRow | None:
 
 
 def get_guides_for_user(user_id: str) -> list[GuideRow]:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT * FROM guides WHERE user_id = %s ORDER BY name",
             (user_id,),
@@ -343,7 +377,7 @@ def get_guides_for_user(user_id: str) -> list[GuideRow]:
 
 
 def delete_user(user_id: str) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM guides WHERE user_id = %s", (user_id,))
         cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
         conn.commit()
@@ -355,7 +389,7 @@ def try_claim_message(user_id: str, message_id: str) -> bool:
     This replaces the old check-then-mark pattern to prevent duplicate processing
     from concurrent webhook handlers.
     """
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO processed_messages (user_id, message_id)
@@ -372,7 +406,7 @@ def try_claim_message(user_id: str, message_id: str) -> bool:
 
 def cleanup_processed_messages(days: int = 7) -> int:
     """Delete processed message records older than the given number of days."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "DELETE FROM processed_messages WHERE processed_at < now() - make_interval(days => %s)",
             (days,),
@@ -410,7 +444,7 @@ def create_pending_invite(
     location: str = "",
 ) -> PendingInviteRow:
     """Create or overwrite a pending invite for a thread."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO pending_invites (user_id, thread_id, attendee_emails, event_summary,
@@ -442,7 +476,7 @@ def _pending_invite_from_row(cols, row) -> PendingInviteRow:
 
 
 def get_pending_invite_by_thread(user_id: str, thread_id: str) -> PendingInviteRow | None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT * FROM pending_invites WHERE user_id = %s AND thread_id = %s",
             (user_id, thread_id),
@@ -487,19 +521,19 @@ def update_pending_invite(
     if not sets:
         return
     vals.append(invite_id)
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(f"UPDATE pending_invites SET {', '.join(sets)} WHERE id = %s", vals)
         conn.commit()
 
 
 def delete_pending_invite(invite_id: str) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM pending_invites WHERE id = %s", (invite_id,))
         conn.commit()
 
 
 def update_calendar_ids(user_id: str, calendar_ids: list[str]) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE users SET calendar_ids = %s, updated_at = now() WHERE id = %s",
             (calendar_ids, user_id),
@@ -508,7 +542,7 @@ def update_calendar_ids(user_id: str, calendar_ids: list[str]) -> None:
 
 
 def update_onboarding_status(user_id: str, status: str | None) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE users SET onboarding_status = %s, updated_at = now() WHERE id = %s",
             (status, user_id),
@@ -518,7 +552,7 @@ def update_onboarding_status(user_id: str, status: str | None) -> None:
 
 def increment_refresh_failures(user_id: str) -> int:
     """Increment refresh_failures and return the new count."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE users SET refresh_failures = refresh_failures + 1, updated_at = now() WHERE id = %s RETURNING refresh_failures",
             (user_id,),
@@ -530,7 +564,7 @@ def increment_refresh_failures(user_id: str) -> int:
 
 def reset_refresh_failures(user_id: str) -> None:
     """Reset refresh_failures to 0 after a successful API call."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE users SET refresh_failures = 0 WHERE id = %s AND refresh_failures > 0",
             (user_id,),
@@ -540,7 +574,7 @@ def reset_refresh_failures(user_id: str) -> None:
 
 def get_auth_health() -> list[dict]:
     """Return auth health for all active users (for admin dashboard)."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute("""
             SELECT email, onboarding_status, refresh_failures,
                    google_refresh_token IS NOT NULL as has_token,
@@ -556,7 +590,7 @@ def get_auth_health() -> list[dict]:
 
 def insert_page_event(event: str, properties: dict | None = None) -> None:
     """Insert an anonymous page event (no user_id required)."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "INSERT INTO page_events (event, properties) VALUES (%s, %s)",
             (event, json.dumps(properties or {})),
@@ -566,7 +600,7 @@ def insert_page_event(event: str, properties: dict | None = None) -> None:
 
 def insert_analytics_event(user_id: str, event: str, properties: dict | None = None) -> None:
     """Insert a row into analytics_events."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "INSERT INTO analytics_events (user_id, event, properties) VALUES (%s, %s, %s)",
             (user_id, event, json.dumps(properties or {})),
@@ -587,7 +621,7 @@ def store_composed_draft(
     suggested_windows: list[dict] | None = None,
 ) -> None:
     """Insert a row into composed_drafts with anonymized content."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO composed_drafts
@@ -603,7 +637,7 @@ def store_composed_draft(
 
 def get_composed_draft_by_thread(user_id: str, thread_id: str) -> dict | None:
     """Get the most recent unsent composed draft for a user+thread pair."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT * FROM composed_drafts WHERE user_id = %s AND thread_id = %s AND sent_at IS NULL AND auto_deleted_at IS NULL ORDER BY composed_at DESC LIMIT 1",
             (user_id, thread_id),
@@ -628,7 +662,7 @@ def update_composed_draft_sent(
     sent_similarity: float | None = None,
 ) -> None:
     """Update a composed_drafts row with sent-time diff metrics."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             UPDATE composed_drafts
@@ -649,7 +683,7 @@ def get_stale_unsent_drafts(hours: int = 48) -> list[dict]:
     Excludes drafts still eligible for morning refresh (refresh_count < 3) —
     those are handled by the refresh loop, not the auto-delete.
     """
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT cd.id, cd.user_id, cd.draft_id, cd.thread_id, cd.original_subject
@@ -669,7 +703,7 @@ def get_stale_unsent_drafts(hours: int = 48) -> list[dict]:
 
 def mark_draft_auto_deleted(draft_id: str) -> None:
     """Soft-delete a composed draft so it's excluded from active queries but preserved for analytics."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE composed_drafts SET auto_deleted_at = now() WHERE id = %s",
             (draft_id,),
@@ -684,7 +718,7 @@ def get_drafts_eligible_for_refresh(max_refresh_count: int = 3) -> list[dict]:
     - It has suggested_windows and ALL of them are in the past, OR
     - It has no suggested_windows (availability mode) and is older than 24 hours
     """
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT cd.id, cd.user_id, cd.draft_id, cd.thread_id, cd.original_subject,
@@ -709,7 +743,7 @@ _TZ = "America/Los_Angeles"
 
 def get_funnel_data(weeks: int = 12, include_current: bool = False) -> list[dict]:
     """Weekly funnel: page views → signup clicks → signups → onboarded → first draft sent."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         end_expr = "date_trunc('week', (now() AT TIME ZONE %s))" if include_current else "date_trunc('week', (now() AT TIME ZONE %s)) - interval '1 week'"
         cur.execute(
             f"""
@@ -785,7 +819,7 @@ def get_funnel_data(weeks: int = 12, include_current: bool = False) -> list[dict
 
 def get_funnel_data_daily(days: int = 7, include_current: bool = False) -> list[dict]:
     """Daily funnel: page views → signup clicks → signups → onboarded → first draft sent."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         end_expr = "date_trunc('day', (now() AT TIME ZONE %s))" if include_current else "date_trunc('day', (now() AT TIME ZONE %s)) - interval '1 day'"
         cur.execute(
             f"""
@@ -861,7 +895,7 @@ def get_funnel_data_daily(days: int = 7, include_current: bool = False) -> list[
 
 def get_demo_funnel_data(weeks: int = 12, include_current: bool = False) -> list[dict]:
     """Weekly demo funnel: demo views → messages sent → draft sent → complete → booked → CTA signup."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         end_expr = "date_trunc('week', (now() AT TIME ZONE %s))" if include_current else "date_trunc('week', (now() AT TIME ZONE %s)) - interval '1 week'"
         cur.execute(
             f"""
@@ -951,7 +985,7 @@ def get_demo_funnel_data(weeks: int = 12, include_current: bool = False) -> list
 
 def get_demo_funnel_data_daily(days: int = 7, include_current: bool = False) -> list[dict]:
     """Daily demo funnel: demo views → messages sent → draft sent → complete → booked → CTA signup."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         end_expr = "date_trunc('day', (now() AT TIME ZONE %s))" if include_current else "date_trunc('day', (now() AT TIME ZONE %s)) - interval '1 day'"
         cur.execute(
             f"""
@@ -1052,7 +1086,7 @@ def get_cohort_data(weeks: int = 8, emails_only: bool = False, include_current: 
     all_events = list(set(action_events) | set(_RETENTION_EVENTS))
     cutoff_clause = "" if include_current else "AND date_trunc('week', ae.created_at AT TIME ZONE %s) < date_trunc('week', now() AT TIME ZONE %s)"
     tz_params = () if include_current else (_TZ, _TZ)
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             f"""
             WITH cohorts AS (
@@ -1217,7 +1251,7 @@ def get_cohort_data_daily(days: int = 7, emails_only: bool = False, include_curr
     all_events = list(set(action_events) | set(_RETENTION_EVENTS))
     cutoff_clause = "" if include_current else "AND date_trunc('day', ae.created_at AT TIME ZONE %s) < date_trunc('day', now() AT TIME ZONE %s)"
     tz_params = () if include_current else (_TZ, _TZ)
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             f"""
             WITH cohorts AS (
@@ -1366,7 +1400,7 @@ def get_cohort_data_daily(days: int = 7, emails_only: bool = False, include_curr
 
 def get_draft_stats() -> dict:
     """Aggregate stats for the drafts tab."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute("""
             SELECT
                 count(*) AS total_drafts,
@@ -1410,7 +1444,7 @@ def get_admin_drafts(
 
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             f"SELECT count(*) FROM composed_drafts cd JOIN users u ON u.id = cd.user_id {where_clause}",
             params,
@@ -1438,7 +1472,7 @@ def get_admin_drafts(
 
 
 def update_display_name(user_id: str, display_name: str) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE users SET display_name = %s, updated_at = now() WHERE id = %s",
             (display_name, user_id),
@@ -1447,7 +1481,7 @@ def update_display_name(user_id: str, display_name: str) -> None:
 
 
 def update_google_email(user_id: str, google_email: str) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE users SET google_email = %s, updated_at = now() WHERE id = %s",
             (google_email, user_id),
@@ -1505,7 +1539,7 @@ def create_scheduling_link(
     add_google_meet: bool = False,
     location: str = "",
 ) -> SchedulingLinkRow:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO scheduling_links
@@ -1527,7 +1561,7 @@ def create_scheduling_link(
 
 
 def get_scheduling_link(link_id: str) -> SchedulingLinkRow | None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT * FROM scheduling_links WHERE id = %s", (link_id,))
         row = cur.fetchone()
         if not row:
@@ -1538,7 +1572,7 @@ def get_scheduling_link(link_id: str) -> SchedulingLinkRow | None:
 
 def get_scheduling_link_by_thread(user_id: str, thread_id: str) -> SchedulingLinkRow | None:
     """Get the most recent pending scheduling link for a thread."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT * FROM scheduling_links WHERE user_id = %s AND thread_id = %s AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
             (user_id, thread_id),
@@ -1557,7 +1591,7 @@ def submit_recipient_availability(
 ) -> None:
     if submitted_at is None:
         submitted_at = datetime.now(timezone.utc)
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             UPDATE scheduling_links
@@ -1575,7 +1609,7 @@ def confirm_scheduling_link(
     end: datetime,
     calendar_event_id: str,
 ) -> None:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             UPDATE scheduling_links
@@ -1595,7 +1629,7 @@ def update_scheduling_link_windows(
     event_summary: str | None = None,
 ) -> None:
     """Update the suggested_windows (and optionally duration/summary) on a pending scheduling link."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         parts = ["suggested_windows = %s"]
         params: list = [json.dumps(suggested_windows)]
         if duration_minutes is not None:
@@ -1613,7 +1647,7 @@ def update_scheduling_link_windows(
 
 
 def cleanup_expired_scheduling_links() -> int:
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE scheduling_links SET status = 'expired' WHERE status = 'pending' AND expires_at < now()"
         )
@@ -1624,7 +1658,7 @@ def cleanup_expired_scheduling_links() -> int:
 
 def disconnect_user(user_id: str) -> None:
     """Revoke Google tokens and delete guides, but keep the user row."""
-    with _conn() as conn, conn.cursor() as cur:
+    with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM guides WHERE user_id = %s", (user_id,))
         cur.execute(
             """

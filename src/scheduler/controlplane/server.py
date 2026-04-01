@@ -12,6 +12,7 @@ and passed into the sandbox as an env var.
 
 import asyncio
 import base64
+import gc
 import html
 import hashlib
 import os
@@ -338,6 +339,7 @@ async def _draft_refresh_loop():
                 logger.info("draft_refresh_loop: refreshed %d stale drafts", refreshed)
         except Exception:
             logger.exception("draft_refresh_loop: failed")
+        gc.collect()
         await asyncio.sleep(_DRAFT_REFRESH_INTERVAL)
 
 
@@ -1325,9 +1327,6 @@ def _cleanup_expired_sessions() -> None:
         cal = session.get("calendar")
         if cal:
             cal.close()
-        gm = session.get("gmail")
-        if gm:
-            gm.close()
 
 
 def get_session(authorization: str = Header(default="")) -> dict:
@@ -2512,6 +2511,9 @@ def _process_messages(user_id: str, email_address: str, message_ids: list[str]) 
     finally:
         gmail.close()
         calendar.close()
+        # Break reference cycles from httpx/asyncio/anyio promptly instead
+        # of waiting for gen2 GC (which may not run for minutes).
+        gc.collect()
 
 
 def _process_message_batch(gmail, calendar, user, user_id, email_address, message_ids):
@@ -2674,7 +2676,6 @@ def _process_message_batch(gmail, calendar, user, user_id, email_address, messag
                 logger.warning("gmail: message %s not found (deleted?), skipping", message_id)
             else:
                 logger.exception("gmail: failed to process message %s for user=%s", message_id, email_address)
-
 
 
 @app.post("/webhooks/gmail")

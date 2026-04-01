@@ -16,11 +16,18 @@ import os
 # oauthlib treats this scope mismatch as an error by default. Suppress it.
 os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
+import requests
+
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 from scheduler.config import config
+
+# Reuse a single requests.Session for token refresh instead of creating one
+# per call.  requests.Session has no __del__, so per-call sessions leak
+# connection pools until the cyclic GC sweeps them.
+_refresh_request = Request(session=requests.Session())
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -42,7 +49,7 @@ def get_credentials() -> Credentials:
         creds = Credentials.from_authorized_user_file(config.token_path, SCOPES)
 
     if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        creds.refresh(_refresh_request)
         _save_credentials(creds)
     elif not creds or not creds.valid:
         creds = run_oauth_flow()
@@ -108,7 +115,7 @@ def load_credentials(user_id: str):
                 scopes=SCOPES,
             )
             if creds.expired and creds.refresh_token:
-                creds.refresh(Request())
+                creds.refresh(_refresh_request)
                 update_user_tokens(
                     user_id=str(user.id),
                     google_access_token=creds.token,
