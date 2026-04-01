@@ -23,6 +23,7 @@ import logging
 import secrets
 import threading
 import time
+import tracemalloc
 import urllib.parse
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -454,6 +455,9 @@ async def _gmail_poll_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Start memory tracing so /admin/memory-profile can show top allocators
+    tracemalloc.start(25)  # 25 frames deep for meaningful tracebacks
+
     if _is_self_hosted_mode():
         task = asyncio.create_task(_gmail_poll_loop())
     else:
@@ -466,6 +470,7 @@ async def lifespan(app: FastAPI):
     task.cancel()
     if refresh_task:
         refresh_task.cancel()
+    tracemalloc.stop()
 
 
 app = FastAPI(title="Scheduler Control Plane", lifespan=lifespan)
@@ -2777,6 +2782,43 @@ def web_page_event(req: TrackEventRequest):
 
 
 # --- Admin API routes ---
+
+
+@app.get("/web/api/v1/admin/memory-profile")
+def admin_memory_profile(admin: dict = Depends(_require_admin)):
+    """Show top memory allocations via tracemalloc — use to find the leak."""
+    if not tracemalloc.is_tracing():
+        return {"error": "tracemalloc not started"}
+
+    snapshot = tracemalloc.take_snapshot()
+    # Filter out importlib and tracemalloc internals
+    snapshot = snapshot.filter_traces([
+        tracemalloc.Filter(False, "<frozen importlib._bootstrap>"),
+        tracemalloc.Filter(False, "<frozen importlib._bootstrap_external>"),
+        tracemalloc.Filter(False, tracemalloc.__file__),
+    ])
+
+    # Top 30 by file
+    by_file = snapshot.statistics("filename")
+    top_files = [
+        {"file": str(s.traceback), "size_mb": round(s.size / 1024 / 1024, 2), "count": s.count}
+        for s in by_file[:30]
+    ]
+
+    # Top 30 by line
+    by_line = snapshot.statistics("lineno")
+    top_lines = [
+        {"location": str(s.traceback), "size_mb": round(s.size / 1024 / 1024, 2), "count": s.count}
+        for s in by_line[:30]
+    ]
+
+    current, peak = tracemalloc.get_traced_memory()
+    return {
+        "current_mb": round(current / 1024 / 1024, 1),
+        "peak_mb": round(peak / 1024 / 1024, 1),
+        "top_by_file": top_files,
+        "top_by_line": top_lines,
+    }
 
 
 @app.get("/web/api/v1/admin/auth-health")
