@@ -42,13 +42,13 @@ def _analyze_draft_for_scheduling(
       - duration_minutes: int
       - event_summary: str
     """
-    from anthropic import Anthropic
+    from scheduler.classifier.intent import _get_anthropic_client
     from scheduler.config import config
 
     if not config.anthropic_api_key:
         return {"mode": "availability"}
 
-    client = Anthropic(api_key=config.anthropic_api_key)
+    client = _get_anthropic_client()
 
     from datetime import date as date_type
     today = date_type.today().isoformat()

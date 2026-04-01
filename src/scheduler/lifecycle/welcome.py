@@ -62,9 +62,8 @@ should be a draft auto-populated below) and we'll use scheduled to automatically
 
 
 def _get_anthropic_client() -> Anthropic:
-    if not config.anthropic_api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
-    return Anthropic(api_key=config.anthropic_api_key)
+    from scheduler.classifier.intent import _get_anthropic_client as _shared
+    return _shared()
 
 
 def _extract_text(response) -> str:

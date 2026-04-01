@@ -58,16 +58,21 @@ class _EventJSON(TypedDict, total=False):
     participants: list[str]
 
 
-def _get_anthropic_client() -> Anthropic:
-    """Create an Anthropic client using the configured API key.
+_anthropic_client: Anthropic | None = None
 
-    Even though we conceptually talk about \"GPT\" in the design,
-    this project already depends on Anthropic and the Claude Agent SDK,
-    so we reuse Anthropic here for simple single-call classifiers.
+
+def _get_anthropic_client() -> Anthropic:
+    """Return a shared Anthropic client (lazy singleton).
+
+    Reusing a single client avoids leaking an httpx connection pool
+    on every call — each Anthropic() instantiation allocates one.
     """
-    if not config.anthropic_api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
-    return Anthropic(api_key=config.anthropic_api_key)
+    global _anthropic_client
+    if _anthropic_client is None:
+        if not config.anthropic_api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+        _anthropic_client = Anthropic(api_key=config.anthropic_api_key)
+    return _anthropic_client
 
 
 def classify_email(

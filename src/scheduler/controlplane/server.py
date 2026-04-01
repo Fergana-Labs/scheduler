@@ -3278,7 +3278,8 @@ def demo_chat(req: DemoChatRequest, request: Request):
         )
 
         # 3. Single Claude API call
-        client = Anthropic(api_key=config.anthropic_api_key)
+        from scheduler.classifier.intent import _get_anthropic_client
+        client = _get_anthropic_client()
 
         system_prompt = (
             "You are powering a live demo of Scheduled, an AI scheduling assistant. "
