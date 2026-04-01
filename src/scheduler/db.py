@@ -47,6 +47,7 @@ class UserRow:
     draft_auto_delete_enabled: bool = True
     google_email: str | None = None
     refresh_failures: int = 0
+    scheduling_mode: str = "draft"
 
 
 _USER_ROW_FIELDS.update(f.name for f in fields(UserRow))
@@ -1641,3 +1642,230 @@ def disconnect_user(user_id: str) -> None:
             (user_id,),
         )
         conn.commit()
+
+
+def update_scheduling_mode(user_id: str, mode: str) -> None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET scheduling_mode = %s, updated_at = now() WHERE id = %s",
+            (mode, user_id),
+        )
+        conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Bot account (singleton row)
+# ---------------------------------------------------------------------------
+
+
+def get_bot_history_id() -> str | None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT gmail_history_id FROM bot_account WHERE id = 1")
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def update_bot_history_id(history_id: str) -> None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE bot_account SET gmail_history_id = %s, updated_at = now() WHERE id = 1",
+            (history_id,),
+        )
+        conn.commit()
+
+
+def update_bot_watch_expiration(expiration: int) -> None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE bot_account SET watch_expiration = %s, updated_at = now() WHERE id = 1",
+            (expiration,),
+        )
+        conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Bot conversations
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BotConversationRow:
+    id: str
+    user_id: str
+    thread_id: str
+    state: str
+    participants: list[str]
+    counterparty_email: str | None
+    event_summary: str | None
+    duration_minutes: int | None
+    proposed_windows: list[dict]
+    declined_windows: list[dict]
+    constraints: list[str]
+    turn_count: int
+    last_bot_reply_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: datetime | None
+
+
+def _bot_conversation_from_row(cols, row) -> BotConversationRow:
+    data = dict(zip(cols, row))
+    for field in ("proposed_windows", "declined_windows", "constraints"):
+        val = data.get(field)
+        if isinstance(val, str):
+            data[field] = json.loads(val)
+    if data.get("participants") is None:
+        data["participants"] = []
+    return BotConversationRow(**data)
+
+
+def get_or_create_bot_conversation(
+    user_id: str,
+    thread_id: str,
+    participants: list[str] | None = None,
+    counterparty_email: str | None = None,
+) -> BotConversationRow:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM bot_conversations WHERE user_id = %s AND thread_id = %s",
+            (user_id, thread_id),
+        )
+        row = cur.fetchone()
+        if row:
+            cols = [desc[0] for desc in cur.description]
+            return _bot_conversation_from_row(cols, row)
+
+        cur.execute(
+            """
+            INSERT INTO bot_conversations
+                (user_id, thread_id, participants, counterparty_email)
+            VALUES (%s, %s, %s, %s)
+            RETURNING *
+            """,
+            (user_id, thread_id, participants or [], counterparty_email),
+        )
+        row = cur.fetchone()
+        cols = [desc[0] for desc in cur.description]
+        conn.commit()
+        return _bot_conversation_from_row(cols, row)
+
+
+def update_bot_conversation(
+    conversation_id: str,
+    *,
+    state: str | None = None,
+    proposed_windows: list[dict] | None = None,
+    declined_windows: list[dict] | None = None,
+    constraints: list[str] | None = None,
+    event_summary: str | None = None,
+    duration_minutes: int | None = None,
+    turn_count: int | None = None,
+    last_bot_reply_at: datetime | None = None,
+    resolved_at: datetime | None = None,
+) -> None:
+    sets = []
+    params = []
+    if state is not None:
+        sets.append("state = %s")
+        params.append(state)
+    if proposed_windows is not None:
+        sets.append("proposed_windows = %s")
+        params.append(json.dumps(proposed_windows))
+    if declined_windows is not None:
+        sets.append("declined_windows = %s")
+        params.append(json.dumps(declined_windows))
+    if constraints is not None:
+        sets.append("constraints = %s")
+        params.append(json.dumps(constraints))
+    if event_summary is not None:
+        sets.append("event_summary = %s")
+        params.append(event_summary)
+    if duration_minutes is not None:
+        sets.append("duration_minutes = %s")
+        params.append(duration_minutes)
+    if turn_count is not None:
+        sets.append("turn_count = %s")
+        params.append(turn_count)
+    if last_bot_reply_at is not None:
+        sets.append("last_bot_reply_at = %s")
+        params.append(last_bot_reply_at)
+    if resolved_at is not None:
+        sets.append("resolved_at = %s")
+        params.append(resolved_at)
+    if not sets:
+        return
+    sets.append("updated_at = now()")
+    params.append(conversation_id)
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"UPDATE bot_conversations SET {', '.join(sets)} WHERE id = %s",
+            params,
+        )
+        conn.commit()
+
+
+def get_bot_conversation(conversation_id: str) -> BotConversationRow | None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM bot_conversations WHERE id = %s", (conversation_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in cur.description]
+        return _bot_conversation_from_row(cols, row)
+
+
+def get_active_bot_conversations(user_id: str) -> list[BotConversationRow]:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM bot_conversations WHERE user_id = %s AND state NOT IN ('done', 'cancelled') ORDER BY updated_at DESC",
+            (user_id,),
+        )
+        cols = [desc[0] for desc in cur.description]
+        return [_bot_conversation_from_row(cols, row) for row in cur.fetchall()]
+
+
+def get_stale_bot_conversations(timeout_hours: int = 48) -> list[BotConversationRow]:
+    """Get conversations in negotiating state that haven't had a reply in timeout_hours."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT * FROM bot_conversations
+            WHERE state IN ('proposing', 'negotiating')
+              AND last_bot_reply_at < now() - interval '%s hours'
+            ORDER BY last_bot_reply_at ASC
+            """,
+            (timeout_hours,),
+        )
+        cols = [desc[0] for desc in cur.description]
+        return [_bot_conversation_from_row(cols, row) for row in cur.fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# Bot processed messages
+# ---------------------------------------------------------------------------
+
+
+def bot_try_claim_message(message_id: str) -> bool:
+    """Claim a message for the bot. Returns True if newly claimed, False if already processed."""
+    with _conn() as conn, conn.cursor() as cur:
+        try:
+            cur.execute(
+                "INSERT INTO bot_processed_messages (message_id) VALUES (%s)",
+                (message_id,),
+            )
+            conn.commit()
+            return True
+        except Exception:
+            conn.rollback()
+            return False
+
+
+def cleanup_bot_processed_messages(max_age_days: int = 7) -> int:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM bot_processed_messages WHERE processed_at < now() - interval '%s days'",
+            (max_age_days,),
+        )
+        count = cur.rowcount
+        conn.commit()
+        return count

@@ -58,10 +58,14 @@ class LocalGuideBackend:
         self._user_id = user_id
 
     def search_emails(self, query: str, max_results: int = 50) -> dict:
+        if self._gmail is None:
+            return {"emails": [], "note": "Gmail not connected (bot mode — calendar only)"}
         emails = self._gmail.search(query=query, max_results=max_results)
         return {"emails": [_serialize_email(e) for e in emails]}
 
     def read_thread(self, thread_id: str) -> dict:
+        if self._gmail is None:
+            return {"messages": [], "note": "Gmail not connected (bot mode — calendar only)"}
         messages = self._gmail.get_thread(thread_id)
         return {"messages": [_serialize_email(e) for e in messages]}
 

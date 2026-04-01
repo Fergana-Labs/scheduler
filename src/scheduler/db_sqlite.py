@@ -111,6 +111,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             display_name TEXT,
             draft_auto_delete_enabled INTEGER NOT NULL DEFAULT 1,
             google_email TEXT,
+            scheduling_mode TEXT NOT NULL DEFAULT 'draft',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -145,6 +146,39 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL,
             UNIQUE(user_id, thread_id)
         );
+
+        CREATE TABLE IF NOT EXISTS bot_account (
+            id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+            gmail_history_id TEXT,
+            watch_expiration INTEGER,
+            updated_at TEXT
+        );
+        INSERT OR IGNORE INTO bot_account (id, updated_at) VALUES (1, datetime('now'));
+
+        CREATE TABLE IF NOT EXISTS bot_conversations (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            thread_id TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'new',
+            participants TEXT NOT NULL DEFAULT '[]',
+            counterparty_email TEXT,
+            event_summary TEXT,
+            duration_minutes INTEGER,
+            proposed_windows TEXT NOT NULL DEFAULT '[]',
+            declined_windows TEXT NOT NULL DEFAULT '[]',
+            constraints TEXT NOT NULL DEFAULT '[]',
+            turn_count INTEGER NOT NULL DEFAULT 0,
+            last_bot_reply_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            resolved_at TEXT,
+            UNIQUE(user_id, thread_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS bot_processed_messages (
+            message_id TEXT PRIMARY KEY,
+            processed_at TEXT NOT NULL
+        );
     """)
 
 
@@ -174,6 +208,7 @@ class UserRow:
     display_name: str | None = None
     draft_auto_delete_enabled: bool = True
     google_email: str | None = None
+    scheduling_mode: str = "draft"
 
 
 @dataclass

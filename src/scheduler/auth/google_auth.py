@@ -29,6 +29,12 @@ SCOPES = [
     "https://www.googleapis.com/auth/userinfo.email",
 ]
 
+# Bot mode: users only grant calendar read access (bot handles email)
+BOT_MODE_SCOPES = [
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/userinfo.email",
+]
+
 
 def get_credentials() -> Credentials:
     """Load stored credentials or run the OAuth flow if needed.
@@ -118,6 +124,38 @@ def load_credentials(user_id: str):
 
     # Fallback: local token.json for development
     return get_credentials()
+
+
+def load_credentials_bot_mode(user_id: str):
+    """Load Google credentials for a bot-mode user (calendar-only scopes).
+
+    Bot-mode users only grant calendar.readonly, so we build credentials
+    with the narrower scope set.
+    """
+    from scheduler.db import get_user_by_id, update_user_tokens
+
+    user = get_user_by_id(user_id)
+    if not user:
+        raise ValueError(f"User {user_id} not found")
+    if not user.google_refresh_token:
+        raise ValueError(f"User {user_id} has no Google refresh token")
+
+    creds = Credentials(
+        token=user.google_access_token,
+        refresh_token=user.google_refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=config.google_client_id,
+        client_secret=config.google_client_secret,
+        scopes=BOT_MODE_SCOPES,
+    )
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        update_user_tokens(
+            user_id=str(user.id),
+            google_access_token=creds.token,
+            access_token_expires_at=creds.expiry,
+        )
+    return creds
 
 
 if __name__ == "__main__":

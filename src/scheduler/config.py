@@ -116,6 +116,35 @@ class Config:
         ]
     )
 
+    # Bot mode fields (third-party CC-based scheduling)
+    bot_email: str = field(
+        default_factory=lambda: os.environ.get("BOT_EMAIL", "")
+    )
+    bot_gmail_refresh_token: str = field(
+        default_factory=lambda: os.environ.get("BOT_GMAIL_REFRESH_TOKEN", "")
+    )
+    bot_gmail_client_id: str = field(
+        default_factory=lambda: os.environ.get(
+            "BOT_GMAIL_CLIENT_ID",
+            os.environ.get("GOOGLE_CLIENT_ID", ""),
+        )
+    )
+    bot_gmail_client_secret: str = field(
+        default_factory=lambda: os.environ.get(
+            "BOT_GMAIL_CLIENT_SECRET",
+            os.environ.get("GOOGLE_CLIENT_SECRET", ""),
+        )
+    )
+    bot_gmail_pubsub_topic: str = field(
+        default_factory=lambda: os.environ.get(
+            "BOT_GMAIL_PUBSUB_TOPIC",
+            os.environ.get("GMAIL_PUBSUB_TOPIC", ""),
+        )
+    )
+    bot_gmail_webhook_token: str = field(
+        default_factory=lambda: os.environ.get("BOT_GMAIL_WEBHOOK_TOKEN", "")
+    )
+
     # Self-hosted fields (only used when deployment_mode == "self_hosted")
     sqlite_db_path: str = field(
         default_factory=lambda: os.environ.get("SQLITE_DB_PATH", "/tmp/scheduler.db")

@@ -36,7 +36,7 @@ from pydantic import BaseModel
 
 from google.auth.exceptions import RefreshError
 
-from scheduler.auth.google_auth import SCOPES, load_credentials
+from scheduler.auth.google_auth import SCOPES, BOT_MODE_SCOPES, load_credentials
 from scheduler.calendar.client import CalendarClient, Event
 from scheduler.config import config
 from scheduler.gmail.client import GmailClient
@@ -396,6 +396,22 @@ async def _watch_renewal_loop():
             if deleted_drafts:
                 logger.info("watch_renewal_loop: auto-deleted %d stale drafts", deleted_drafts)
             _cleanup_in_memory_caches()
+
+            # Renew bot Gmail watch (if configured)
+            try:
+                await _bot_watch_renewal()
+            except Exception:
+                logger.debug("watch_renewal_loop: bot watch renewal failed", exc_info=True)
+
+            # Clean up old bot processed messages
+            try:
+                from scheduler.db import cleanup_bot_processed_messages
+                bot_cleaned = await asyncio.to_thread(cleanup_bot_processed_messages)
+                if bot_cleaned:
+                    logger.info("watch_renewal_loop: cleaned up %d old bot_processed_messages", bot_cleaned)
+            except Exception:
+                logger.debug("watch_renewal_loop: bot message cleanup failed", exc_info=True)
+
         except Exception:
             logger.exception("watch_renewal_loop: failed")
         await asyncio.sleep(_WATCH_RENEWAL_INTERVAL)
@@ -450,6 +466,67 @@ async def _gmail_poll_loop():
         await asyncio.sleep(config.watcher_poll_interval)
 
 
+async def _bot_inbox_poll_loop():
+    """Background loop: poll the bot's Gmail inbox for new CC'd messages."""
+    from scheduler.bot.gmail import is_bot_mode_configured, get_bot_gmail_client
+
+    await asyncio.sleep(15)  # let server finish starting
+
+    if not is_bot_mode_configured():
+        logger.info("bot_poll: bot mode not configured, skipping poll loop")
+        return
+
+    while True:
+        try:
+            from scheduler.db import get_bot_history_id, update_bot_history_id
+
+            history_id = get_bot_history_id()
+            if not history_id:
+                # Initialize history ID from bot's current state
+                bot_gmail = get_bot_gmail_client()
+                history_id = bot_gmail.get_current_history_id()
+                update_bot_history_id(history_id)
+                logger.info("bot_poll: initialized history_id=%s", history_id)
+                await asyncio.sleep(config.watcher_poll_interval)
+                continue
+
+            bot_gmail = get_bot_gmail_client()
+            message_ids, new_history_id = bot_gmail.get_history(history_id)
+            update_bot_history_id(new_history_id)
+
+            if message_ids:
+                logger.info("bot_poll: %d new message(s)", len(message_ids))
+                await asyncio.to_thread(_process_bot_messages, message_ids)
+
+        except Exception:
+            logger.exception("bot_poll: failed")
+
+        await asyncio.sleep(config.watcher_poll_interval)
+
+
+async def _bot_watch_renewal():
+    """Renew the bot Gmail watch (called from watch renewal loop)."""
+    from scheduler.bot.gmail import is_bot_mode_configured, get_bot_gmail_client
+    from scheduler.db import get_bot_history_id, update_bot_history_id, update_bot_watch_expiration
+
+    if not is_bot_mode_configured():
+        return
+
+    bot_gmail = get_bot_gmail_client()
+    topic = config.bot_gmail_pubsub_topic
+    if not topic:
+        return
+
+    result = bot_gmail.watch(topic)
+    update_bot_watch_expiration(int(result["expiration"]))
+
+    # Ensure we have a history ID
+    if not get_bot_history_id():
+        update_bot_history_id(result["historyId"])
+
+    logger.info("bot_watch: renewed, expires=%s", result["expiration"])
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if _is_self_hosted_mode():
@@ -460,10 +537,13 @@ async def lifespan(app: FastAPI):
     refresh_task = None
     if not _is_self_hosted_mode():
         refresh_task = asyncio.create_task(_draft_refresh_loop())
+    # Bot inbox polling (runs alongside the user-mode loops)
+    bot_task = asyncio.create_task(_bot_inbox_poll_loop())
     yield
     task.cancel()
     if refresh_task:
         refresh_task.cancel()
+    bot_task.cancel()
 
 
 app = FastAPI(title="Scheduler Control Plane", lifespan=lifespan)
@@ -1016,6 +1096,209 @@ def auth_google_connect_callback(
         redirect_url = f"{config.web_app_url}/onboarding?{token_param}"
 
     return RedirectResponse(redirect_url, background=background)
+
+
+# --- Bot-mode Google OAuth (calendar-only) ---
+
+_google_bot_connect_states: dict[str, float] = {}
+
+
+@app.get("/auth/google/connect-calendar")
+def auth_google_connect_calendar(token: str | None = None):
+    """Start Google OAuth flow for bot-mode users (calendar-only access).
+
+    Bot-mode users only need calendar.readonly — the bot handles all email
+    via its own Gmail account.
+    """
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing token")
+
+    try:
+        if _is_auth0_mode():
+            payload = _validate_auth0_jwt(token)
+            from scheduler.db import get_user_by_auth0_sub
+            user = get_user_by_auth0_sub(payload["sub"])
+            if not user:
+                raise HTTPException(status_code=401, detail="User not found")
+            user_id = str(user.id)
+        else:
+            legacy = _verify_session(token)
+            if not legacy:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            user_id = legacy["user_id"]
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    state_data = f"{secrets.token_urlsafe(32)}|user_id={user_id}|auth_token={token}|mode=bot"
+    _google_bot_connect_states[state_data] = time.time()
+
+    params = {
+        "client_id": config.google_client_id,
+        "redirect_uri": f"{config.google_web_redirect_uri}/auth/google/callback-calendar",
+        "response_type": "code",
+        "scope": " ".join(BOT_MODE_SCOPES),
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state_data,
+    }
+    url = f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
+    return RedirectResponse(url)
+
+
+@app.get("/auth/google/callback-calendar")
+def auth_google_callback_calendar(
+    code: str | None = None, state: str | None = None, error: str | None = None,
+    scope: str | None = None,
+):
+    """Handle Google OAuth callback for bot-mode (calendar-only) connect flow."""
+    if error:
+        return RedirectResponse(f"{config.web_app_url}?error={error}")
+
+    if not code or not state:
+        return RedirectResponse(f"{config.web_app_url}?error=missing_params")
+
+    issued_at = _google_bot_connect_states.pop(state, None)
+    if not issued_at or (time.time() - issued_at > 600):
+        return RedirectResponse(f"{config.web_app_url}?error=invalid_state")
+
+    # Extract user_id and auth_token from state
+    parts = state.split("|")
+    state_dict = {}
+    for part in parts[1:]:
+        if "=" in part:
+            k, v = part.split("=", 1)
+            state_dict[k] = v
+    user_id = state_dict.get("user_id")
+    auth_token = state_dict.get("auth_token")
+
+    if not user_id:
+        return RedirectResponse(f"{config.web_app_url}?error=invalid_state")
+
+    import httpx
+
+    token_response = httpx.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "code": code,
+            "client_id": config.google_client_id,
+            "client_secret": config.google_client_secret,
+            "redirect_uri": f"{config.google_web_redirect_uri}/auth/google/callback-calendar",
+            "grant_type": "authorization_code",
+        },
+    )
+
+    if token_response.status_code != 200:
+        logger.error("Google token exchange failed (bot mode): %s", token_response.text)
+        return RedirectResponse(f"{config.web_app_url}?error=token_exchange_failed")
+
+    tokens = token_response.json()
+    google_access_token = tokens["access_token"]
+    google_refresh_token = tokens.get("refresh_token")
+
+    if not google_refresh_token:
+        return RedirectResponse(f"{config.web_app_url}?error=no_refresh_token")
+
+    from scheduler.db import update_google_tokens, update_scheduling_mode
+
+    expires_in = tokens.get("expires_in")
+    expires_at = datetime.now() + timedelta(seconds=expires_in) if expires_in else None
+
+    update_google_tokens(
+        user_id=user_id,
+        google_refresh_token=google_refresh_token,
+        google_access_token=google_access_token,
+        access_token_expires_at=expires_at,
+    )
+    update_scheduling_mode(user_id, "bot")
+
+    # Fetch and store display name + Google email
+    try:
+        userinfo = httpx.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {google_access_token}"},
+        )
+        if userinfo.status_code == 200:
+            info = userinfo.json()
+            if name := info.get("name"):
+                from scheduler.db import update_display_name
+                update_display_name(user_id, name)
+            if google_email := info.get("email"):
+                from scheduler.db import update_google_email
+                update_google_email(user_id, google_email)
+    except Exception:
+        logger.debug("Failed to fetch userinfo during bot-mode connect for user=%s", user_id)
+
+    # Bot-mode onboarding: only run preferences agent (no Gmail backfill or style guide)
+    from starlette.background import BackgroundTask
+
+    logger.info("google_connect_calendar: starting bot-mode onboarding for user=%s", user_id)
+    with _onboarding_lock:
+        if _onboarding_status.get(user_id, {}).get("status") == "running":
+            background = None
+        else:
+            from scheduler.db import update_onboarding_status
+            update_onboarding_status(user_id, "pending")
+            background = BackgroundTask(_run_bot_mode_onboarding, user_id)
+
+    token_param = f"token={auth_token}" if auth_token else ""
+    redirect_url = f"{config.web_app_url}/onboarding?{token_param}&mode=bot"
+    return RedirectResponse(redirect_url, background=background)
+
+
+def _run_bot_mode_onboarding(user_id: str):
+    """Bot-mode onboarding: calendar preferences only (no Gmail backfill or style guide).
+
+    Much faster than full onboarding since we can't read user's email.
+    """
+    import anyio
+    from scheduler.db import update_onboarding_status, update_system_enabled
+    from scheduler.auth.google_auth import load_credentials_bot_mode
+    from scheduler.guides.backends import LocalGuideBackend
+    from scheduler.guides.preferences import run_preferences_agent
+
+    try:
+        with _onboarding_lock:
+            _onboarding_status[user_id] = {
+                "status": "running",
+                "agents": {"preferences": "running"},
+            }
+        update_onboarding_status(user_id, "running")
+
+        creds = load_credentials_bot_mode(user_id)
+        calendar = CalendarClient(creds, config.scheduled_calendar_name)
+
+        try:
+            guide_backend = LocalGuideBackend(
+                gmail=None,  # No Gmail access in bot mode
+                calendar=calendar,
+                user_id=user_id,
+            )
+
+            anyio.run(run_preferences_agent, guide_backend)
+
+            with _onboarding_lock:
+                if user_id in _onboarding_status:
+                    _onboarding_status[user_id]["agents"]["preferences"] = "done"
+        finally:
+            calendar.close()
+
+        update_system_enabled(user_id, True)
+        update_onboarding_status(user_id, "done")
+
+        with _onboarding_lock:
+            _onboarding_status.pop(user_id, None)
+
+        logger.info("bot_mode_onboarding: completed for user=%s", user_id)
+
+    except Exception as e:
+        logger.exception("bot_mode_onboarding: failed for user=%s", user_id)
+        update_onboarding_status(user_id, "failed")
+        with _onboarding_lock:
+            _onboarding_status[user_id] = {
+                "status": "failed",
+                "error": str(e),
+                "failed_at": time.time(),
+            }
 
 
 # --- Legacy Google OAuth routes (kept for transition period) ---
@@ -2741,6 +3024,207 @@ async def gmail_webhook(request: Request, background_tasks: BackgroundTasks):
         background_tasks.add_task(_process_messages, str(user.id), email_address, message_ids)
 
     return {"status": "ok"}
+
+
+# --- Bot-mode webhook and processing ---
+
+
+@app.post("/webhooks/bot-gmail")
+async def bot_gmail_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Receive Gmail push notifications for the bot's inbox.
+
+    Similar to the user gmail_webhook, but for the single bot account.
+    Verified via BOT_GMAIL_WEBHOOK_TOKEN.
+    """
+    from scheduler.bot.gmail import is_bot_mode_configured
+    from scheduler.db import get_bot_history_id, update_bot_history_id
+
+    if not is_bot_mode_configured():
+        raise HTTPException(status_code=404, detail="Bot mode not configured")
+
+    if config.bot_gmail_webhook_token:
+        token = request.query_params.get("token", "")
+        if not hmac.compare_digest(token, config.bot_gmail_webhook_token):
+            raise HTTPException(status_code=403, detail="Invalid webhook token")
+
+    body = await request.json()
+    message = body.get("message", {})
+    data_b64 = message.get("data", "")
+
+    if not data_b64:
+        raise HTTPException(status_code=400, detail="Missing message data")
+
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(data_b64))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid message data")
+
+    history_id = str(payload.get("historyId", ""))
+    if not history_id:
+        raise HTTPException(status_code=400, detail="Missing historyId")
+
+    # Fetch new messages from bot inbox
+    stored_history = get_bot_history_id()
+    if not stored_history:
+        update_bot_history_id(history_id)
+        return {"status": "ok", "reason": "initialized"}
+
+    try:
+        from scheduler.bot.gmail import get_bot_gmail_client
+
+        bot_gmail = get_bot_gmail_client()
+        message_ids, new_history_id = await asyncio.to_thread(
+            bot_gmail.get_history, stored_history,
+        )
+        await asyncio.to_thread(update_bot_history_id, new_history_id)
+    except Exception:
+        logger.exception("bot_gmail_webhook: failed to get history")
+        return {"status": "ok"}
+
+    if message_ids:
+        background_tasks.add_task(_process_bot_messages, message_ids)
+
+    return {"status": "ok"}
+
+
+def _process_bot_messages(message_ids: list[str]) -> None:
+    """Process messages from the bot's inbox — identify user, check calendar, reply."""
+    from scheduler.auth.google_auth import load_credentials_bot_mode
+    from scheduler.bot.agent import compose_and_send
+    from scheduler.bot.conversation import transition
+    from scheduler.bot.gmail import bot_email_address, get_bot_gmail_client
+    from scheduler.bot.identity import _extract_addresses, identify_user
+    from scheduler.calendar.client import CalendarClient
+    from scheduler.db import (
+        bot_try_claim_message,
+        get_bot_conversation,
+        get_or_create_bot_conversation,
+    )
+
+    bot_gmail = get_bot_gmail_client()
+    bot_addr = bot_email_address().lower()
+
+    for message_id in message_ids:
+        if not bot_try_claim_message(message_id):
+            continue
+
+        try:
+            email = bot_gmail.get_email(message_id)
+
+            # Skip messages from the bot itself (our own replies)
+            if email.sender and bot_addr in email.sender.lower():
+                logger.info("bot: message %s is from us, skipping", message_id)
+                continue
+
+            # Skip drafts
+            if "DRAFT" in email.label_ids:
+                continue
+
+            # Identify the registered user
+            user, counterparty_email = identify_user(
+                email.sender, email.recipient, email.cc,
+            )
+
+            if not user:
+                logger.info("bot: message %s — no registered user found, sending signup nudge", message_id)
+                _send_bot_unknown_user_reply(bot_gmail, email)
+                continue
+
+            if not user.system_enabled:
+                logger.info("bot: user %s has system disabled, skipping", user.email)
+                continue
+
+            # Check if the user themselves sent this (they replied in the thread)
+            user_email = (user.google_email or user.email).lower()
+            if email.sender and user_email in email.sender.lower():
+                logger.info("bot: message %s is from the user, they're handling it — skipping", message_id)
+                conv = get_or_create_bot_conversation(str(user.id), email.thread_id)
+                if conv.state not in ("done", "cancelled"):
+                    transition(conv, "cancelled")
+                continue
+
+            all_addrs = [
+                a for a in (
+                    _extract_addresses(email.sender)
+                    + _extract_addresses(email.recipient)
+                    + _extract_addresses(email.cc)
+                )
+                if a.lower() != bot_addr
+            ]
+
+            conversation = get_or_create_bot_conversation(
+                user_id=str(user.id),
+                thread_id=email.thread_id,
+                participants=all_addrs,
+                counterparty_email=counterparty_email,
+            )
+
+            if conversation.state in ("done", "cancelled"):
+                logger.info("bot: conversation %s is %s, skipping", conversation.id, conversation.state)
+                continue
+
+            # Counterparty replied while we were proposing → negotiating
+            if conversation.state == "proposing":
+                transition(conversation, "negotiating")
+                conversation = get_bot_conversation(str(conversation.id)) or conversation
+
+            logger.info(
+                "bot: processing message %s for user=%s, conversation=%s (state=%s)",
+                message_id, user.email, conversation.id, conversation.state,
+            )
+
+            creds = load_credentials_bot_mode(str(user.id))
+            user_calendar = CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=user.calendar_ids or [])
+
+            try:
+                result = compose_and_send(
+                    user=user,
+                    conversation=conversation,
+                    email=email,
+                    user_calendar=user_calendar,
+                )
+                logger.info(
+                    "bot: result for message %s: sent=%s invite=%s",
+                    message_id, result.get("sent"), result.get("invite_created"),
+                )
+            finally:
+                user_calendar.close()
+
+        except Exception:
+            logger.exception("bot: failed to process message %s", message_id)
+
+
+def _send_bot_unknown_user_reply(bot_gmail, email) -> None:
+    """Send a friendly reply to someone who CC'd the bot but isn't a registered user."""
+    try:
+        # Don't spam — only reply to the first message in a thread
+        thread = bot_gmail.get_thread(email.thread_id)
+        bot_addr = bot_email_address().lower()
+        bot_messages_in_thread = [
+            m for m in thread
+            if m.sender and bot_addr in m.sender.lower()
+        ]
+        if bot_messages_in_thread:
+            return  # Already replied in this thread
+
+        body = (
+            "Hi! I'm Scheduled, an AI scheduling assistant.\n\n"
+            "It looks like someone CC'd me on this thread, but I don't recognize "
+            "any of the participants as Scheduled users.\n\n"
+            "To use Scheduled, sign up at https://tryscheduled.com and connect "
+            "your calendar. Then CC me on any email thread where you need help "
+            "scheduling a meeting!\n\n"
+            "— Scheduled"
+        )
+
+        bot_gmail.send_email(
+            thread_id=email.thread_id,
+            to=email.sender,
+            subject=email.subject,
+            body=body,
+        )
+    except Exception:
+        logger.debug("bot: failed to send unknown-user reply", exc_info=True)
 
 
 # --- Web API routes ---
