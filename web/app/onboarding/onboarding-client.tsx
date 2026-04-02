@@ -58,18 +58,6 @@ export default function OnboardingClient({ needsGoogle, checkoutStatus, modePara
     modeParam === 'bot' || modeParam === 'draft' ? modeParam : 'bot'
   );
 
-  // Checkout success — proceed to Google connect step
-  useEffect(() => {
-    if (checkoutStatus === 'success' && user) {
-      // Check if Google is already connected (e.g. returning from a previous attempt)
-      api<{ connected: boolean }>('/web/api/v1/onboarding/status')
-        .then((status) => {
-          setStep(status.connected ? 'calendars' : 'google');
-        })
-        .catch(() => setStep('google'));
-    }
-  }, [checkoutStatus, user]);
-
   // Initial auth check
   useEffect(() => {
     captureSessionFromURL();
@@ -94,8 +82,16 @@ export default function OnboardingClient({ needsGoogle, checkoutStatus, modePara
   // Determine initial step based on state
   useEffect(() => {
     if (!user) return;
-    // If returning from Stripe checkout, the checkout effect handles it
-    if (checkoutStatus === 'success') return;
+
+    // Returning from Stripe checkout — go straight to Google connect
+    if (checkoutStatus === 'success') {
+      api<{ connected: boolean }>('/web/api/v1/onboarding/status')
+        .then((status) => {
+          setStep(status.connected ? 'calendars' : 'google');
+        })
+        .catch(() => setStep('google'));
+      return;
+    }
 
     if (needsGoogle) {
       // Fresh from Auth0 — check if they already have a subscription (returning user who paid but didn't connect Google)

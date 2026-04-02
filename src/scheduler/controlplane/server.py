@@ -976,7 +976,7 @@ def auth_google_connect(token: str | None = None):
             user = get_user_by_auth0_sub(payload["sub"])
             if user:
                 user_id = str(user.id)
-    except (jwt.PyJWTError, Exception):
+    except jwt.PyJWTError:
         pass
 
     if not user_id:
@@ -1182,7 +1182,7 @@ def auth_google_connect_calendar(token: str | None = None):
             user = get_user_by_auth0_sub(payload["sub"])
             if user:
                 user_id = str(user.id)
-    except (jwt.PyJWTError, Exception):
+    except jwt.PyJWTError:
         pass
 
     # Fallback to HMAC session token

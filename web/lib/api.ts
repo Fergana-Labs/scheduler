@@ -9,9 +9,10 @@ export function captureSessionFromURL() {
   const token = params.get('token') || params.get('session');
   if (token) {
     localStorage.setItem(SESSION_KEY, token);
-    // Remove token from URL without reload
+    // Remove token and transient params from URL without reload
     params.delete('token');
     params.delete('session');
+    params.delete('checkout');
     const clean = params.toString();
     const newUrl = window.location.pathname + (clean ? `?${clean}` : '');
     window.history.replaceState({}, '', newUrl);
