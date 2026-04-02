@@ -193,7 +193,7 @@ def update_google_tokens(
 
 def get_all_user_ids() -> list[str]:
     with _conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT id FROM users")
+        cur.execute("SELECT id FROM users ORDER BY created_at DESC")
         return [str(row[0]) for row in cur.fetchall()]
 
 
@@ -285,8 +285,16 @@ class GuideRow:
     updated_at: datetime
 
 
-def upsert_guide(user_id: str, name: str, content: str) -> GuideRow:
+def upsert_guide(user_id: str, name: str, content: str, source: str = "manual") -> GuideRow:
     with _conn() as conn, conn.cursor() as cur:
+        # Archive current content to guide_versions before overwriting
+        cur.execute(
+            """
+            INSERT INTO guide_versions (user_id, name, content, source)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (user_id, name, content, source),
+        )
         cur.execute(
             """
             INSERT INTO guides (user_id, name, content)
@@ -328,6 +336,166 @@ def get_guides_for_user(user_id: str) -> list[GuideRow]:
             return []
         cols = [desc[0] for desc in cur.description]
         return [GuideRow(**dict(zip(cols, row))) for row in rows]
+
+
+def get_edited_drafts_since(user_id: str, since: datetime) -> list[dict]:
+    """Return composed drafts where the user meaningfully edited before sending.
+
+    Filters to the sweet-spot similarity band (0.3–0.97): too-different rows
+    are already discarded by record_draft_sent; near-identical rows mean the
+    draft was sent unchanged and carry no learning signal.
+    """
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT original_body, sent_body, edit_distance_ratio,
+                   chars_added, chars_removed, thread_context,
+                   sent_at, composed_at, raw_body
+            FROM composed_drafts
+            WHERE user_id = %s
+              AND sent_at >= %s
+              AND was_edited = TRUE
+              AND sent_similarity BETWEEN 0.3 AND 0.97
+            ORDER BY sent_at DESC
+            """,
+            (user_id, since),
+        )
+        cols = [desc[0] for desc in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def store_guide_update_run(
+    user_id: str,
+    guide_name: str,
+    drafts_analyzed: int,
+    proposed_changes: list[dict],
+    applied_changes: list[dict],
+    skipped_reason: str | None = None,
+    agent_log: str | None = None,
+) -> str:
+    """Insert a guide_update_runs row. Returns the new run UUID."""
+    changes_made = len(applied_changes) > 0
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO guide_update_runs
+                (user_id, guide_name, drafts_analyzed, changes_made,
+                 proposed_changes, applied_changes, skipped_reason, agent_log)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                user_id, guide_name, drafts_analyzed, changes_made,
+                json.dumps(proposed_changes), json.dumps(applied_changes),
+                skipped_reason, agent_log,
+            ),
+        )
+        run_id = str(cur.fetchone()[0])
+        conn.commit()
+        return run_id
+
+
+def get_guide_update_runs(
+    page: int = 1,
+    per_page: int = 20,
+    email_search: str | None = None,
+    guide_name: str | None = None,
+) -> tuple[list[dict], int]:
+    """Paginated guide_update_runs with user email joined, for admin browsing."""
+    conditions = []
+    params: list = []
+
+    if email_search:
+        conditions.append("u.email ILIKE %s")
+        params.append(f"%{email_search}%")
+    if guide_name:
+        conditions.append("r.guide_name = %s")
+        params.append(guide_name)
+
+    where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    offset = (page - 1) * per_page
+
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT COUNT(*) FROM guide_update_runs r JOIN users u ON u.id = r.user_id {where_clause}",
+            params,
+        )
+        total = cur.fetchone()[0]
+
+        cur.execute(
+            f"""
+            SELECT r.id, u.email AS user_email, r.guide_name, r.ran_at,
+                   r.drafts_analyzed, r.changes_made,
+                   r.proposed_changes, r.applied_changes,
+                   r.skipped_reason, r.agent_log
+            FROM guide_update_runs r
+            JOIN users u ON u.id = r.user_id
+            {where_clause}
+            ORDER BY r.ran_at DESC
+            LIMIT %s OFFSET %s
+            """,
+            params + [per_page, offset],
+        )
+        cols = [desc[0] for desc in cur.description]
+        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        for row in rows:
+            if row.get("ran_at"):
+                row["ran_at"] = row["ran_at"].isoformat()
+        return rows, total
+
+
+def get_guide_update_run(run_id: str) -> dict | None:
+    """Fetch a single guide_update_runs row by UUID."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT r.id, u.email AS user_email, r.user_id, r.guide_name, r.ran_at,
+                   r.drafts_analyzed, r.changes_made,
+                   r.proposed_changes, r.applied_changes,
+                   r.skipped_reason, r.agent_log
+            FROM guide_update_runs r
+            JOIN users u ON u.id = r.user_id
+            WHERE r.id = %s
+            """,
+            (run_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in cur.description]
+        result = dict(zip(cols, row))
+        if result.get("ran_at"):
+            result["ran_at"] = result["ran_at"].isoformat()
+        return result
+
+
+def apply_guide_update_run_change(run_id: str, change_index: int) -> bool:
+    """Mark a proposed change as applied and update applied_changes column.
+
+    Returns True if the run was found and updated, False otherwise.
+    """
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT proposed_changes, applied_changes FROM guide_update_runs WHERE id = %s",
+            (run_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return False
+        proposed = row[0] if isinstance(row[0], list) else json.loads(row[0])
+        applied = row[1] if isinstance(row[1], list) else json.loads(row[1])
+        if change_index >= len(proposed):
+            return False
+        change = dict(proposed[change_index])
+        change["applied"] = True
+        change["manually_applied"] = True
+        applied.append(change)
+        cur.execute(
+            "UPDATE guide_update_runs SET applied_changes = %s, changes_made = TRUE WHERE id = %s",
+            (json.dumps(applied), run_id),
+        )
+        conn.commit()
+        return True
 
 
 def delete_user(user_id: str) -> None:

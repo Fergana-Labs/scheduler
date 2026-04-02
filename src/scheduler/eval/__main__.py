@@ -14,6 +14,9 @@ Usage:
     python -m scheduler.eval classify --fixture fixture.json --thread-ids t1
     python -m scheduler.eval onboard --fixture fixture.json
     python -m scheduler.eval lifecycle --fixture fixture.json --runs 3
+
+    # Guide updater eval (add 'updater_diffs' key to fixture to test):
+    python -m scheduler.eval updater --fixture fixture.json
 """
 
 from __future__ import annotations
@@ -814,6 +817,114 @@ def cmd_guides(args):
     print(json.dumps(guides, indent=2))
 
 
+def run_updater_eval(fixture: dict, synthetic_diffs: list[dict] | None = None) -> dict:
+    """Run the guide updater agents against synthetic diffs or fixture-derived diffs.
+
+    If synthetic_diffs is None, derives diffs from the fixture messages
+    (looks for messages with both an 'original_body' and 'sent_body' key, which
+    you can add manually to test specific scenarios).
+
+    Returns a dict with proposed_changes for each guide.
+    """
+    import anyio
+    from scheduler.eval.backends import ReplayGuideBackend
+    from scheduler.guides.updater import (
+        STYLE_MIN_DRAFTS,
+        PREFERENCES_MIN_DRAFTS,
+        apply_proposed_changes,
+        run_style_updater_agent,
+        run_preferences_updater_agent,
+    )
+
+    class EvalUpdaterBackend:
+        """Replay backend for updater evals — no DB calls."""
+
+        def __init__(self, fixture: dict, diffs: list[dict]):
+            self._fixture = fixture
+            self._diffs = diffs
+            self._logs: dict[str, str] = {}
+
+        def load_guide(self, name: str) -> str | None:
+            return self._fixture.get("guides", {}).get(name)
+
+        def get_edited_drafts(self) -> list[dict]:
+            return self._diffs
+
+        def apply_guide_changes(self, guide_name: str, content: str) -> None:
+            pass  # captured separately in the result
+
+        def set_agent_log(self, guide_name: str, log: str) -> None:
+            self._logs[guide_name] = log
+
+        def get_agent_log(self, guide_name: str) -> str:
+            return self._logs.get(guide_name, "")
+
+    diffs = synthetic_diffs or fixture.get("updater_diffs", [])
+
+    backend = EvalUpdaterBackend(fixture, diffs)
+
+    results: dict[str, dict] = {}
+
+    for guide_name, agent_fn, threshold in [
+        ("email_style", run_style_updater_agent, STYLE_MIN_DRAFTS),
+        ("scheduling_preferences", run_preferences_updater_agent, PREFERENCES_MIN_DRAFTS),
+    ]:
+        if len(diffs) < threshold:
+            results[guide_name] = {
+                "skipped": True,
+                "reason": f"only {len(diffs)} diffs (need {threshold})",
+            }
+            continue
+        try:
+            proposed = anyio.run(agent_fn, backend, diffs)
+            current = backend.load_guide(guide_name) or ""
+            updated, applied = apply_proposed_changes(guide_name, current, proposed, threshold)
+            results[guide_name] = {
+                "current_guide": current,
+                "proposed_changes": proposed,
+                "applied_changes": applied,
+                "updated_guide": updated if applied else current,
+                "agent_log": backend.get_agent_log(guide_name),
+            }
+        except Exception as e:
+            results[guide_name] = {"error": str(e)}
+
+    return results
+
+
+def cmd_updater(args):
+    """Run the guide updater agent against synthetic diffs in a fixture."""
+    from scheduler.eval.backends import load_fixture
+
+    fixture = load_fixture(args.fixture)
+    results = run_updater_eval(fixture)
+
+    print(json.dumps(results, indent=2))
+
+    for guide_name, result in results.items():
+        if result.get("skipped"):
+            print(f"\n  {guide_name}: SKIPPED — {result['reason']}", file=sys.stderr)
+        elif result.get("error"):
+            print(f"\n  {guide_name}: ERROR — {result['error']}", file=sys.stderr)
+        else:
+            n_proposed = len(result.get("proposed_changes", []))
+            n_applied = len(result.get("applied_changes", []))
+            print(f"\n  {guide_name}: {n_applied}/{n_proposed} changes applied", file=sys.stderr)
+            for change in result.get("applied_changes", []):
+                print(
+                    f"    APPLIED [{change['action']}] {change['section']}: "
+                    f"{change['justification'][:80]}",
+                    file=sys.stderr,
+                )
+            for change in result.get("proposed_changes", []):
+                if not change.get("applied") and change.get("skip_reason"):
+                    print(
+                        f"    SKIPPED [{change['action']}] {change['section']}: "
+                        f"{change.get('skip_reason', '')}",
+                        file=sys.stderr,
+                    )
+
+
 def cmd_onboard(args):
     """Run the onboarding (calendar populator) agent against the fixture."""
     from scheduler.eval.backends import load_fixture
@@ -918,6 +1029,15 @@ def main():
     ob.add_argument("--fixture", required=True, help="Fixture file")
     ob.add_argument("--lookback-days", type=int, help="Lookback window in days (default: 60)")
     ob.set_defaults(func=cmd_onboard)
+
+    # updater
+    upd = sub.add_parser(
+        "updater",
+        help="Run guide updater agents against synthetic diffs in a fixture "
+             "(fixture must have an 'updater_diffs' key or use --diffs-file)",
+    )
+    upd.add_argument("--fixture", required=True, help="Fixture file")
+    upd.set_defaults(func=cmd_updater)
 
     parsed = parser.parse_args()
     parsed.func(parsed)

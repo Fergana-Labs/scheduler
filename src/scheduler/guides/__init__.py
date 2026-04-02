@@ -48,7 +48,7 @@ def load_guide(name: str, user_id: str | None = None) -> str | None:
         return None
 
 
-def save_guide(name: str, content: str, user_id: str | None = None) -> None:
+def save_guide(name: str, content: str, user_id: str | None = None, source: str = "manual") -> None:
     """Save a guide to the appropriate backend(s).
 
     In production (DATABASE_URL set): writes to the database only.
@@ -60,12 +60,13 @@ def save_guide(name: str, content: str, user_id: str | None = None) -> None:
         name: Guide name (without extension).
         content: Guide content.
         user_id: Optional user ID for database persistence.
+        source: Who wrote this version — 'onboarding', 'updater', 'manual', 'regenerate'.
     """
     if _use_database() and user_id:
         try:
             from scheduler.db import upsert_guide
 
-            upsert_guide(user_id=user_id, name=name, content=content)
+            upsert_guide(user_id=user_id, name=name, content=content, source=source)
         except Exception:
             logger.warning("Failed to persist guide '%s' to database", name, exc_info=True)
 

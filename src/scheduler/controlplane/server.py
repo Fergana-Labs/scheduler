@@ -1970,7 +1970,7 @@ def guides_write(req: WriteGuideRequest, session: dict = Depends(get_session)):
     from scheduler.guides import save_guide
 
     user_id = session["user_id"]
-    save_guide(name=req.name, content=req.content, user_id=user_id)
+    save_guide(name=req.name, content=req.content, user_id=user_id, source="regenerate")
     return {"status": "written"}
 
 
@@ -2667,6 +2667,81 @@ def admin_drafts(
     return {"drafts": drafts, "total": total, "page": page, "per_page": per_page}
 
 
+@app.get("/web/api/v1/admin/guide-updates")
+def admin_guide_updates(
+    page: int = 1,
+    per_page: int = 20,
+    email: str | None = None,
+    guide_name: str | None = None,
+    admin: dict = Depends(_require_admin),
+):
+    """Paginated guide update runs for admin review.
+
+    Each row shows what the updater agent proposed and applied for a user,
+    along with the full agent reasoning log and any skipped_reason.
+    """
+    from scheduler.db import get_guide_update_runs
+    runs, total = get_guide_update_runs(
+        page=page, per_page=per_page,
+        email_search=email, guide_name=guide_name,
+    )
+    return {"runs": runs, "total": total, "page": page, "per_page": per_page}
+
+
+class ApplyGuideChangeRequest(BaseModel):
+    change_index: int
+
+
+@app.post("/web/api/v1/admin/guide-updates/{run_id}/apply")
+def admin_apply_guide_change(
+    run_id: str,
+    req: ApplyGuideChangeRequest,
+    background_tasks: BackgroundTasks,
+    admin: dict = Depends(_require_admin),
+):
+    """Manually apply a proposed change that was held back by the frequency gate.
+
+    Looks up the guide_update_runs row, takes proposed_changes[change_index],
+    applies it to the live guide, and records it in applied_changes.
+    """
+    from scheduler.db import get_guide_update_run, apply_guide_update_run_change, get_user_by_id
+
+    run = get_guide_update_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    proposed = run.get("proposed_changes") or []
+    if req.change_index >= len(proposed):
+        raise HTTPException(status_code=400, detail="change_index out of range")
+
+    change = proposed[req.change_index]
+    guide_name = run["guide_name"]
+    user_id = str(run["user_id"])
+
+    # Apply the change to the live guide
+    from scheduler.guides import load_guide
+    from scheduler.guides.updater import _apply_change_to_guide, _guard_length
+
+    current = load_guide(guide_name, user_id=user_id) or ""
+    updated = _apply_change_to_guide(current, change)
+    if updated is None:
+        raise HTTPException(status_code=422, detail="Could not locate target text in guide")
+    if not _guard_length(current, updated):
+        raise HTTPException(status_code=422, detail="Change would cause guide to exceed length limit")
+
+    from scheduler.guides import save_guide
+    save_guide(name=guide_name, content=updated, user_id=user_id, source="updater")
+
+    # Mark the change as applied in the run row
+    apply_guide_update_run_change(run_id, req.change_index)
+
+    logger.info(
+        "admin_apply_guide_change: applied change %d of run %s for user=%s guide=%s",
+        req.change_index, run_id, user_id, guide_name,
+    )
+    return {"status": "applied", "guide_name": guide_name}
+
+
 @app.post("/web/api/v1/admin/onboarding/retry-stuck")
 def admin_retry_stuck_onboarding(
     background_tasks: BackgroundTasks,
@@ -3288,3 +3363,139 @@ def gmail_watch_renew():
 
     result = renew_all_watches()
     return result
+
+
+# ---------------------------------------------------------------------------
+# Guide update system — weekly continual learning
+# ---------------------------------------------------------------------------
+
+def _run_guide_updater_for_user(user_id: str) -> dict:
+    """Run both guide updater passes (style + preferences) for a single user.
+
+    Returns a summary dict with counts of proposed/applied changes per guide.
+    Called as a background task from the weekly cron endpoint.
+    """
+    import anyio
+
+    from scheduler.db import get_edited_drafts_since, store_guide_update_run
+    from scheduler.guides.backends import UpdaterBackend
+    from scheduler.guides.updater import (
+        STYLE_MIN_DRAFTS,
+        PREFERENCES_MIN_DRAFTS,
+        apply_proposed_changes,
+        run_style_updater_agent,
+        run_preferences_updater_agent,
+    )
+
+    backend = UpdaterBackend(user_id=user_id)
+    edited_diffs = backend.get_edited_drafts()
+
+    results: dict[str, dict] = {}
+
+    # ── Pass 1: Email Style ──────────────────────────────────────────────────
+    guide_name = "email_style"
+    if len(edited_diffs) < STYLE_MIN_DRAFTS:
+        skipped_reason = f"only {len(edited_diffs)} edited drafts (need {STYLE_MIN_DRAFTS})"
+        logger.info("guide_updater[%s]: style skipped — %s", user_id, skipped_reason)
+        store_guide_update_run(
+            user_id=user_id,
+            guide_name=guide_name,
+            drafts_analyzed=len(edited_diffs),
+            proposed_changes=[],
+            applied_changes=[],
+            skipped_reason=skipped_reason,
+        )
+        results[guide_name] = {"skipped": True, "reason": skipped_reason}
+    else:
+        try:
+            proposed = anyio.run(run_style_updater_agent, backend, edited_diffs)
+            current_guide = backend.load_guide(guide_name) or ""
+            updated_content, applied = apply_proposed_changes(
+                guide_name, current_guide, proposed, STYLE_MIN_DRAFTS
+            )
+            if applied:
+                backend.apply_guide_changes(guide_name, updated_content)
+                logger.info(
+                    "guide_updater[%s]: style — applied %d/%d changes",
+                    user_id, len(applied), len(proposed),
+                )
+            store_guide_update_run(
+                user_id=user_id,
+                guide_name=guide_name,
+                drafts_analyzed=len(edited_diffs),
+                proposed_changes=proposed,
+                applied_changes=applied,
+                agent_log=backend.get_agent_log(guide_name),
+            )
+            results[guide_name] = {"proposed": len(proposed), "applied": len(applied)}
+        except Exception:
+            logger.exception("guide_updater[%s]: style pass failed", user_id)
+            results[guide_name] = {"error": True}
+
+    # ── Pass 2: Scheduling Preferences ──────────────────────────────────────
+    guide_name = "scheduling_preferences"
+    if len(edited_diffs) < PREFERENCES_MIN_DRAFTS:
+        skipped_reason = f"only {len(edited_diffs)} edited drafts (need {PREFERENCES_MIN_DRAFTS})"
+        logger.info("guide_updater[%s]: preferences skipped — %s", user_id, skipped_reason)
+        store_guide_update_run(
+            user_id=user_id,
+            guide_name=guide_name,
+            drafts_analyzed=len(edited_diffs),
+            proposed_changes=[],
+            applied_changes=[],
+            skipped_reason=skipped_reason,
+        )
+        results[guide_name] = {"skipped": True, "reason": skipped_reason}
+    else:
+        try:
+            proposed = anyio.run(run_preferences_updater_agent, backend, edited_diffs)
+            current_guide = backend.load_guide(guide_name) or ""
+            updated_content, applied = apply_proposed_changes(
+                guide_name, current_guide, proposed, PREFERENCES_MIN_DRAFTS
+            )
+            if applied:
+                backend.apply_guide_changes(guide_name, updated_content)
+                logger.info(
+                    "guide_updater[%s]: preferences — applied %d/%d changes",
+                    user_id, len(applied), len(proposed),
+                )
+            store_guide_update_run(
+                user_id=user_id,
+                guide_name=guide_name,
+                drafts_analyzed=len(edited_diffs),
+                proposed_changes=proposed,
+                applied_changes=applied,
+                agent_log=backend.get_agent_log(guide_name),
+            )
+            results[guide_name] = {"proposed": len(proposed), "applied": len(applied)}
+        except Exception:
+            logger.exception("guide_updater[%s]: preferences pass failed", user_id)
+            results[guide_name] = {"error": True}
+
+    return results
+
+
+@app.post("/api/v1/guides/update-all")
+def guides_update_all(background_tasks: BackgroundTasks):
+    """Run the weekly guide updater for all active users.
+
+    Intended to be called by a weekly cron job. No auth required —
+    the operation is read-then-write on internal DB data only.
+    Each user is processed as a background task to avoid blocking.
+    """
+    from scheduler.db import get_all_user_ids, get_user_by_id
+
+    user_ids = get_all_user_ids()
+    queued = []
+    skipped = []
+
+    for user_id in user_ids:
+        user = get_user_by_id(user_id)
+        if not user or not user.system_enabled or not user.google_refresh_token:
+            skipped.append(user_id)
+            continue
+        background_tasks.add_task(_run_guide_updater_for_user, user_id)
+        queued.append(user_id)
+
+    logger.info("guides_update_all: queued %d users, skipped %d", len(queued), len(skipped))
+    return {"queued": len(queued), "skipped": len(skipped)}

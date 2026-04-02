@@ -7,7 +7,7 @@ whether it's calling Google APIs directly or going through HTTP.
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 
 from scheduler.calendar.client import CalendarClient
@@ -75,5 +75,42 @@ class LocalGuideBackend:
     def write_guide(self, name: str, content: str) -> dict:
         from scheduler.guides import save_guide
 
-        save_guide(name=name, content=content, user_id=self._user_id)
+        save_guide(name=name, content=content, user_id=self._user_id, source="onboarding")
         return {"status": "written", "name": name}
+
+
+class UpdaterBackend:
+    """Backend for the weekly guide updater agent.
+
+    Loads edited draft diffs from the DB and provides surgical guide-write
+    capability. Also accumulates agent log text per guide for the audit row.
+    """
+
+    def __init__(self, user_id: str, lookback_days: int = 7):
+        self._user_id = user_id
+        self._lookback_days = lookback_days
+        self._agent_logs: dict[str, str] = {}
+
+    def load_guide(self, name: str) -> str | None:
+        from scheduler.guides import load_guide
+        return load_guide(name, user_id=self._user_id)
+
+    def get_edited_drafts(self) -> list[dict]:
+        from scheduler.db import get_edited_drafts_since
+        since = datetime.utcnow() - timedelta(days=self._lookback_days)
+        return get_edited_drafts_since(self._user_id, since)
+
+    def apply_guide_changes(
+        self,
+        guide_name: str,
+        updated_content: str,
+    ) -> None:
+        """Write the updated guide content with source='updater'."""
+        from scheduler.guides import save_guide
+        save_guide(name=guide_name, content=updated_content, user_id=self._user_id, source="updater")
+
+    def set_agent_log(self, guide_name: str, log: str) -> None:
+        self._agent_logs[guide_name] = log
+
+    def get_agent_log(self, guide_name: str) -> str:
+        return self._agent_logs.get(guide_name, "")
