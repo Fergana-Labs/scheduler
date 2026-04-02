@@ -3382,16 +3382,24 @@ _GUIDE_UPDATER_CONCURRENCY = int(os.environ.get("GUIDE_UPDATER_CONCURRENCY", "5"
 _RETRY_MAX_ATTEMPTS = 3
 _RETRY_BASE_DELAY = 30.0  # seconds; doubles on each attempt
 
+# Exceptions that indicate a programming bug — retrying won't help.
+_NON_RETRYABLE_ERRORS = (TypeError, AttributeError, ValueError, KeyError, AssertionError)
+
 
 async def _with_retry(coro_factory, label: str = ""):
     """Retry an async coroutine factory with exponential backoff.
 
     coro_factory must be a zero-argument callable that returns a fresh
     coroutine on each call (typically a lambda).
+
+    Non-retryable errors (programming bugs) are re-raised immediately.
+    Only transient errors (API rate limits, 529s, network blips) are retried.
     """
     for attempt in range(_RETRY_MAX_ATTEMPTS):
         try:
             return await coro_factory()
+        except _NON_RETRYABLE_ERRORS:
+            raise  # programming error — don't waste time retrying
         except Exception as exc:
             if attempt == _RETRY_MAX_ATTEMPTS - 1:
                 raise
@@ -3535,22 +3543,15 @@ async def guides_update_all(background_tasks: BackgroundTasks):
     Progress is visible in real time via GET /web/api/v1/admin/guide-updates
     (runs show status='running' until they complete).
     """
-    from scheduler.db import get_all_user_ids, get_user_by_id
+    from scheduler.db import get_all_user_ids, get_active_users_for_updater
 
-    user_ids: list[str] = await asyncio.to_thread(get_all_user_ids)
-    active: list[str] = []
-    skipped: list[str] = []
-
-    for user_id in user_ids:
-        user = await asyncio.to_thread(get_user_by_id, user_id)
-        if not user or not user.system_enabled or not user.google_refresh_token:
-            skipped.append(user_id)
-            continue
-        active.append(user_id)
+    all_ids: list[str] = await asyncio.to_thread(get_all_user_ids)
+    active: list[str] = await asyncio.to_thread(get_active_users_for_updater)
+    skipped_count = len(all_ids) - len(active)
 
     background_tasks.add_task(_run_guide_updater_batch, active)
     logger.info(
         "guides_update_all: queued %d users (concurrency=%d), skipped %d",
-        len(active), _GUIDE_UPDATER_CONCURRENCY, len(skipped),
+        len(active), _GUIDE_UPDATER_CONCURRENCY, skipped_count,
     )
-    return {"queued": len(active), "skipped": len(skipped)}
+    return {"queued": len(active), "skipped": skipped_count}

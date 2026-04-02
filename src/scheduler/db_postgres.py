@@ -197,6 +197,25 @@ def get_all_user_ids() -> list[str]:
         return [str(row[0]) for row in cur.fetchall()]
 
 
+def get_active_users_for_updater() -> list[str]:
+    """Return user IDs eligible for guide updates in a single query.
+
+    Filters to users who are system-enabled and have a Google refresh token
+    (i.e. their Gmail integration is connected). Replaces the N+1 pattern of
+    get_all_user_ids() + per-user get_user_by_id() in the cron endpoint.
+    """
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id FROM users
+             WHERE system_enabled = TRUE
+               AND google_refresh_token IS NOT NULL
+            ORDER BY created_at DESC
+            """
+        )
+        return [str(row[0]) for row in cur.fetchall()]
+
+
 def get_stuck_onboarding_users() -> list[UserRow]:
     """Return users with Google tokens but onboarding not completed (null, pending, or running)."""
     with _conn() as conn, conn.cursor() as cur:
@@ -287,14 +306,21 @@ class GuideRow:
 
 def upsert_guide(user_id: str, name: str, content: str, source: str = "manual") -> GuideRow:
     with _conn() as conn, conn.cursor() as cur:
-        # Archive current content to guide_versions before overwriting
+        # Read the CURRENT (old) content so guide_versions holds a true history
+        # that can be rolled back to, not just a duplicate of what we're writing.
         cur.execute(
-            """
-            INSERT INTO guide_versions (user_id, name, content, source)
-            VALUES (%s, %s, %s, %s)
-            """,
-            (user_id, name, content, source),
+            "SELECT content FROM guides WHERE user_id = %s AND name = %s",
+            (user_id, name),
         )
+        existing = cur.fetchone()
+        if existing:
+            cur.execute(
+                """
+                INSERT INTO guide_versions (user_id, name, content, source)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (user_id, name, existing[0], source),
+            )
         cur.execute(
             """
             INSERT INTO guides (user_id, name, content)
@@ -357,6 +383,7 @@ def get_edited_drafts_since(user_id: str, since: datetime) -> list[dict]:
               AND was_edited = TRUE
               AND sent_similarity BETWEEN 0.3 AND 0.97
             ORDER BY sent_at DESC
+            LIMIT 50
             """,
             (user_id, since),
         )
@@ -493,7 +520,7 @@ def get_guide_update_runs(
         cur.execute(
             f"""
             SELECT r.id, u.email AS user_email, r.guide_name, r.ran_at,
-                   r.drafts_analyzed, r.changes_made,
+                   r.status, r.drafts_analyzed, r.changes_made,
                    r.proposed_changes, r.applied_changes,
                    r.skipped_reason, r.agent_log
             FROM guide_update_runs r
@@ -518,7 +545,7 @@ def get_guide_update_run(run_id: str) -> dict | None:
         cur.execute(
             """
             SELECT r.id, u.email AS user_email, r.user_id, r.guide_name, r.ran_at,
-                   r.drafts_analyzed, r.changes_made,
+                   r.status, r.drafts_analyzed, r.changes_made,
                    r.proposed_changes, r.applied_changes,
                    r.skipped_reason, r.agent_log
             FROM guide_update_runs r

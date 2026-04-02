@@ -195,6 +195,7 @@ async def run_style_updater_agent(
     )
 
     log_lines: list[str] = []
+    api_error: str | None = None
     with nested_claude_session():
         async with ClaudeSDKClient(options=options) as client:
             await client.query(prompt)
@@ -206,9 +207,12 @@ async def run_style_updater_agent(
                             logger.info("style_updater: %s", block.text)
                 elif isinstance(message, ResultMessage):
                     if is_api_error_result(message.result):
-                        logger.error("style_updater agent failed: %s", message.result)
+                        api_error = str(message.result)
 
     backend.set_agent_log("email_style", "\n".join(log_lines))
+    if api_error:
+        # Raise so _with_retry in the orchestrator can attempt a retry.
+        raise RuntimeError(f"style_updater agent API error: {api_error}")
     return proposed
 
 
@@ -314,6 +318,7 @@ async def run_preferences_updater_agent(
     )
 
     log_lines: list[str] = []
+    api_error: str | None = None
     with nested_claude_session():
         async with ClaudeSDKClient(options=options) as client:
             await client.query(prompt)
@@ -325,9 +330,11 @@ async def run_preferences_updater_agent(
                             logger.info("preferences_updater: %s", block.text)
                 elif isinstance(message, ResultMessage):
                     if is_api_error_result(message.result):
-                        logger.error("preferences_updater agent failed: %s", message.result)
+                        api_error = str(message.result)
 
     backend.set_agent_log("scheduling_preferences", "\n".join(log_lines))
+    if api_error:
+        raise RuntimeError(f"preferences_updater agent API error: {api_error}")
     return proposed
 
 
@@ -380,6 +387,12 @@ def apply_proposed_changes(
 # Diff formatter helper
 # ---------------------------------------------------------------------------
 
+# Hard limits to keep prompt size within Claude's context window.
+# 50 diffs × ~2 000 chars each ≈ 100 k chars, well inside the 200 k token window.
+_MAX_BODY_CHARS = 2_000
+_MAX_CTX_BODY_CHARS = 200
+
+
 def _format_diffs(diffs: list[dict], include_thread_context: bool = False) -> str:
     parts = []
     for i, d in enumerate(diffs, 1):
@@ -388,6 +401,12 @@ def _format_diffs(diffs: list[dict], include_thread_context: bool = False) -> st
         ratio = d.get("edit_distance_ratio", 0)
         added = d.get("chars_added", 0)
         removed = d.get("chars_removed", 0)
+
+        # Truncate individual bodies so one long email can't inflate the prompt.
+        if len(original) > _MAX_BODY_CHARS:
+            original = original[:_MAX_BODY_CHARS] + "\n[… truncated]"
+        if len(sent) > _MAX_BODY_CHARS:
+            sent = sent[:_MAX_BODY_CHARS] + "\n[… truncated]"
 
         part = (
             f"--- Diff {i} ---\n"
@@ -407,7 +426,7 @@ def _format_diffs(diffs: list[dict], include_thread_context: bool = False) -> st
                 ctx_lines = []
                 for msg in ctx[-3:]:  # last 3 messages for brevity
                     sender = msg.get("sender", "?")
-                    body = (msg.get("body") or "")[:200]
+                    body = (msg.get("body") or "")[:_MAX_CTX_BODY_CHARS]
                     ctx_lines.append(f"  [{sender}]: {body}")
                 part += "\nTHREAD CONTEXT (last 3 messages):\n" + "\n".join(ctx_lines) + "\n"
 
