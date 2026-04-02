@@ -215,7 +215,7 @@ def _refresh_stale_drafts() -> int:
         extra_ids = (user.calendar_ids or []) if user else []
 
         # CalendarClient is lazy — timezone check won't trigger GmailClient build
-        with CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=extra_ids) as calendar:
+        with CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=extra_ids, scheduled_calendar_id=user.scheduled_calendar_id if user else None) as calendar:
             user_tz = calendar.get_user_timezone()
             if not _is_morning_window(user_tz):
                 continue  # not morning for this user — skip all their drafts, no Gmail build
@@ -1320,7 +1320,7 @@ def _run_bot_mode_onboarding(user_id: str):
         extra_ids = (_db_user.calendar_ids or []) if _db_user else []
 
         creds = load_credentials_bot_mode(user_id)
-        calendar = CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=extra_ids)
+        calendar = CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=extra_ids, scheduled_calendar_id=_db_user.scheduled_calendar_id if _db_user else None)
 
         try:
             guide_backend = LocalGuideBackend(
@@ -1651,7 +1651,7 @@ def register_session(session_token: str, user_id: str) -> None:
 
     db_user = get_user_by_id(user_id)
     extra_ids = (db_user.calendar_ids or []) if db_user else []
-    calendar = CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=extra_ids)
+    calendar = CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=extra_ids, scheduled_calendar_id=db_user.scheduled_calendar_id if db_user else None)
     calendar.get_or_create_scheduled_calendar()
 
     sessions[session_token] = {
@@ -2085,7 +2085,7 @@ def confirm_scheduling_link_public(link_id: str, req: ConfirmTimeRequest):
 
     user = get_user_by_id(str(link.user_id))
     extra_ids = (user.calendar_ids or []) if user else []
-    calendar = CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=extra_ids)
+    calendar = CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=extra_ids, scheduled_calendar_id=user.scheduled_calendar_id if user else None)
 
     try:
         existing = calendar.get_all_events(selected_start, selected_end, include_primary=True)
@@ -2180,7 +2180,7 @@ def _process_scheduling_link_submission(user_id: str, link_id: str) -> None:
         return
 
     gmail = GmailClient(creds)
-    calendar = CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=user.calendar_ids or [])
+    calendar = CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=user.calendar_ids or [], scheduled_calendar_id=user.scheduled_calendar_id)
 
     try:
         # Get the original thread for context
@@ -2431,9 +2431,12 @@ def _run_onboarding_all(user_id: str) -> None:
     from scheduler.onboarding.agent import _run_backfill_async as _run_backfill
     from scheduler.onboarding.backends import LocalBackend
 
+    from scheduler.db import get_user_by_id
+    _onboard_user = get_user_by_id(user_id)
+
     creds = load_credentials(user_id)
     gmail = GmailClient(creds)
-    calendar = CalendarClient(creds, config.scheduled_calendar_name)
+    calendar = CalendarClient(creds, config.scheduled_calendar_name, scheduled_calendar_id=_onboard_user.scheduled_calendar_id if _onboard_user else None)
     try:
         cal_id = calendar.get_or_create_scheduled_calendar()
         if cal_id:
@@ -2515,7 +2518,9 @@ def _run_onboarding_for_runtime(user_id: str) -> None:
 
             # Ensure Scheduled calendar exists before sandbox launch (agents need it)
             creds = load_credentials(user_id)
-            with CalendarClient(creds, config.scheduled_calendar_name) as calendar:
+            from scheduler.db import get_user_by_id
+            _e2b_user = get_user_by_id(user_id)
+            with CalendarClient(creds, config.scheduled_calendar_name, scheduled_calendar_id=_e2b_user.scheduled_calendar_id if _e2b_user else None) as calendar:
                 cal_id = calendar.get_or_create_scheduled_calendar()
             if cal_id:
                 from scheduler.db import update_scheduled_calendar_id
@@ -2852,7 +2857,7 @@ def _process_messages(user_id: str, email_address: str, message_ids: list[str]) 
 
     creds = load_credentials(user_id)
     gmail = GmailClient(creds)
-    calendar = CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=user.calendar_ids or [])
+    calendar = CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=user.calendar_ids or [], scheduled_calendar_id=user.scheduled_calendar_id)
     try:
         _process_message_batch(gmail, calendar, user, user_id, email_address, message_ids)
     finally:
@@ -3239,7 +3244,7 @@ def _process_bot_messages(message_ids: list[str]) -> None:
             )
 
             creds = load_credentials_bot_mode(str(user.id))
-            user_calendar = CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=user.calendar_ids or [])
+            user_calendar = CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=user.calendar_ids or [], scheduled_calendar_id=user.scheduled_calendar_id)
 
             try:
                 result = compose_and_send(
@@ -4070,7 +4075,7 @@ def web_list_calendars(user: dict = Depends(get_authenticated_user)):
         creds = load_credentials_bot_mode(user["user_id"])
     else:
         creds = load_credentials(user["user_id"])
-    with CalendarClient(creds, config.scheduled_calendar_name) as calendar:
+    with CalendarClient(creds, config.scheduled_calendar_name, scheduled_calendar_id=db_user.scheduled_calendar_id) as calendar:
         selected_ids = set(db_user.calendar_ids or [])
 
         all_cals = calendar.list_calendars()
@@ -4123,9 +4128,12 @@ def _run_guide_regeneration(user_id: str, guide_name: str) -> None:
 
     from scheduler.guides.backends import LocalGuideBackend
 
+    from scheduler.db import get_user_by_id
+    _guide_user = get_user_by_id(user_id)
+
     creds = load_credentials(user_id)
     gmail = GmailClient(creds)
-    calendar = CalendarClient(creds, config.scheduled_calendar_name)
+    calendar = CalendarClient(creds, config.scheduled_calendar_name, scheduled_calendar_id=_guide_user.scheduled_calendar_id if _guide_user else None)
     try:
         calendar.get_or_create_scheduled_calendar()
 
@@ -4221,6 +4229,7 @@ def demo_chat(req: DemoChatRequest, request: Request):
         credentials=creds,
         scheduled_calendar_name=config.scheduled_calendar_name,
         extra_calendar_ids=db_user.calendar_ids or [],
+        scheduled_calendar_id=db_user.scheduled_calendar_id,
     )
 
     try:
@@ -4439,6 +4448,7 @@ def demo_book(req: DemoBookRequest, request: Request):
         credentials=creds,
         scheduled_calendar_name=config.scheduled_calendar_name,
         extra_calendar_ids=db_user.calendar_ids or [],
+        scheduled_calendar_id=db_user.scheduled_calendar_id,
     )
 
     try:

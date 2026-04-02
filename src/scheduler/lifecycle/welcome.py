@@ -323,7 +323,7 @@ def send_lifecycle_email(user_id: str) -> None:
         return
 
     # (e) Fetch calendar availability
-    calendar = CalendarClient(creds, config.scheduled_calendar_name)
+    calendar = CalendarClient(creds, config.scheduled_calendar_name, scheduled_calendar_id=user.scheduled_calendar_id)
     now = datetime.now()
     events = calendar.get_all_events(now, now + timedelta(days=14))
 
