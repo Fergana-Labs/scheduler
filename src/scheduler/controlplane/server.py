@@ -3588,8 +3588,11 @@ def web_onboarding_profile(
     user: dict = Depends(get_authenticated_user),
 ):
     import threading
-    from scheduler.db import update_user_profile, update_scheduling_mode, get_user_by_id, update_onboarding_status
+    from scheduler.db import update_user_profile, update_scheduling_mode, get_user_by_id, update_onboarding_status, update_stripe_customer
+    from scheduler.billing import create_customer
     from scheduler import analytics
+
+    db_user = get_user_by_id(user["user_id"])
 
     update_user_profile(
         user["user_id"],
@@ -3598,6 +3601,14 @@ def web_onboarding_profile(
     )
     if req.scheduling_mode in ("draft", "bot"):
         update_scheduling_mode(user["user_id"], req.scheduling_mode)
+
+    # Pre-create Stripe customer so the checkout endpoint only needs one Stripe API call.
+    if db_user and not db_user.stripe_customer_id:
+        try:
+            customer = create_customer(db_user.email, str(db_user.id))
+            update_stripe_customer(str(db_user.id), customer.id)
+        except Exception:
+            logger.warning("profile: failed to pre-create Stripe customer for user=%s", user["user_id"], exc_info=True)
 
     analytics.track(user["user_id"], "onboarding_profile_completed", {
         "job_title": req.job_title,

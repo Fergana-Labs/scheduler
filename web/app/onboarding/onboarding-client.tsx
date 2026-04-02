@@ -304,9 +304,9 @@ export default function OnboardingClient({ needsGoogle, checkoutStatus, modePara
           {step === 'mode' && (
             <ModeChoiceStep
               initialMode={mode}
-              onContinue={async (selectedMode) => {
+              onContinue={(selectedMode) => {
                 setMode(selectedMode);
-                await submitProfile(selectedMode);
+                submitProfile(selectedMode); // fire-and-forget — don't block transition
                 setStep('paywall');
               }}
               onBack={() => setStep('preferences')}
