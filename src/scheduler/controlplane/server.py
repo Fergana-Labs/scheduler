@@ -3163,7 +3163,6 @@ def _process_bot_messages(message_ids: list[str]) -> None:
     from scheduler.db import (
         bot_try_claim_message,
         get_bot_conversation,
-        get_bot_conversation_by_thread,
         get_or_create_bot_conversation,
     )
 
@@ -3199,18 +3198,6 @@ def _process_bot_messages(message_ids: list[str]) -> None:
             if not user.system_enabled:
                 logger.info("bot: user %s has system disabled, skipping", user.email)
                 continue
-
-            # Check if the user themselves replied in an existing conversation
-            # (they're taking over from the bot).  But if the conversation is
-            # new, this is the user's *initial* CC — the bot should respond.
-            user_email = (user.google_email or user.email).lower()
-            if email.sender and user_email in email.sender.lower():
-                existing_conv = get_bot_conversation_by_thread(str(user.id), email.thread_id)
-                if existing_conv and existing_conv.turn_count > 0:
-                    logger.info("bot: message %s is from the user, they're handling it — skipping", message_id)
-                    if existing_conv.state not in ("done", "cancelled"):
-                        transition(existing_conv, "cancelled")
-                    continue
 
             all_addrs = [
                 a for a in (

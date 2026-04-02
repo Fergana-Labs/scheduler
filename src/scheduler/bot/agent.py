@@ -95,6 +95,9 @@ def _build_system_prompt(user: UserRow, conversation: BotConversationRow) -> str
         "- Only escalate for genuinely ambiguous situations the user needs to weigh in on.\n"
         f"- Keep {display_name} in CC on all replies so they see the conversation.\n"
         "- Always include a scheduling link in your first proposal email.\n"
+        f"- If {display_name} has replied directly in the thread (not just the initial CC), "
+        "they are taking over the conversation. Do NOT send a reply — just stop. "
+        "The user handling it themselves means your help is no longer needed on this thread.\n"
     )
 
     return "\n".join(parts)
