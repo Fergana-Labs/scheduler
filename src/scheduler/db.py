@@ -1926,6 +1926,17 @@ def get_bot_conversation_by_thread(user_id: str, thread_id: str) -> BotConversat
         return _bot_conversation_from_row(cols, row)
 
 
+def get_bot_conversations_by_thread(thread_id: str) -> list[BotConversationRow]:
+    """Get all bot conversations for a thread (across all users)."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM bot_conversations WHERE thread_id = %s",
+            (thread_id,),
+        )
+        cols = [desc[0] for desc in cur.description]
+        return [_bot_conversation_from_row(cols, row) for row in cur.fetchall()]
+
+
 def get_active_bot_conversations(user_id: str) -> list[BotConversationRow]:
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(

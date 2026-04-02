@@ -122,10 +122,10 @@ def _build_tools(
     @tool(
         "read_thread",
         "Read the full email thread from the bot's inbox to understand the context.",
-        {},
+        {"thread_id": str},
     )
     async def read_thread(args):
-        thread = bot_gmail.get_thread(thread_id)
+        thread = bot_gmail.get_thread(args["thread_id"])
         messages = [
             {
                 "sender": m.sender,
@@ -160,14 +160,12 @@ def _build_tools(
         ]
         return {"content": [{"type": "text", "text": json.dumps(payload)}]}
 
-    thread_id = conversation.thread_id
-
     @tool(
         "send_reply",
         "Send a reply in the thread from the bot's email address. "
         f"Always include {user_email} in the CC so they see the conversation. "
         "Call this exactly once per turn.",
-        {"to": str, "cc": str, "subject": str, "body": str},
+        {"thread_id": str, "to": str, "cc": str, "subject": str, "body": str},
     )
     async def send_reply(args):
         # Ensure user is in CC
@@ -180,7 +178,7 @@ def _build_tools(
         cc_addrs = [a for a in cc_addrs if a.lower() != bot_addr]
 
         message_id = bot_gmail.send_email(
-            thread_id=thread_id,
+            thread_id=args["thread_id"],
             to=args["to"],
             subject=args["subject"],
             body=args["body"],

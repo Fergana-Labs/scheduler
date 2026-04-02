@@ -3203,6 +3203,20 @@ def _process_bot_messages(message_ids: list[str]) -> None:
                 logger.info("bot: user %s has system disabled, skipping", user.email)
                 continue
 
+            # If another user already has a conversation in this thread,
+            # the identified "user" is actually the counterparty — skip.
+            from scheduler.db import get_bot_conversations_by_thread
+            existing_convs = get_bot_conversations_by_thread(email.thread_id)
+            other_user_conv = [
+                c for c in existing_convs if c.user_id != str(user.id)
+            ]
+            if other_user_conv:
+                logger.info(
+                    "bot: message %s — user %s is counterparty in existing conversation %s, skipping",
+                    message_id, user.email, other_user_conv[0].id,
+                )
+                continue
+
             all_addrs = [
                 a for a in (
                     _extract_addresses(email.sender)
