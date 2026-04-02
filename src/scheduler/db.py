@@ -1913,6 +1913,19 @@ def get_bot_conversation(conversation_id: str) -> BotConversationRow | None:
         return _bot_conversation_from_row(cols, row)
 
 
+def get_bot_conversation_by_thread(user_id: str, thread_id: str) -> BotConversationRow | None:
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM bot_conversations WHERE user_id = %s AND thread_id = %s",
+            (user_id, thread_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in cur.description]
+        return _bot_conversation_from_row(cols, row)
+
+
 def get_active_bot_conversations(user_id: str) -> list[BotConversationRow]:
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
