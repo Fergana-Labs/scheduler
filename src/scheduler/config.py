@@ -145,6 +145,20 @@ class Config:
         default_factory=lambda: os.environ.get("BOT_GMAIL_WEBHOOK_TOKEN", "")
     )
 
+    # Stripe billing
+    stripe_secret_key: str = field(
+        default_factory=lambda: os.environ.get("STRIPE_SECRET_KEY", "")
+    )
+    stripe_webhook_secret: str = field(
+        default_factory=lambda: os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+    )
+    stripe_price_id: str = field(
+        default_factory=lambda: os.environ.get("STRIPE_PRICE_ID", "")
+    )
+    stripe_annual_price_id: str = field(
+        default_factory=lambda: os.environ.get("STRIPE_ANNUAL_PRICE_ID", "")
+    )
+
     # Self-hosted fields (only used when deployment_mode == "self_hosted")
     sqlite_db_path: str = field(
         default_factory=lambda: os.environ.get("SQLITE_DB_PATH", "/tmp/scheduler.db")

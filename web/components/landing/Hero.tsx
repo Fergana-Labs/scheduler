@@ -16,31 +16,31 @@ const EMAILS = [
     from: 'Sarah Chen',
     subject: 'Re: Q2 Planning Session',
     preview: 'Hey, can we move our Thursday sync to Friday? I have a conflict with the board meeting...',
-    draft: 'Hi Sarah, Friday works great! I\'ve moved our sync to 2pm — see you then.',
+    draft: 'Hi Sarah, I checked your calendar and Friday at 2pm is wide open — I\'ve moved our sync there. See you then!',
   },
   {
     from: 'James Morrison',
     subject: 'Intro: Alex from Acme Corp',
     preview: 'Wanted to connect you two — Alex is leading their API integration and I think there\'s a lot of synergy...',
-    draft: 'Thanks James! Alex, great to meet you. I\'m free Wednesday or Thursday afternoon if you want to hop on a quick call.',
+    draft: 'Thanks James! Alex, great to meet you. Looking at the schedule, Wednesday or Thursday afternoon both work — pick whichever suits you.',
   },
   {
     from: 'Priya Patel',
     subject: 'Quick question about the demo',
     preview: 'Hi! Loved the demo yesterday. A few of us had questions about the pricing tiers and whether...',
-    draft: 'Hi Priya, thanks so much! I\'ve attached our pricing breakdown. Happy to walk through it — does Tuesday at 11am work?',
+    draft: 'Hi Priya, thanks so much! You\'ve got a gap Tuesday at 11am — happy to walk through pricing then. I\'ll send an invite.',
   },
   {
     from: 'Mike Torres',
     subject: 'Lunch next week?',
     preview: 'It\'s been ages! Are you free for lunch sometime next week? I\'m around Tuesday through Thursday...',
-    draft: 'Mike! Yes, way overdue. How about Wednesday at noon? There\'s a great new spot on 3rd.',
+    draft: 'Mike! Way overdue. Your calendar shows Wednesday at noon is clear — there\'s a great new spot on 3rd. I\'ll book it.',
   },
   {
     from: 'Lisa Wang',
     subject: 'Re: Contract Review',
     preview: 'Our legal team flagged a couple of items in section 4. Can we set up a call to go through them...',
-    draft: 'Hi Lisa, absolutely. I\'ve got time Thursday at 3pm or Friday morning — which works better for your team?',
+    draft: 'Hi Lisa, absolutely. I found a 30-minute slot Thursday at 3pm that works around your existing meetings — does that work for your team?',
   },
 ];
 
@@ -222,17 +222,17 @@ export default function Hero() {
         {/* Left: headline + CTA */}
         <div className="flex-1 text-center lg:text-left">
           <h1 className="font-[family-name:var(--font-playfair)] text-[clamp(2.5rem,10vw,4.5rem)] font-normal italic leading-[1.05] tracking-tight text-gray-900 sm:text-5xl lg:text-7xl xl:text-8xl">
-            Just hit
+            Your calendar,
             <br />
-            send
+            handled
           </h1>
 
           <p className="mt-6 max-w-sm text-base leading-relaxed text-gray-500 sm:mt-8 sm:max-w-md sm:text-lg">
-            Scheduled is an open-source agent that lives in your email and automatically drafts responses.
+            Scheduled is an AI assistant that knows your calendar inside and out.
           </p>
 
           <p className="mt-4 max-w-sm text-base leading-relaxed text-gray-500 sm:max-w-md sm:text-lg">
-            Whenever you receive a scheduling email, a draft will be waiting in your inbox suggesting a time that matches your availability and preferences.
+            It understands your availability, learns your preferences, and handles scheduling conversations — so you never have to.
           </p>
 
           <div className="mt-8 sm:mt-10">
@@ -241,9 +241,10 @@ export default function Hero() {
               onClick={() => { sendGAEvent('event', 'signup_click', { event_category: 'engagement', event_label: 'hero_cta' }); trackPageEvent('signup_click'); }}
               className="inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-full bg-[#43614a] px-7 py-3.5 text-base font-medium text-white transition-all hover:bg-[#527559] sm:w-auto"
             >
-              Get Started
+              Start Free Trial
               <ArrowRight className="h-4 w-4" />
             </a>
+            <p className="mt-3 text-sm text-gray-400">7-day free trial &middot; No credit card to browse</p>
           </div>
         </div>
 

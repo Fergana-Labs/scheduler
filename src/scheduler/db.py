@@ -79,6 +79,14 @@ class UserRow:
     google_email: str | None = None
     refresh_failures: int = 0
     scheduling_mode: str = "draft"
+    job_title: str | None = None
+    scheduling_context: str | None = None
+    onboarding_completed_at: datetime | None = None
+    stripe_customer_id: str | None = None
+    stripe_subscription_id: str | None = None
+    subscription_status: str = "none"
+    trial_ends_at: datetime | None = None
+    subscription_current_period_end: datetime | None = None
 
 
 _USER_ROW_FIELDS.update(f.name for f in fields(UserRow))
@@ -1683,6 +1691,74 @@ def update_scheduling_mode(user_id: str, mode: str) -> None:
             (mode, user_id),
         )
         conn.commit()
+
+
+def update_user_profile(
+    user_id: str,
+    job_title: str | None = None,
+    scheduling_context: str | None = None,
+) -> None:
+    with _pooled_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """UPDATE users
+               SET job_title = %s,
+                   scheduling_context = %s,
+                   onboarding_completed_at = now(),
+                   updated_at = now()
+             WHERE id = %s""",
+            (job_title, scheduling_context, user_id),
+        )
+        conn.commit()
+
+
+def update_stripe_customer(user_id: str, stripe_customer_id: str) -> None:
+    with _pooled_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET stripe_customer_id = %s, updated_at = now() WHERE id = %s",
+            (stripe_customer_id, user_id),
+        )
+        conn.commit()
+
+
+def update_subscription_status(
+    stripe_customer_id: str,
+    *,
+    subscription_id: str | None = None,
+    status: str | None = None,
+    trial_ends_at: datetime | None = None,
+    current_period_end: datetime | None = None,
+) -> None:
+    sets = ["updated_at = now()"]
+    params: list = []
+    if subscription_id is not None:
+        sets.append("stripe_subscription_id = %s")
+        params.append(subscription_id)
+    if status is not None:
+        sets.append("subscription_status = %s")
+        params.append(status)
+    if trial_ends_at is not None:
+        sets.append("trial_ends_at = %s")
+        params.append(trial_ends_at)
+    if current_period_end is not None:
+        sets.append("subscription_current_period_end = %s")
+        params.append(current_period_end)
+    params.append(stripe_customer_id)
+    with _pooled_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"UPDATE users SET {', '.join(sets)} WHERE stripe_customer_id = %s",
+            params,
+        )
+        conn.commit()
+
+
+def get_user_by_stripe_customer(stripe_customer_id: str) -> UserRow | None:
+    with _pooled_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM users WHERE stripe_customer_id = %s", (stripe_customer_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [d[0] for d in cur.description]
+        return _row_to_user(dict(zip(cols, row)))
 
 
 # ---------------------------------------------------------------------------

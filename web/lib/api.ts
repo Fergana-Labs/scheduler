@@ -41,13 +41,25 @@ export async function api<T = unknown>(
     headers['Authorization'] = `Bearer ${token}`;
   }
 
+  const { headers: _dropHeaders, ...restOptions } = options;
   const res = await fetch(`${BASE_URL}${path}`, {
     credentials: 'include',
+    ...restOptions,
     headers,
-    ...options,
   });
 
   if (!res.ok) {
+    // Parse 403 subscription_required so callers can handle it
+    if (res.status === 403) {
+      try {
+        const body = await res.json();
+        if (body.detail === 'subscription_required') {
+          throw new Error('subscription_required');
+        }
+      } catch (e) {
+        if (e instanceof Error && e.message === 'subscription_required') throw e;
+      }
+    }
     throw new Error(`API error: ${res.status}`);
   }
 

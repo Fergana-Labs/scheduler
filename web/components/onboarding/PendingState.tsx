@@ -3,17 +3,25 @@
 import Image from 'next/image';
 import { CheckCircle, Loader2, XCircle } from 'lucide-react';
 
-const AGENT_LABELS: Record<string, string> = {
+const DRAFT_AGENT_LABELS: Record<string, string> = {
   backfill: 'Syncing your calendar',
   preferences: 'Learning scheduling preferences',
   style: 'Analyzing email style',
 };
 
+const BOT_AGENT_LABELS: Record<string, string> = {
+  preferences: 'Learning scheduling preferences',
+};
+
 interface PendingStateProps {
   agents: Record<string, string> | null;
+  mode?: 'bot' | 'draft';
 }
 
-export default function PendingState({ agents }: PendingStateProps) {
+export default function PendingState({ agents, mode = 'draft' }: PendingStateProps) {
+  const isBotMode = mode === 'bot';
+  const agentLabels = isBotMode ? BOT_AGENT_LABELS : DRAFT_AGENT_LABELS;
+
   return (
     <>
       <div className="rounded-xl border border-gray-100 bg-[#FAFAFA] p-6">
@@ -23,18 +31,21 @@ export default function PendingState({ agents }: PendingStateProps) {
           </div>
           <div>
             <p className="text-sm font-medium text-gray-900">
-              We&apos;re learning your style
+              {isBotMode
+                ? 'Setting up your assistant'
+                : 'Learning your style'}
             </p>
             <p className="mt-1 text-xs text-gray-500">
-              Your scheduling preferences and email style guide will appear here
-              when ready.
+              {isBotMode
+                ? 'Your scheduling preferences will appear here when ready.'
+                : 'Your scheduling preferences and email style guide will appear here when ready.'}
             </p>
           </div>
         </div>
 
         {agents && (
           <div className="mt-5 space-y-3">
-            {Object.entries(AGENT_LABELS).map(([key, label]) => {
+            {Object.entries(agentLabels).map(([key, label]) => {
               const status = agents[key];
               return (
                 <div key={key} className="flex items-center gap-3">

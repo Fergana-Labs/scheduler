@@ -4,25 +4,25 @@ import { Brain, Mail, Calendar, Shield } from 'lucide-react';
 
 const features = [
   {
-    name: 'Learns Your Style',
+    name: 'Knows Your Calendar',
     description:
-      'Scheduler analyzes your past emails and learns how you write. Every draft sounds like you — not a robot. It picks up on your tone, greeting style, and how you propose times.',
+      'Scheduled reads your availability in real-time across all your calendars. Primary calendar, shared team calendars, and even a dedicated calendar for commitments. No double-bookings, ever.',
+    icon: Calendar,
+    visualType: 'calendar' as const,
+  },
+  {
+    name: 'Learns Your Preferences',
+    description:
+      'Scheduled analyzes how you schedule — when you like to meet, how long your meetings run, and how you communicate. Every interaction sounds like you, not a robot.',
     icon: Brain,
     visualType: 'style' as const,
   },
   {
-    name: 'Smart Intent Detection',
+    name: 'Handles the Back-and-Forth',
     description:
-      'Not every email is a scheduling request. Scheduler uses AI to classify each message — distinguishing between someone asking to meet, proposing specific times, or confirming a slot.',
+      'Not every email is a scheduling request. Scheduled uses AI to detect scheduling intent, proposes times that work, and handles the entire conversation — so you never have to.',
     icon: Mail,
     visualType: 'intent' as const,
-  },
-  {
-    name: 'Multi-Calendar Awareness',
-    description:
-      'Scheduler checks all your calendars before proposing times. Primary calendar, shared team calendars, and even a dedicated calendar for commitments from emails and texts.',
-    icon: Calendar,
-    visualType: 'calendar' as const,
   },
 ];
 
@@ -143,10 +143,10 @@ export default function Features() {
         </div>
         <div className="mb-20 text-center sm:mb-24">
           <h2 className="font-[family-name:var(--font-space-grotesk)] text-4xl font-bold tracking-tight text-gray-900 sm:text-5xl">
-            More Than Just a Scheduling Link
+            An Assistant That Knows You
           </h2>
           <p className="mx-auto mt-5 max-w-2xl text-lg text-gray-500">
-            An intelligent agent that understands context, learns your preferences, and writes like you
+            Scheduled understands your calendar, your preferences, and your communication style — and gets better every day
           </p>
         </div>
 

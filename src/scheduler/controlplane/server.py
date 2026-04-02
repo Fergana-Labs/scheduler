@@ -459,6 +459,8 @@ async def _gmail_poll_loop():
                         continue
                     if not user.system_enabled:
                         continue
+                    if user.scheduling_mode == "bot":
+                        continue
                     if not user.gmail_history_id:
                         continue
 
@@ -965,21 +967,24 @@ def auth_google_connect(token: str | None = None):
     if not token:
         raise HTTPException(status_code=401, detail="Missing token")
 
-    # Validate Auth0 JWT (or legacy HMAC)
+    # Validate Auth0 JWT, with HMAC fallback
+    user_id = None
     try:
         if _is_auth0_mode():
             payload = _validate_auth0_jwt(token)
             from scheduler.db import get_user_by_auth0_sub
             user = get_user_by_auth0_sub(payload["sub"])
-            if not user:
-                raise HTTPException(status_code=401, detail="User not found")
-            user_id = str(user.id)
-        else:
-            legacy = _verify_session(token)
-            if not legacy:
-                raise HTTPException(status_code=401, detail="Invalid token")
+            if user:
+                user_id = str(user.id)
+    except (jwt.PyJWTError, Exception):
+        pass
+
+    if not user_id:
+        legacy = _verify_session(token)
+        if legacy:
             user_id = legacy["user_id"]
-    except jwt.PyJWTError:
+
+    if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token")
 
     state_data = f"{secrets.token_urlsafe(32)}|user_id={user_id}|auth_token={token}"
@@ -1129,6 +1134,16 @@ def auth_google_connect_callback(
         logger.info("google_connect: returning user=%s, renewing gmail watch", user_id)
         background = BackgroundTask(_renew_gmail_watch, user_id)
         redirect_url = f"{config.web_app_url}/settings?{token_param}"
+
+        # If user switched to draft mode and is missing email style guide, generate it
+        if db_user and db_user.scheduling_mode == "draft":
+            from scheduler.db import get_guides_for_user
+            guides = get_guides_for_user(user_id)
+            guide_names = {g.name for g in guides}
+            if "email_style" not in guide_names:
+                import threading
+                logger.info("google_connect: generating missing email_style guide for user=%s", user_id)
+                threading.Thread(target=_run_onboarding_for_runtime, args=(user_id,), daemon=True).start()
     else:
         logger.info("google_connect: starting onboarding for user=%s", user_id)
         with _onboarding_lock:
@@ -1159,20 +1174,24 @@ def auth_google_connect_calendar(token: str | None = None):
     if not token:
         raise HTTPException(status_code=401, detail="Missing token")
 
+    user_id = None
     try:
         if _is_auth0_mode():
             payload = _validate_auth0_jwt(token)
             from scheduler.db import get_user_by_auth0_sub
             user = get_user_by_auth0_sub(payload["sub"])
-            if not user:
-                raise HTTPException(status_code=401, detail="User not found")
-            user_id = str(user.id)
-        else:
-            legacy = _verify_session(token)
-            if not legacy:
-                raise HTTPException(status_code=401, detail="Invalid token")
+            if user:
+                user_id = str(user.id)
+    except (jwt.PyJWTError, Exception):
+        pass
+
+    # Fallback to HMAC session token
+    if not user_id:
+        legacy = _verify_session(token)
+        if legacy:
             user_id = legacy["user_id"]
-    except jwt.PyJWTError:
+
+    if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token")
 
     state_data = f"{secrets.token_urlsafe(32)}|user_id={user_id}|auth_token={token}|mode=bot"
@@ -3537,6 +3556,246 @@ def web_onboarding_status(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Onboarding profile (extended onboarding)
+# ---------------------------------------------------------------------------
+
+
+class WebOnboardingProfileRequest(BaseModel):
+    job_title: str | None = None
+    scheduling_context: str | None = None
+    scheduling_mode: str = "bot"
+
+
+@app.post("/web/api/v1/onboarding/profile")
+def web_onboarding_profile(
+    req: WebOnboardingProfileRequest,
+    user: dict = Depends(get_authenticated_user),
+):
+    from scheduler.db import update_user_profile, update_scheduling_mode
+
+    update_user_profile(
+        user["user_id"],
+        job_title=req.job_title,
+        scheduling_context=req.scheduling_context,
+    )
+    if req.scheduling_mode in ("draft", "bot"):
+        update_scheduling_mode(user["user_id"], req.scheduling_mode)
+
+    from scheduler import analytics
+    analytics.track(user["user_id"], "onboarding_profile_completed", {
+        "job_title": req.job_title,
+        "scheduling_mode": req.scheduling_mode,
+    })
+
+    # If user already has Google tokens (self-hosted flow), start onboarding agents now
+    from scheduler.db import get_user_by_id
+    db_user = get_user_by_id(user["user_id"])
+    if db_user and db_user.google_refresh_token:
+        with _onboarding_lock:
+            if _onboarding_status.get(user["user_id"], {}).get("status") != "running":
+                from scheduler.db import update_onboarding_status
+                update_onboarding_status(user["user_id"], "pending")
+                from starlette.background import BackgroundTask
+                import asyncio
+                # Run in background thread since we can't return BackgroundTask from here easily
+                import threading
+                if req.scheduling_mode == "bot":
+                    threading.Thread(target=_run_bot_mode_onboarding, args=(user["user_id"],), daemon=True).start()
+                else:
+                    threading.Thread(target=_run_onboarding_for_runtime, args=(user["user_id"],), daemon=True).start()
+
+    return {"ok": True}
+
+
+@app.get("/web/api/v1/onboarding/profile-status")
+def web_onboarding_profile_status(user: dict = Depends(get_authenticated_user)):
+    from scheduler.db import get_user_by_id
+    db_user = get_user_by_id(user["user_id"])
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"job_title": db_user.job_title}
+
+
+# ---------------------------------------------------------------------------
+# Stripe billing
+# ---------------------------------------------------------------------------
+
+
+class WebBillingCheckoutRequest(BaseModel):
+    plan: str = "monthly"  # "monthly" or "annual"
+
+
+@app.post("/web/api/v1/billing/checkout")
+def web_billing_checkout(req: WebBillingCheckoutRequest, user: dict = Depends(get_authenticated_user)):
+    from scheduler.db import get_user_by_id, update_stripe_customer
+
+    db_user = get_user_by_id(user["user_id"])
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    from scheduler.billing import create_customer, create_checkout_session
+
+    customer_id = db_user.stripe_customer_id
+    if not customer_id:
+        customer = create_customer(db_user.email, str(db_user.id))
+        customer_id = customer.id
+        update_stripe_customer(str(db_user.id), customer_id)
+
+    price_id = config.stripe_annual_price_id if req.plan == "annual" else config.stripe_price_id
+
+    # Include a fresh session token in the success URL so auth persists after Stripe redirect.
+    # Redirect back to /onboarding so the user proceeds to Google connect.
+    session_token = _sign_session(user["user_id"], db_user.email)
+
+    session = create_checkout_session(
+        customer_id=customer_id,
+        success_url=f"{config.web_app_url}/onboarding?token={session_token}&checkout=success",
+        cancel_url=f"{config.web_app_url}/onboarding?checkout=canceled",
+        price_id=price_id,
+    )
+    return {"checkout_url": session.url}
+
+
+@app.get("/web/api/v1/billing/status")
+def web_billing_status(user: dict = Depends(get_authenticated_user)):
+    from scheduler.db import get_user_by_id
+
+    db_user = get_user_by_id(user["user_id"])
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # If DB says 'none' but user has a Stripe customer, check Stripe directly
+    # to catch missed webhooks.
+    if db_user.subscription_status == "none" and db_user.stripe_customer_id:
+        try:
+            import stripe as stripe_mod
+            from scheduler.billing import _ensure_stripe
+            from scheduler.db import update_subscription_status
+            from datetime import datetime, timezone
+
+            _ensure_stripe()
+            subs = stripe_mod.Subscription.list(customer=db_user.stripe_customer_id, limit=1)
+            if subs.data:
+                sub = subs.data[0]
+                trial_end = datetime.fromtimestamp(sub.trial_end, tz=timezone.utc) if sub.trial_end else None
+                period_end = datetime.fromtimestamp(sub.current_period_end, tz=timezone.utc) if sub.current_period_end else None
+                update_subscription_status(
+                    db_user.stripe_customer_id,
+                    subscription_id=sub.id,
+                    status=sub.status,
+                    trial_ends_at=trial_end,
+                    current_period_end=period_end,
+                )
+                logger.info("billing_status: recovered subscription from Stripe for customer=%s status=%s", db_user.stripe_customer_id, sub.status)
+                return {
+                    "subscription_status": sub.status,
+                    "trial_ends_at": trial_end.isoformat() if trial_end else None,
+                    "current_period_end": period_end.isoformat() if period_end else None,
+                }
+        except Exception:
+            logger.exception("billing_status: failed to check Stripe for customer=%s", db_user.stripe_customer_id)
+
+    return {
+        "subscription_status": db_user.subscription_status,
+        "trial_ends_at": db_user.trial_ends_at.isoformat() if db_user.trial_ends_at else None,
+        "current_period_end": db_user.subscription_current_period_end.isoformat() if db_user.subscription_current_period_end else None,
+    }
+
+
+@app.post("/web/api/v1/billing/portal")
+def web_billing_portal(user: dict = Depends(get_authenticated_user)):
+    from scheduler.db import get_user_by_id
+
+    db_user = get_user_by_id(user["user_id"])
+    if not db_user or not db_user.stripe_customer_id:
+        raise HTTPException(status_code=400, detail="No billing account found")
+
+    from scheduler.billing import create_portal_session
+
+    session = create_portal_session(
+        db_user.stripe_customer_id,
+        return_url=f"{config.web_app_url}/settings",
+    )
+    return {"portal_url": session.url}
+
+
+@app.post("/webhooks/stripe")
+async def stripe_webhook(request: Request):
+    import logging
+
+    logger = logging.getLogger(__name__)
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    from scheduler.billing import construct_webhook_event
+
+    try:
+        event = construct_webhook_event(payload, sig_header)
+    except Exception as e:
+        logger.error("stripe_webhook: signature validation failed: %s", e)
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    from scheduler.db import update_subscription_status
+    from datetime import datetime, timezone
+
+    event_type = event["type"]
+    data = event["data"]["object"]
+
+    if event_type == "checkout.session.completed":
+        customer_id = data.get("customer")
+        subscription_id = data.get("subscription")
+        if customer_id and subscription_id:
+            try:
+                import stripe as stripe_mod
+                from scheduler.billing import _ensure_stripe
+                _ensure_stripe()
+                sub = stripe_mod.Subscription.retrieve(subscription_id)
+                trial_end = datetime.fromtimestamp(sub.trial_end, tz=timezone.utc) if sub.trial_end else None
+                period_end = datetime.fromtimestamp(sub.current_period_end, tz=timezone.utc) if sub.current_period_end else None
+                update_subscription_status(
+                    customer_id,
+                    subscription_id=subscription_id,
+                    status=sub.status,
+                    trial_ends_at=trial_end,
+                    current_period_end=period_end,
+                )
+                logger.info("stripe: checkout completed for customer=%s sub=%s status=%s", customer_id, subscription_id, sub.status)
+            except Exception:
+                logger.exception("stripe: failed to process checkout.session.completed for customer=%s", customer_id)
+
+    elif event_type == "customer.subscription.updated":
+        customer_id = data.get("customer")
+        if customer_id:
+            trial_end = datetime.fromtimestamp(data["trial_end"], tz=timezone.utc) if data.get("trial_end") else None
+            period_end = datetime.fromtimestamp(data["current_period_end"], tz=timezone.utc) if data.get("current_period_end") else None
+            update_subscription_status(
+                customer_id,
+                subscription_id=data.get("id"),
+                status=data.get("status"),
+                trial_ends_at=trial_end,
+                current_period_end=period_end,
+            )
+
+    elif event_type == "customer.subscription.deleted":
+        customer_id = data.get("customer")
+        if customer_id:
+            update_subscription_status(customer_id, status="canceled")
+
+    elif event_type == "invoice.payment_failed":
+        customer_id = data.get("customer")
+        if customer_id:
+            update_subscription_status(customer_id, status="past_due")
+
+    return {"received": True}
+
+
+def _require_active_subscription(db_user) -> None:
+    """Raise 403 if the user does not have an active or trialing subscription."""
+    if db_user.subscription_status not in ("trialing", "active"):
+        raise HTTPException(status_code=403, detail="subscription_required")
+
+
 @app.get("/web/api/v1/settings")
 def web_settings_get(user: dict = Depends(get_authenticated_user)):
     from scheduler.db import get_guides_for_user, get_user_by_id
@@ -3549,6 +3808,7 @@ def web_settings_get(user: dict = Depends(get_authenticated_user)):
     db_user = get_user_by_id(user["user_id"])
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
+    _require_active_subscription(db_user)
 
     guides = get_guides_for_user(user["user_id"])
     guide_names = {g.name for g in guides}
@@ -3589,7 +3849,75 @@ def web_settings_get(user: dict = Depends(get_authenticated_user)):
         "scheduled_calendar_id": db_user.scheduled_calendar_id,
         "calendar_ids": db_user.calendar_ids or [],
         "guides": guides_response,
+        "scheduling_mode": db_user.scheduling_mode,
     }
+
+
+class WebUpdateSchedulingModeRequest(BaseModel):
+    mode: str  # "draft" or "bot"
+
+
+@app.put("/web/api/v1/settings/scheduling-mode")
+def web_settings_scheduling_mode(req: WebUpdateSchedulingModeRequest, user: dict = Depends(get_authenticated_user)):
+    """Switch between draft and bot scheduling modes.
+
+    Switching to draft mode requires Gmail scopes — if the user only has
+    calendar scopes (from bot-mode onboarding), they need to re-authorize.
+    Returns needs_reauth=true if re-authorization is required.
+    """
+    if req.mode not in ("draft", "bot"):
+        raise HTTPException(status_code=400, detail="Invalid mode")
+
+    from scheduler.db import get_user_by_id, update_scheduling_mode
+
+    db_user = get_user_by_id(user["user_id"])
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if req.mode == "draft" and db_user.scheduling_mode == "bot":
+        # Switching from bot → draft requires Gmail scopes.
+        # Check if user already has them by verifying we can access Gmail.
+        # If not, they need to re-authorize via /auth/google/connect.
+        needs_reauth = True
+        if db_user.google_refresh_token:
+            try:
+                from scheduler.auth.google_auth import load_credentials
+                creds = load_credentials(user["user_id"])
+                # Try a lightweight Gmail API call to verify Gmail scopes
+                from googleapiclient.discovery import build
+                service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+                service.users().getProfile(userId="me").execute()
+                needs_reauth = False
+            except Exception:
+                needs_reauth = True
+
+        if needs_reauth:
+            # Switch mode now so it's correct when user returns from OAuth
+            update_scheduling_mode(user["user_id"], req.mode)
+            return {"scheduling_mode": req.mode, "needs_reauth": True}
+
+    update_scheduling_mode(user["user_id"], req.mode)
+
+    # If switching to bot mode and no email_style guide exists, that's fine —
+    # bot mode doesn't need one. If switching to draft and missing guides,
+    # run the style guide agent in the background.
+    generating_guides = False
+    if req.mode == "draft":
+        from scheduler.db import get_guides_for_user
+        guides = get_guides_for_user(user["user_id"])
+        guide_names = {g.name for g in guides}
+        if "email_style" not in guide_names:
+            generating_guides = True
+            import threading
+            threading.Thread(
+                target=_run_onboarding_for_runtime,
+                args=(user["user_id"],),
+                daemon=True,
+            ).start()
+
+    from scheduler import analytics
+    analytics.track(user["user_id"], "setting_changed", {"setting": "scheduling_mode", "new_value": req.mode})
+    return {"scheduling_mode": req.mode, "needs_reauth": False, "generating_guides": generating_guides}
 
 
 class WebUpdateSystemEnabledRequest(BaseModel):

@@ -25,6 +25,7 @@ interface Settings {
   draft_auto_delete_enabled: boolean;
   scheduled_calendar_id: string | null;
   guides: { name: string; content: string; updated_at: string }[];
+  scheduling_mode: string;
 }
 
 export default function SettingsPage() {
@@ -63,8 +64,13 @@ export default function SettingsPage() {
 
         const s = await api<Settings>('/web/api/v1/settings');
         setSettings(s);
-      } catch {
-        // No valid session — clear stale token and redirect to sign-in
+      } catch (err) {
+        if (err instanceof Error && err.message === 'subscription_required') {
+          // Subscription lapsed — show paywall (session is still valid in localStorage)
+          router.replace('/onboarding');
+          return;
+        }
+        // Auth failed — only clear session if /auth/me itself failed (not a downstream call)
         clearSession();
         window.location.href = `${process.env.NEXT_PUBLIC_CONTROL_PLANE_URL}/auth/login`;
         return;
@@ -160,6 +166,7 @@ export default function SettingsPage() {
               draftAutoDeleteEnabled={readySettings.draft_auto_delete_enabled}
               calendarId={readySettings.scheduled_calendar_id}
               guides={readySettings.guides}
+              schedulingMode={readySettings.scheduling_mode}
               onDisconnected={handleDisconnected}
             />
           ) : null}

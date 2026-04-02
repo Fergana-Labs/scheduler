@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import SystemToggle from './SystemToggle';
 import AutopilotToggle from './AutopilotToggle';
 import SalesEmailToggle from './SalesEmailToggle';
@@ -10,6 +11,8 @@ import ReasoningEmailToggle from './ReasoningEmailToggle';
 import CalendarPicker from './CalendarPicker';
 import DraftAutoDeleteToggle from './DraftAutoDeleteToggle';
 import DisconnectButton from './DisconnectButton';
+import BillingSettings from './BillingSettings';
+import ModeSwitcher from './ModeSwitcher';
 
 interface Guide {
   name: string;
@@ -27,6 +30,7 @@ interface ReadyStateProps {
   draftAutoDeleteEnabled: boolean;
   calendarId: string | null;
   guides: Guide[];
+  schedulingMode: string;
   onDisconnected: () => void;
 }
 
@@ -39,18 +43,27 @@ export default function ReadyState({
   draftAutoDeleteEnabled,
   calendarId,
   guides,
+  schedulingMode,
   onDisconnected,
 }: ReadyStateProps) {
+  const [mode, setMode] = useState(schedulingMode);
   const schedulingGuide = guides.find((g) => g.name === 'scheduling_preferences');
   const emailGuide = guides.find((g) => g.name === 'email_style');
+  const isDraft = mode === 'draft';
 
   return (
     <div className="space-y-3">
-      <SystemToggle initialEnabled={systemEnabled} />
-      <ReasoningEmailToggle initialEnabled={reasoningEmailsEnabled} />
-      <AutopilotToggle initialEnabled={autopilotEnabled} />
-      <SalesEmailToggle initialEnabled={processSalesEmails} />
-      <DraftAutoDeleteToggle initialEnabled={draftAutoDeleteEnabled} />
+      <ModeSwitcher initialMode={schedulingMode} initialGuides={guides} onModeChange={setMode} />
+
+      {/* Draft-mode only settings */}
+      {isDraft && (
+        <>
+          <ReasoningEmailToggle initialEnabled={reasoningEmailsEnabled} />
+          <AutopilotToggle initialEnabled={autopilotEnabled} />
+          <SalesEmailToggle initialEnabled={processSalesEmails} />
+          <DraftAutoDeleteToggle initialEnabled={draftAutoDeleteEnabled} />
+        </>
+      )}
 
       {schedulingGuide && (
         <GuideEditor
@@ -62,7 +75,8 @@ export default function ReadyState({
         />
       )}
 
-      {emailGuide && (
+      {/* Email style guide only in draft mode */}
+      {isDraft && emailGuide && (
         <GuideEditor
           name="email_style"
           label="Email Style"
@@ -76,7 +90,9 @@ export default function ReadyState({
 
       {calendarId && <CalendarLink calendarId={calendarId} />}
 
-      <BrandingToggle initialEnabled={brandingEnabled} />
+      {isDraft && <BrandingToggle initialEnabled={brandingEnabled} />}
+
+      <BillingSettings />
 
       <div className="pt-4">
         <DisconnectButton onDisconnected={onDisconnected} />
