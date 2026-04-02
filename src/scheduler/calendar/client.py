@@ -86,12 +86,12 @@ class CalendarClient:
     formal calendar invites.
     """
 
-    def __init__(self, credentials, scheduled_calendar_name: str = "Scheduled Calendar", extra_calendar_ids: list[str] | None = None):
+    def __init__(self, credentials, scheduled_calendar_name: str = "Scheduled Calendar", extra_calendar_ids: list[str] | None = None, scheduled_calendar_id: str | None = None):
         self._credentials = credentials
         self._scheduled_calendar_name = scheduled_calendar_name
         self._extra_calendar_ids = extra_calendar_ids or []
         self._service = None
-        self._scheduled_calendar_id = None
+        self._scheduled_calendar_id = scheduled_calendar_id
         self._user_timezone = None
 
     def _get_service(self):
