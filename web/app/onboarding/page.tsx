@@ -8,19 +8,18 @@ interface OnboardingPageProps {
   };
 }
 
+function first(val: string | string[] | undefined): string | null {
+  return Array.isArray(val) ? val[0] || null : val || null;
+}
+
 export default function OnboardingPage({ searchParams }: OnboardingPageProps) {
   const rawNeedsGoogle = searchParams?.needs_google;
   const needsGoogle = Array.isArray(rawNeedsGoogle)
     ? rawNeedsGoogle.includes('1')
     : rawNeedsGoogle === '1';
 
-  const rawCheckout = searchParams?.checkout;
-  const checkoutStatus = Array.isArray(rawCheckout)
-    ? rawCheckout[0] || null
-    : rawCheckout || null;
-
-  const rawMode = searchParams?.mode;
-  const modeParam = Array.isArray(rawMode) ? rawMode[0] || null : rawMode || null;
+  const checkoutStatus = first(searchParams?.checkout);
+  const modeParam = first(searchParams?.mode);
 
   return (
     <OnboardingClient

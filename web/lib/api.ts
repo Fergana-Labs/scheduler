@@ -52,13 +52,9 @@ export async function api<T = unknown>(
   if (!res.ok) {
     // Parse 403 subscription_required so callers can handle it
     if (res.status === 403) {
-      try {
-        const body = await res.json();
-        if (body.detail === 'subscription_required') {
-          throw new Error('subscription_required');
-        }
-      } catch (e) {
-        if (e instanceof Error && e.message === 'subscription_required') throw e;
+      const body = await res.json().catch(() => ({}));
+      if (body.detail === 'subscription_required') {
+        throw new Error('subscription_required');
       }
     }
     throw new Error(`API error: ${res.status}`);

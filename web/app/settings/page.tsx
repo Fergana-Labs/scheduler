@@ -94,8 +94,6 @@ export default function SettingsPage() {
     );
   }
 
-  const readySettings = settings;
-
   return (
     <div className="flex min-h-screen items-center justify-center bg-[#FAFAFA]">
       <div className="mx-auto max-w-lg px-4">
@@ -156,17 +154,17 @@ export default function SettingsPage() {
               </h1>
               <DisconnectedState />
             </>
-          ) : readySettings ? (
+          ) : settings ? (
             <ReadyState
-              systemEnabled={readySettings.system_enabled}
-              autopilotEnabled={readySettings.autopilot_enabled}
-              processSalesEmails={readySettings.process_sales_emails}
-              brandingEnabled={readySettings.scheduled_branding_enabled}
-              reasoningEmailsEnabled={readySettings.reasoning_emails_enabled}
-              draftAutoDeleteEnabled={readySettings.draft_auto_delete_enabled}
-              calendarId={readySettings.scheduled_calendar_id}
-              guides={readySettings.guides}
-              schedulingMode={readySettings.scheduling_mode}
+              systemEnabled={settings.system_enabled}
+              autopilotEnabled={settings.autopilot_enabled}
+              processSalesEmails={settings.process_sales_emails}
+              brandingEnabled={settings.scheduled_branding_enabled}
+              reasoningEmailsEnabled={settings.reasoning_emails_enabled}
+              draftAutoDeleteEnabled={settings.draft_auto_delete_enabled}
+              calendarId={settings.scheduled_calendar_id}
+              guides={settings.guides}
+              schedulingMode={settings.scheduling_mode}
               onDisconnected={handleDisconnected}
             />
           ) : null}

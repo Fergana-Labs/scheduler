@@ -1728,25 +1728,16 @@ def update_subscription_status(
     trial_ends_at: datetime | None = None,
     current_period_end: datetime | None = None,
 ) -> None:
-    sets = ["updated_at = now()"]
-    params: list = []
-    if subscription_id is not None:
-        sets.append("stripe_subscription_id = %s")
-        params.append(subscription_id)
-    if status is not None:
-        sets.append("subscription_status = %s")
-        params.append(status)
-    if trial_ends_at is not None:
-        sets.append("trial_ends_at = %s")
-        params.append(trial_ends_at)
-    if current_period_end is not None:
-        sets.append("subscription_current_period_end = %s")
-        params.append(current_period_end)
-    params.append(stripe_customer_id)
     with _pooled_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            f"UPDATE users SET {', '.join(sets)} WHERE stripe_customer_id = %s",
-            params,
+            """UPDATE users SET
+                stripe_subscription_id = COALESCE(%s, stripe_subscription_id),
+                subscription_status = COALESCE(%s, subscription_status),
+                trial_ends_at = COALESCE(%s, trial_ends_at),
+                subscription_current_period_end = COALESCE(%s, subscription_current_period_end),
+                updated_at = now()
+               WHERE stripe_customer_id = %s""",
+            (subscription_id, status, trial_ends_at, current_period_end, stripe_customer_id),
         )
         conn.commit()
 
@@ -1758,7 +1749,7 @@ def get_user_by_stripe_customer(stripe_customer_id: str) -> UserRow | None:
         if not row:
             return None
         cols = [d[0] for d in cur.description]
-        return _row_to_user(dict(zip(cols, row)))
+        return _row_to_user(cols, row)
 
 
 # ---------------------------------------------------------------------------

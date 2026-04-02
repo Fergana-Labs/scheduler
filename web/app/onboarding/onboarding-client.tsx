@@ -172,17 +172,16 @@ export default function OnboardingClient({ needsGoogle, checkoutStatus, modePara
 
   // Submit profile to backend
   const submitProfile = useCallback(async (selectedMode: 'bot' | 'draft') => {
-    // Build a readable scheduling_context string from structured data
-    const contextParts: string[] = [];
-    if (schedulingContext.calendarGoal) contextParts.push(`Calendar goal: ${schedulingContext.calendarGoal}`);
-    if (schedulingContext.schedulingWith) contextParts.push(`Scheduling with: ${schedulingContext.schedulingWith}`);
-    if (schedulingContext.pastTools.length > 0) {
-      const tools = schedulingContext.pastTools
-        .map(t => t === '__other__' ? schedulingContext.pastToolsOther || 'Other' : t)
-        .filter(Boolean);
-      if (tools.length) contextParts.push(`Past tools: ${tools.join(', ')}`);
-    }
-    if (preferences.length > 0) contextParts.push(`Preferences: ${preferences.join(', ')}`);
+    const tools = schedulingContext.pastTools
+      .map(t => t === '__other__' ? schedulingContext.pastToolsOther || 'Other' : t)
+      .filter(Boolean);
+
+    const contextParts = [
+      schedulingContext.calendarGoal && `Calendar goal: ${schedulingContext.calendarGoal}`,
+      schedulingContext.schedulingWith && `Scheduling with: ${schedulingContext.schedulingWith}`,
+      tools.length > 0 && `Past tools: ${tools.join(', ')}`,
+      preferences.length > 0 && `Preferences: ${preferences.join(', ')}`,
+    ].filter(Boolean);
 
     try {
       await api('/web/api/v1/onboarding/profile', {
