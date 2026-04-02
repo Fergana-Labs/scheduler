@@ -364,6 +364,69 @@ def get_edited_drafts_since(user_id: str, since: datetime) -> list[dict]:
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def create_guide_update_run_pending(
+    user_id: str,
+    guide_name: str,
+    drafts_analyzed: int,
+) -> str:
+    """Insert a guide_update_runs row with status='running'. Returns the UUID.
+
+    Call this before starting the LLM passes so the run is immediately visible
+    in the admin UI. Follow up with finalize_guide_update_run when done.
+    """
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO guide_update_runs
+                (user_id, guide_name, drafts_analyzed, status,
+                 proposed_changes, applied_changes)
+            VALUES (%s, %s, %s, 'running', '[]', '[]')
+            RETURNING id
+            """,
+            (user_id, guide_name, drafts_analyzed),
+        )
+        run_id = str(cur.fetchone()[0])
+        conn.commit()
+        return run_id
+
+
+def finalize_guide_update_run(
+    run_id: str,
+    status: str,
+    proposed_changes: list[dict] | None = None,
+    applied_changes: list[dict] | None = None,
+    skipped_reason: str | None = None,
+    agent_log: str | None = None,
+) -> None:
+    """Update an existing guide_update_runs row with final results.
+
+    status should be one of: 'done', 'skipped', 'failed'.
+    """
+    proposed_changes = proposed_changes or []
+    applied_changes = applied_changes or []
+    changes_made = len(applied_changes) > 0
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE guide_update_runs
+               SET status           = %s,
+                   changes_made     = %s,
+                   proposed_changes = %s,
+                   applied_changes  = %s,
+                   skipped_reason   = %s,
+                   agent_log        = %s
+             WHERE id = %s
+            """,
+            (
+                status, changes_made,
+                json.dumps(proposed_changes), json.dumps(applied_changes),
+                skipped_reason, agent_log,
+                run_id,
+            ),
+        )
+        conn.commit()
+
+
 def store_guide_update_run(
     user_id: str,
     guide_name: str,
@@ -373,19 +436,24 @@ def store_guide_update_run(
     skipped_reason: str | None = None,
     agent_log: str | None = None,
 ) -> str:
-    """Insert a guide_update_runs row. Returns the new run UUID."""
+    """Single-shot insert of a completed guide_update_runs row. Returns UUID.
+
+    Kept for backward-compat (eval harness). Prefer the two-phase
+    create_guide_update_run_pending / finalize_guide_update_run in production.
+    """
     changes_made = len(applied_changes) > 0
+    status = "skipped" if skipped_reason else "done"
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO guide_update_runs
-                (user_id, guide_name, drafts_analyzed, changes_made,
+                (user_id, guide_name, drafts_analyzed, changes_made, status,
                  proposed_changes, applied_changes, skipped_reason, agent_log)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
-                user_id, guide_name, drafts_analyzed, changes_made,
+                user_id, guide_name, drafts_analyzed, changes_made, status,
                 json.dumps(proposed_changes), json.dumps(applied_changes),
                 skipped_reason, agent_log,
             ),

@@ -3369,15 +3369,54 @@ def gmail_watch_renew():
 # Guide update system — weekly continual learning
 # ---------------------------------------------------------------------------
 
-def _run_guide_updater_for_user(user_id: str) -> dict:
+# ---------------------------------------------------------------------------
+# Guide updater — production-scale async orchestration
+# ---------------------------------------------------------------------------
+
+# Max users processed in parallel. Each user makes 2 multi-turn LLM calls;
+# keeping this at 5 comfortably fits within Anthropic's default RPM limits.
+# Override via GUIDE_UPDATER_CONCURRENCY env var.
+_GUIDE_UPDATER_CONCURRENCY = int(os.environ.get("GUIDE_UPDATER_CONCURRENCY", "5"))
+
+# Retry settings for transient Anthropic API errors (rate limits, 529s).
+_RETRY_MAX_ATTEMPTS = 3
+_RETRY_BASE_DELAY = 30.0  # seconds; doubles on each attempt
+
+
+async def _with_retry(coro_factory, label: str = ""):
+    """Retry an async coroutine factory with exponential backoff.
+
+    coro_factory must be a zero-argument callable that returns a fresh
+    coroutine on each call (typically a lambda).
+    """
+    for attempt in range(_RETRY_MAX_ATTEMPTS):
+        try:
+            return await coro_factory()
+        except Exception as exc:
+            if attempt == _RETRY_MAX_ATTEMPTS - 1:
+                raise
+            delay = _RETRY_BASE_DELAY * (2 ** attempt)
+            logger.warning(
+                "guide_updater%s: attempt %d/%d failed (%s) — retrying in %.0fs",
+                f"[{label}]" if label else "",
+                attempt + 1, _RETRY_MAX_ATTEMPTS, exc, delay,
+            )
+            await asyncio.sleep(delay)
+
+
+async def _run_guide_updater_for_user(user_id: str) -> dict:
     """Run both guide updater passes (style + preferences) for a single user.
 
-    Returns a summary dict with counts of proposed/applied changes per guide.
-    Called as a background task from the weekly cron endpoint.
+    Fully async: DB calls are dispatched to a thread pool via asyncio.to_thread
+    so they never block the event loop. LLM agent calls are natively async.
+    Each pass creates a 'running' audit row before starting and finalises it
+    (done / skipped / failed) on completion, giving real-time visibility in
+    the admin UI even for long-running batches.
     """
-    import anyio
-
-    from scheduler.db import get_edited_drafts_since, store_guide_update_run
+    from scheduler.db import (
+        create_guide_update_run_pending,
+        finalize_guide_update_run,
+    )
     from scheduler.guides.backends import UpdaterBackend
     from scheduler.guides.updater import (
         STYLE_MIN_DRAFTS,
@@ -3388,114 +3427,130 @@ def _run_guide_updater_for_user(user_id: str) -> dict:
     )
 
     backend = UpdaterBackend(user_id=user_id)
-    edited_diffs = backend.get_edited_drafts()
+    edited_diffs: list[dict] = await asyncio.to_thread(backend.get_edited_drafts)
 
     results: dict[str, dict] = {}
 
-    # ── Pass 1: Email Style ──────────────────────────────────────────────────
-    guide_name = "email_style"
-    if len(edited_diffs) < STYLE_MIN_DRAFTS:
-        skipped_reason = f"only {len(edited_diffs)} edited drafts (need {STYLE_MIN_DRAFTS})"
-        logger.info("guide_updater[%s]: style skipped — %s", user_id, skipped_reason)
-        store_guide_update_run(
-            user_id=user_id,
-            guide_name=guide_name,
-            drafts_analyzed=len(edited_diffs),
-            proposed_changes=[],
-            applied_changes=[],
-            skipped_reason=skipped_reason,
-        )
-        results[guide_name] = {"skipped": True, "reason": skipped_reason}
-    else:
-        try:
-            proposed = anyio.run(run_style_updater_agent, backend, edited_diffs)
-            current_guide = backend.load_guide(guide_name) or ""
-            updated_content, applied = apply_proposed_changes(
-                guide_name, current_guide, proposed, STYLE_MIN_DRAFTS
-            )
-            if applied:
-                backend.apply_guide_changes(guide_name, updated_content)
-                logger.info(
-                    "guide_updater[%s]: style — applied %d/%d changes",
-                    user_id, len(applied), len(proposed),
-                )
-            store_guide_update_run(
-                user_id=user_id,
-                guide_name=guide_name,
-                drafts_analyzed=len(edited_diffs),
-                proposed_changes=proposed,
-                applied_changes=applied,
-                agent_log=backend.get_agent_log(guide_name),
-            )
-            results[guide_name] = {"proposed": len(proposed), "applied": len(applied)}
-        except Exception:
-            logger.exception("guide_updater[%s]: style pass failed", user_id)
-            results[guide_name] = {"error": True}
+    passes = [
+        ("email_style",            run_style_updater_agent,       STYLE_MIN_DRAFTS),
+        ("scheduling_preferences", run_preferences_updater_agent, PREFERENCES_MIN_DRAFTS),
+    ]
 
-    # ── Pass 2: Scheduling Preferences ──────────────────────────────────────
-    guide_name = "scheduling_preferences"
-    if len(edited_diffs) < PREFERENCES_MIN_DRAFTS:
-        skipped_reason = f"only {len(edited_diffs)} edited drafts (need {PREFERENCES_MIN_DRAFTS})"
-        logger.info("guide_updater[%s]: preferences skipped — %s", user_id, skipped_reason)
-        store_guide_update_run(
-            user_id=user_id,
-            guide_name=guide_name,
-            drafts_analyzed=len(edited_diffs),
-            proposed_changes=[],
-            applied_changes=[],
-            skipped_reason=skipped_reason,
+    for guide_name, run_agent, min_drafts in passes:
+        run_id: str = await asyncio.to_thread(
+            create_guide_update_run_pending, user_id, guide_name, len(edited_diffs)
         )
-        results[guide_name] = {"skipped": True, "reason": skipped_reason}
-    else:
+
+        if len(edited_diffs) < min_drafts:
+            skipped_reason = (
+                f"only {len(edited_diffs)} edited drafts (need {min_drafts})"
+            )
+            logger.info(
+                "guide_updater[%s]: %s skipped — %s", user_id, guide_name, skipped_reason
+            )
+            await asyncio.to_thread(
+                finalize_guide_update_run, run_id,
+                "skipped", [], [], skipped_reason, None,
+            )
+            results[guide_name] = {"skipped": True, "reason": skipped_reason}
+            continue
+
         try:
-            proposed = anyio.run(run_preferences_updater_agent, backend, edited_diffs)
-            current_guide = backend.load_guide(guide_name) or ""
+            proposed: list[dict] = await _with_retry(
+                lambda ag=run_agent: ag(backend, edited_diffs),
+                label=f"{user_id}/{guide_name}",
+            )
+            current_guide: str = (
+                await asyncio.to_thread(backend.load_guide, guide_name) or ""
+            )
             updated_content, applied = apply_proposed_changes(
-                guide_name, current_guide, proposed, PREFERENCES_MIN_DRAFTS
+                guide_name, current_guide, proposed, min_drafts
             )
             if applied:
-                backend.apply_guide_changes(guide_name, updated_content)
-                logger.info(
-                    "guide_updater[%s]: preferences — applied %d/%d changes",
-                    user_id, len(applied), len(proposed),
+                await asyncio.to_thread(
+                    backend.apply_guide_changes, guide_name, updated_content
                 )
-            store_guide_update_run(
-                user_id=user_id,
-                guide_name=guide_name,
-                drafts_analyzed=len(edited_diffs),
-                proposed_changes=proposed,
-                applied_changes=applied,
-                agent_log=backend.get_agent_log(guide_name),
+                logger.info(
+                    "guide_updater[%s]: %s — applied %d/%d changes",
+                    user_id, guide_name, len(applied), len(proposed),
+                )
+            await asyncio.to_thread(
+                finalize_guide_update_run, run_id,
+                "done", proposed, applied, None, backend.get_agent_log(guide_name),
             )
             results[guide_name] = {"proposed": len(proposed), "applied": len(applied)}
         except Exception:
-            logger.exception("guide_updater[%s]: preferences pass failed", user_id)
+            logger.exception(
+                "guide_updater[%s]: %s pass failed", user_id, guide_name
+            )
+            await asyncio.to_thread(
+                finalize_guide_update_run, run_id, "failed", [], [], None, None
+            )
             results[guide_name] = {"error": True}
 
     return results
 
 
+async def _run_guide_updater_batch(user_ids: list[str]) -> None:
+    """Process users with bounded concurrency via asyncio.Semaphore.
+
+    Up to _GUIDE_UPDATER_CONCURRENCY users run in parallel. A semaphore
+    keeps the LLM call rate and DB connection usage predictable regardless
+    of how many users are in the batch. Each user failing independently
+    never blocks the rest.
+    """
+    sem = asyncio.Semaphore(_GUIDE_UPDATER_CONCURRENCY)
+    total = len(user_ids)
+
+    async def _run_one(user_id: str, idx: int) -> None:
+        async with sem:
+            try:
+                result = await _run_guide_updater_for_user(user_id)
+                logger.info(
+                    "guide_updater_batch: [%d/%d] user=%s result=%s",
+                    idx + 1, total, user_id, result,
+                )
+            except Exception:
+                logger.exception(
+                    "guide_updater_batch: [%d/%d] user=%s FAILED",
+                    idx + 1, total, user_id,
+                )
+
+    logger.info(
+        "guide_updater_batch: starting %d users (concurrency=%d)",
+        total, _GUIDE_UPDATER_CONCURRENCY,
+    )
+    await asyncio.gather(*[_run_one(uid, i) for i, uid in enumerate(user_ids)])
+    logger.info("guide_updater_batch: all %d users finished", total)
+
+
 @app.post("/api/v1/guides/update-all")
-def guides_update_all(background_tasks: BackgroundTasks):
+async def guides_update_all(background_tasks: BackgroundTasks):
     """Run the weekly guide updater for all active users.
 
     Intended to be called by a weekly cron job. No auth required —
     the operation is read-then-write on internal DB data only.
-    Each user is processed as a background task to avoid blocking.
+
+    Returns immediately; all processing happens in background tasks.
+    Progress is visible in real time via GET /web/api/v1/admin/guide-updates
+    (runs show status='running' until they complete).
     """
     from scheduler.db import get_all_user_ids, get_user_by_id
 
-    user_ids = get_all_user_ids()
-    queued = []
-    skipped = []
+    user_ids: list[str] = await asyncio.to_thread(get_all_user_ids)
+    active: list[str] = []
+    skipped: list[str] = []
 
     for user_id in user_ids:
-        user = get_user_by_id(user_id)
+        user = await asyncio.to_thread(get_user_by_id, user_id)
         if not user or not user.system_enabled or not user.google_refresh_token:
             skipped.append(user_id)
             continue
-        background_tasks.add_task(_run_guide_updater_for_user, user_id)
-        queued.append(user_id)
+        active.append(user_id)
 
-    logger.info("guides_update_all: queued %d users, skipped %d", len(queued), len(skipped))
-    return {"queued": len(queued), "skipped": len(skipped)}
+    background_tasks.add_task(_run_guide_updater_batch, active)
+    logger.info(
+        "guides_update_all: queued %d users (concurrency=%d), skipped %d",
+        len(active), _GUIDE_UPDATER_CONCURRENCY, len(skipped),
+    )
+    return {"queued": len(active), "skipped": len(skipped)}
