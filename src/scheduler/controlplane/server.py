@@ -3080,6 +3080,10 @@ async def gmail_webhook(request: Request, background_tasks: BackgroundTasks):
         logger.info("gmail_webhook: user %s pending re-auth, skipping", user.email)
         return {"status": "ok"}
 
+    if user.scheduling_mode == "bot":
+        logger.info("gmail_webhook: user %s is in bot mode, skipping draft pipeline", user.email)
+        return {"status": "ok"}
+
     try:
         message_ids = await asyncio.to_thread(_get_new_message_ids, str(user.id))
     except (ValueError, RefreshError):
