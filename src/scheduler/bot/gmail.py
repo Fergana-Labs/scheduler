@@ -1,15 +1,17 @@
 """Singleton Gmail client for the bot account.
 
-The bot has its own Gmail credentials (scheduling@tryscheduled.com) separate
-from any user's credentials.  A single GmailClient instance is reused across
-requests to avoid rebuilding the discovery document on every call.
+The bot uses a Google service account with domain-wide delegation to
+impersonate scheduling@tryscheduled.com.  A single GmailClient instance
+is reused across requests to avoid rebuilding the discovery document on
+every call.
 """
 
+import json
 import logging
 import threading
 
 from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
+from google.oauth2 import service_account
 
 from scheduler.config import config
 from scheduler.gmail.client import GmailClient
@@ -19,25 +21,23 @@ logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 _client: GmailClient | None = None
 
+BOT_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/calendar",
+]
 
-def _build_bot_credentials() -> Credentials:
-    """Build Google OAuth credentials for the bot account."""
-    if not config.bot_gmail_refresh_token:
+
+def _build_bot_credentials() -> service_account.Credentials:
+    """Build service-account credentials that impersonate the bot email."""
+    if not config.bot_service_account_json:
         raise ValueError(
-            "BOT_GMAIL_REFRESH_TOKEN is not set. "
-            "The bot account needs its own Gmail OAuth refresh token."
+            "BOT_SERVICE_ACCOUNT_JSON is not set. "
+            "Provide the service-account key JSON as a string."
         )
-    creds = Credentials(
-        token=None,
-        refresh_token=config.bot_gmail_refresh_token,
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=config.bot_gmail_client_id,
-        client_secret=config.bot_gmail_client_secret,
-        scopes=[
-            "https://www.googleapis.com/auth/gmail.readonly",
-            "https://www.googleapis.com/auth/gmail.send",
-            "https://www.googleapis.com/auth/calendar",
-        ],
+    info = json.loads(config.bot_service_account_json)
+    creds = service_account.Credentials.from_service_account_info(
+        info, scopes=BOT_SCOPES, subject=config.bot_email
     )
     creds.refresh(Request())
     return creds
@@ -73,4 +73,4 @@ def bot_email_address() -> str:
 
 def is_bot_mode_configured() -> bool:
     """Return True if bot mode has the minimum required config."""
-    return bool(config.bot_email and config.bot_gmail_refresh_token)
+    return bool(config.bot_email and config.bot_service_account_json)

@@ -120,20 +120,8 @@ class Config:
     bot_email: str = field(
         default_factory=lambda: os.environ.get("BOT_EMAIL", "")
     )
-    bot_gmail_refresh_token: str = field(
-        default_factory=lambda: os.environ.get("BOT_GMAIL_REFRESH_TOKEN", "")
-    )
-    bot_gmail_client_id: str = field(
-        default_factory=lambda: os.environ.get(
-            "BOT_GMAIL_CLIENT_ID",
-            os.environ.get("GOOGLE_CLIENT_ID", ""),
-        )
-    )
-    bot_gmail_client_secret: str = field(
-        default_factory=lambda: os.environ.get(
-            "BOT_GMAIL_CLIENT_SECRET",
-            os.environ.get("GOOGLE_CLIENT_SECRET", ""),
-        )
+    bot_service_account_json: str = field(
+        default_factory=lambda: os.environ.get("BOT_SERVICE_ACCOUNT_JSON", "")
     )
     bot_gmail_pubsub_topic: str = field(
         default_factory=lambda: os.environ.get(
