@@ -334,6 +334,7 @@ function FunnelSection() {
 function CohortSection() {
   const [period, setPeriod] = useState<'weekly' | 'daily'>('weekly');
   const [emailsOnly, setEmailsOnly] = useState(false);
+  const [botOnly, setBotOnly] = useState(false);
   const [includeCurrent, setIncludeCurrent] = useState(false);
   const [data, setData] = useState<CohortData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -342,6 +343,7 @@ function CohortSection() {
     setLoading(true);
     const params = [
       emailsOnly ? 'emails_only=true' : '',
+      botOnly ? 'bot_only=true' : '',
       includeCurrent ? 'include_current=true' : '',
     ].filter(Boolean).join('&');
     const suffix = params ? `&${params}` : '';
@@ -349,7 +351,7 @@ function CohortSection() {
       ? `/web/api/v1/admin/cohorts?weeks=8${suffix}`
       : `/web/api/v1/admin/cohorts/daily?days=7${suffix}`;
     api<CohortData>(url).then(setData).finally(() => setLoading(false));
-  }, [period, emailsOnly, includeCurrent]);
+  }, [period, emailsOnly, botOnly, includeCurrent]);
 
   return (
     <div>
@@ -371,10 +373,19 @@ function CohortSection() {
           <input
             type="checkbox"
             checked={emailsOnly}
-            onChange={(e) => setEmailsOnly(e.target.checked)}
+            onChange={(e) => { setEmailsOnly(e.target.checked); if (e.target.checked) setBotOnly(false); }}
             className="rounded"
           />
           Emails sent only
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-gray-600">
+          <input
+            type="checkbox"
+            checked={botOnly}
+            onChange={(e) => { setBotOnly(e.target.checked); if (e.target.checked) setEmailsOnly(false); }}
+            className="rounded"
+          />
+          CC bot replies only
         </label>
         <label className="flex items-center gap-1.5 text-xs text-gray-600">
           <input

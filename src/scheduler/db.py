@@ -1080,15 +1080,16 @@ def get_demo_funnel_data_daily(days: int = 7, include_current: bool = False) -> 
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-_ALL_EVENTS = ('user_created', 'onboarding_completed', 'draft_composed', 'draft_sent', 'setting_changed')
+_ALL_EVENTS = ('user_created', 'onboarding_completed', 'draft_composed', 'draft_sent', 'setting_changed', 'bot_reply_sent', 'bot_invite_created')
 _EMAIL_EVENTS = ('draft_sent',)
+_BOT_EVENTS = ('bot_reply_sent', 'bot_invite_created')
 _RETENTION_EVENTS = ('user_created', 'onboarding_completed')
 
 
-def get_cohort_data(weeks: int = 8, emails_only: bool = False, include_current: bool = False) -> dict:
+def get_cohort_data(weeks: int = 8, emails_only: bool = False, bot_only: bool = False, include_current: bool = False) -> dict:
     """Rich cohort data: retention by week offset, plus absolute-date series for emails/active/actions."""
     from datetime import timedelta
-    action_events = _EMAIL_EVENTS if emails_only else _ALL_EVENTS
+    action_events = _BOT_EVENTS if bot_only else (_EMAIL_EVENTS if emails_only else _ALL_EVENTS)
     # Always include signup/onboarding so users show as retained from W0
     all_events = list(set(action_events) | set(_RETENTION_EVENTS))
     cutoff_clause = "" if include_current else "AND date_trunc('week', ae.created_at AT TIME ZONE %s) < date_trunc('week', now() AT TIME ZONE %s)"
@@ -1113,6 +1114,7 @@ def get_cohort_data(weeks: int = 8, emails_only: bool = False, include_current: 
                     FLOOR(EXTRACT(EPOCH FROM date_trunc('week', ae.created_at AT TIME ZONE %s) - c.cohort_week) / 604800)::int AS week_offset,
                     count(DISTINCT c.user_id) AS active_users,
                     count(*) FILTER (WHERE ae.event = 'draft_sent') AS emails_sent,
+                    count(*) FILTER (WHERE ae.event = 'bot_reply_sent') AS bot_replies,
                     count(*) FILTER (WHERE ae.event = ANY(%s)) AS total_actions
                 FROM cohorts c
                 JOIN analytics_events ae ON ae.user_id = c.user_id
@@ -1127,6 +1129,7 @@ def get_cohort_data(weeks: int = 8, emails_only: bool = False, include_current: 
                 wa.week_offset,
                 COALESCE(wa.active_users, 0) AS active_users,
                 COALESCE(wa.emails_sent, 0) AS emails_sent,
+                COALESCE(wa.bot_replies, 0) AS bot_replies,
                 COALESCE(wa.total_actions, 0) AS total_actions
             FROM cohort_sizes cs
             LEFT JOIN weekly_activity wa ON wa.cohort_week = cs.cohort_week
@@ -1161,6 +1164,7 @@ def get_cohort_data(weeks: int = 8, emails_only: bool = False, include_current: 
                 cohort_map[key]["by_offset"][row["week_offset"]] = {
                     "active_users": row["active_users"],
                     "emails_sent": row["emails_sent"],
+                    "bot_replies": row["bot_replies"],
                     "total_actions": row["total_actions"],
                 }
             if row["activity_week"] is not None:
@@ -1169,6 +1173,7 @@ def get_cohort_data(weeks: int = 8, emails_only: bool = False, include_current: 
                 cohort_map[key]["by_date"][aw_key] = {
                     "active_users": row["active_users"],
                     "emails_sent": row["emails_sent"],
+                    "bot_replies": row["bot_replies"],
                     "total_actions": row["total_actions"],
                 }
 
@@ -1251,10 +1256,10 @@ def get_cohort_data(weeks: int = 8, emails_only: bool = False, include_current: 
         }
 
 
-def get_cohort_data_daily(days: int = 7, emails_only: bool = False, include_current: bool = False) -> dict:
+def get_cohort_data_daily(days: int = 7, emails_only: bool = False, bot_only: bool = False, include_current: bool = False) -> dict:
     """Same as get_cohort_data but cohorts are grouped by day and activity is daily."""
     from datetime import timedelta
-    action_events = _EMAIL_EVENTS if emails_only else _ALL_EVENTS
+    action_events = _BOT_EVENTS if bot_only else (_EMAIL_EVENTS if emails_only else _ALL_EVENTS)
     all_events = list(set(action_events) | set(_RETENTION_EVENTS))
     cutoff_clause = "" if include_current else "AND date_trunc('day', ae.created_at AT TIME ZONE %s) < date_trunc('day', now() AT TIME ZONE %s)"
     tz_params = () if include_current else (_TZ, _TZ)
@@ -1278,6 +1283,7 @@ def get_cohort_data_daily(days: int = 7, emails_only: bool = False, include_curr
                     (date_trunc('day', ae.created_at AT TIME ZONE %s)::date - c.cohort_day::date)::int AS day_offset,
                     count(DISTINCT c.user_id) AS active_users,
                     count(*) FILTER (WHERE ae.event = 'draft_sent') AS emails_sent,
+                    count(*) FILTER (WHERE ae.event = 'bot_reply_sent') AS bot_replies,
                     count(*) FILTER (WHERE ae.event = ANY(%s)) AS total_actions
                 FROM cohorts c
                 JOIN analytics_events ae ON ae.user_id = c.user_id
@@ -1292,6 +1298,7 @@ def get_cohort_data_daily(days: int = 7, emails_only: bool = False, include_curr
                 da.day_offset,
                 COALESCE(da.active_users, 0) AS active_users,
                 COALESCE(da.emails_sent, 0) AS emails_sent,
+                COALESCE(da.bot_replies, 0) AS bot_replies,
                 COALESCE(da.total_actions, 0) AS total_actions
             FROM cohort_sizes cs
             LEFT JOIN daily_activity da ON da.cohort_day = cs.cohort_day
@@ -1321,6 +1328,7 @@ def get_cohort_data_daily(days: int = 7, emails_only: bool = False, include_curr
                 cohort_map[key]["by_offset"][row["day_offset"]] = {
                     "active_users": row["active_users"],
                     "emails_sent": row["emails_sent"],
+                    "bot_replies": row["bot_replies"],
                     "total_actions": row["total_actions"],
                 }
             if row["activity_day"] is not None:
@@ -1329,6 +1337,7 @@ def get_cohort_data_daily(days: int = 7, emails_only: bool = False, include_curr
                 cohort_map[key]["by_date"][ad_key] = {
                     "active_users": row["active_users"],
                     "emails_sent": row["emails_sent"],
+                    "bot_replies": row["bot_replies"],
                     "total_actions": row["total_actions"],
                 }
 

@@ -3158,6 +3158,7 @@ async def bot_gmail_webhook(request: Request, background_tasks: BackgroundTasks)
 
 def _process_bot_messages(message_ids: list[str]) -> None:
     """Process messages from the bot's inbox — identify user, check calendar, reply."""
+    from scheduler import analytics
     from scheduler.auth.google_auth import load_credentials_bot_mode
     from scheduler.bot.agent import compose_and_send
     from scheduler.bot.conversation import transition
@@ -3261,6 +3262,17 @@ def _process_bot_messages(message_ids: list[str]) -> None:
                     "bot: result for message %s: sent=%s invite=%s",
                     message_id, result.get("sent"), result.get("invite_created"),
                 )
+                if result.get("sent"):
+                    analytics.track(str(user.id), "bot_reply_sent", {
+                        "conversation_id": str(conversation.id),
+                        "thread_id": email.thread_id,
+                        "counterparty": conversation.counterparty_email,
+                    })
+                if result.get("invite_created"):
+                    analytics.track(str(user.id), "bot_invite_created", {
+                        "conversation_id": str(conversation.id),
+                        "event_id": result.get("event_id"),
+                    })
             finally:
                 user_calendar.close()
 
@@ -3449,9 +3461,9 @@ def admin_funnel_demo_daily(days: int = 7, include_current: bool = False, admin:
 
 
 @app.get("/web/api/v1/admin/cohorts")
-def admin_cohorts(weeks: int = 8, emails_only: bool = False, include_current: bool = False, admin: dict = Depends(_require_admin)):
+def admin_cohorts(weeks: int = 8, emails_only: bool = False, bot_only: bool = False, include_current: bool = False, admin: dict = Depends(_require_admin)):
     from scheduler.db import get_cohort_data
-    result = get_cohort_data(weeks=weeks, emails_only=emails_only, include_current=include_current)
+    result = get_cohort_data(weeks=weeks, emails_only=emails_only, bot_only=bot_only, include_current=include_current)
     for c in result["cohorts"]:
         if isinstance(c.get("week"), datetime):
             c["week"] = c["week"].isoformat()
@@ -3459,9 +3471,9 @@ def admin_cohorts(weeks: int = 8, emails_only: bool = False, include_current: bo
 
 
 @app.get("/web/api/v1/admin/cohorts/daily")
-def admin_cohorts_daily(days: int = 7, emails_only: bool = False, include_current: bool = False, admin: dict = Depends(_require_admin)):
+def admin_cohorts_daily(days: int = 7, emails_only: bool = False, bot_only: bool = False, include_current: bool = False, admin: dict = Depends(_require_admin)):
     from scheduler.db import get_cohort_data_daily
-    result = get_cohort_data_daily(days=days, emails_only=emails_only, include_current=include_current)
+    result = get_cohort_data_daily(days=days, emails_only=emails_only, bot_only=bot_only, include_current=include_current)
     for c in result["cohorts"]:
         if isinstance(c.get("week"), datetime):
             c["week"] = c["week"].isoformat()
