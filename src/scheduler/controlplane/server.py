@@ -1163,15 +1163,10 @@ def auth_google_connect_callback(
                 logger.info("google_connect: generating missing email_style guide for user=%s", user_id)
                 threading.Thread(target=_run_onboarding_for_runtime, args=(user_id,), daemon=True).start()
     else:
-        logger.info("google_connect: starting onboarding for user=%s", user_id)
-        with _onboarding_lock:
-            if _onboarding_status.get(user_id, {}).get("status") == "running":
-                logger.info("google_connect: onboarding already running for user=%s", user_id)
-                background = None
-            else:
-                from scheduler.db import update_onboarding_status
-                update_onboarding_status(user_id, "pending")
-                background = BackgroundTask(_run_onboarding_for_runtime, user_id)
+        # Don't start agents here — wait until the user selects calendars on the frontend.
+        # The /web/api/v1/onboarding/start endpoint kicks off agents after calendar selection.
+        logger.info("google_connect: new user=%s, deferring agent startup to after calendar selection", user_id)
+        background = None
         redirect_url = f"{config.web_app_url}/onboarding?{token_param}"
 
     return RedirectResponse(redirect_url, background=background)
@@ -1311,21 +1306,12 @@ def auth_google_callback_calendar(
     except Exception:
         logger.debug("Failed to fetch userinfo during bot-mode connect for user=%s", user_id)
 
-    # Bot-mode onboarding: only run preferences agent (no Gmail backfill or style guide)
-    from starlette.background import BackgroundTask
-
-    logger.info("google_connect_calendar: starting bot-mode onboarding for user=%s", user_id)
-    with _onboarding_lock:
-        if _onboarding_status.get(user_id, {}).get("status") == "running":
-            background = None
-        else:
-            from scheduler.db import update_onboarding_status
-            update_onboarding_status(user_id, "pending")
-            background = BackgroundTask(_run_bot_mode_onboarding, user_id)
+    # Don't start agents here — wait until the user selects calendars on the frontend.
+    # The /web/api/v1/onboarding/start endpoint kicks off agents after calendar selection.
 
     token_param = f"token={auth_token}" if auth_token else ""
     redirect_url = f"{config.web_app_url}/onboarding?{token_param}&mode=bot"
-    return RedirectResponse(redirect_url, background=background)
+    return RedirectResponse(redirect_url)
 
 
 def _run_bot_mode_onboarding(user_id: str):
@@ -1347,8 +1333,12 @@ def _run_bot_mode_onboarding(user_id: str):
             }
         update_onboarding_status(user_id, "running")
 
+        from scheduler.db import get_user_by_id as _get_user
+        _db_user = _get_user(user_id)
+        extra_ids = (_db_user.calendar_ids or []) if _db_user else []
+
         creds = load_credentials_bot_mode(user_id)
-        calendar = CalendarClient(creds, config.scheduled_calendar_name)
+        calendar = CalendarClient(creds, config.scheduled_calendar_name, extra_calendar_ids=extra_ids)
 
         try:
             guide_backend = LocalGuideBackend(
@@ -3620,15 +3610,7 @@ def web_onboarding_profile(
         "scheduling_mode": req.scheduling_mode,
     })
 
-    # If user already has Google tokens (self-hosted flow), start onboarding agents now
-    db_user = get_user_by_id(user["user_id"])
-    if db_user and db_user.google_refresh_token:
-        with _onboarding_lock:
-            if _onboarding_status.get(user["user_id"], {}).get("status") != "running":
-                update_onboarding_status(user["user_id"], "pending")
-                target = _run_bot_mode_onboarding if req.scheduling_mode == "bot" else _run_onboarding_for_runtime
-                threading.Thread(target=target, args=(user["user_id"],), daemon=True).start()
-
+    # Agents are started later via /web/api/v1/onboarding/start after calendar selection.
     return {"ok": True}
 
 
@@ -3639,6 +3621,56 @@ def web_onboarding_profile_status(user: dict = Depends(get_authenticated_user)):
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
     return {"job_title": db_user.job_title}
+
+
+class WebOnboardingStartRequest(BaseModel):
+    calendar_ids: list[str] = []
+
+
+@app.post("/web/api/v1/onboarding/start")
+def web_onboarding_start(
+    req: WebOnboardingStartRequest,
+    user: dict = Depends(get_authenticated_user),
+):
+    """Start onboarding agents after the user has selected calendars.
+
+    Called from the frontend after Google OAuth + calendar selection.
+    Saves the selected calendars, then kicks off the appropriate agents
+    based on the user's scheduling mode.
+    """
+    from scheduler.db import get_user_by_id, update_calendar_ids, update_onboarding_status
+
+    db_user = get_user_by_id(user["user_id"])
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Save selected calendars before starting agents
+    if req.calendar_ids:
+        update_calendar_ids(user["user_id"], req.calendar_ids)
+
+    # Don't restart if already running
+    with _onboarding_lock:
+        if _onboarding_status.get(user["user_id"], {}).get("status") == "running":
+            return {"ok": True, "already_running": True}
+
+    update_onboarding_status(user["user_id"], "pending")
+
+    import threading
+
+    if db_user.scheduling_mode == "bot":
+        threading.Thread(
+            target=_run_bot_mode_onboarding,
+            args=(user["user_id"],),
+            daemon=True,
+        ).start()
+    else:
+        threading.Thread(
+            target=_run_onboarding_for_runtime,
+            args=(user["user_id"],),
+            daemon=True,
+        ).start()
+
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -4024,7 +4056,11 @@ def web_list_calendars(user: dict = Depends(get_authenticated_user)):
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    creds = load_credentials(user["user_id"])
+    if db_user.scheduling_mode == "bot":
+        from scheduler.auth.google_auth import load_credentials_bot_mode
+        creds = load_credentials_bot_mode(user["user_id"])
+    else:
+        creds = load_credentials(user["user_id"])
     with CalendarClient(creds, config.scheduled_calendar_name) as calendar:
         selected_ids = set(db_user.calendar_ids or [])
 

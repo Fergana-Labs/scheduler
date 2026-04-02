@@ -322,7 +322,7 @@ export default function OnboardingClient({ needsGoogle, checkoutStatus, modePara
           )}
 
           {step === 'calendars' && (
-            <CalendarSelectStep onContinue={() => setStep('processing')} />
+            <CalendarSelectStep onContinue={() => setStep('processing')} mode={mode} />
           )}
 
           {step === 'processing' && user && (

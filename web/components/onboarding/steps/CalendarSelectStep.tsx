@@ -13,9 +13,10 @@ interface CalendarEntry {
 
 interface CalendarSelectStepProps {
   onContinue: () => void;
+  mode?: 'bot' | 'draft';
 }
 
-export default function CalendarSelectStep({ onContinue }: CalendarSelectStepProps) {
+export default function CalendarSelectStep({ onContinue, mode = 'draft' }: CalendarSelectStepProps) {
   const [calendars, setCalendars] = useState<CalendarEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -40,8 +41,9 @@ export default function CalendarSelectStep({ onContinue }: CalendarSelectStepPro
     const selectedIds = calendars.filter((c) => c.selected).map((c) => c.id);
     setSaving(true);
     try {
-      await api('/web/api/v1/settings/calendars', {
-        method: 'PUT',
+      // Save calendars and kick off onboarding agents in one call
+      await api('/web/api/v1/onboarding/start', {
+        method: 'POST',
         body: JSON.stringify({ calendar_ids: selectedIds }),
       });
     } catch {
