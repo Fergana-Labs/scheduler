@@ -61,6 +61,35 @@ should be a draft auto-populated below) and we'll use scheduled to automatically
 <a href="https://ferganalabs.com">Fergana Labs</a></p>"""
 
 
+BOT_WELCOME_TEMPLATE = """\
+<p>Hello and welcome to Scheduled!</p>
+
+<p>We're excited you are here! Our goal is to empower you to focus on what matters \
+by automating away the mind-numbing tasks that have become our lives.</p>
+
+<p>Unlike scheduling link tools like Calendly or Cal&#46;com, Scheduled is a scheduling \
+assistant that works inside your email conversations. Just CC \
+<strong>scheduling@tryscheduled.com</strong> on any email thread where you need to find \
+a time, and your assistant will take it from there — checking your calendar, proposing \
+times, and handling the back-and-forth until a meeting is booked.</p>
+
+<p>If you head over to <a href="https://tryscheduled.com/settings">your settings</a>, \
+you will find a guide based on your scheduling preferences. Your assistant uses this to \
+understand when and how you like to meet.</p>
+
+<p>{personalized_snippet}</p>
+
+<p>You're all set! To try it out, just CC <strong>scheduling@tryscheduled.com</strong> \
+on your next scheduling email — or reply to this email and we'll use Scheduled to \
+automatically find a time for a quick welcome call.</p>
+
+<p>Warmly,</p>
+
+<p>Sam<br>CEO and Co-Founder of \
+<a href="https://tryscheduled.com">Scheduled</a> by \
+<a href="https://ferganalabs.com">Fergana Labs</a></p>"""
+
+
 def _get_anthropic_client() -> Anthropic:
     from scheduler.classifier.intent import _get_anthropic_client as _shared
     return _shared()
@@ -373,3 +402,81 @@ def send_lifecycle_email(user_id: str) -> None:
     finally:
         gmail.close()
         calendar.close()
+
+
+def send_bot_lifecycle_email(user_id: str) -> None:
+    """Send a welcome email for bot-mode users.
+
+    Simpler than the draft-mode flow — just sends via Postmark with a
+    personalized snippet. No Gmail polling, draft creation, or reasoning email.
+    """
+    user = get_user_by_id(user_id)
+    if not user:
+        logger.warning("lifecycle_bot: user not found user_id=%s", user_id)
+        return
+
+    scheduling_prefs = load_guide("scheduling_preferences", user_id)
+    has_real_guides = bool(scheduling_prefs)
+
+    if not scheduling_prefs:
+        scheduling_prefs = DEFAULT_SCHEDULING_PREFERENCES
+
+    # Generate personalized snippet
+    if has_real_guides:
+        try:
+            client = _get_anthropic_client()
+            snippet_system = (
+                "You are writing 1-2 personalized sentences for a welcome email from Sam at Scheduled. "
+                "These sentences will be inserted into a template email to make it feel personal.\n\n"
+                "The perspective should be from 'we' (the Scheduled team) observing the user's "
+                "scheduling patterns — e.g., 'We see you tend to do XYZ meetings when XYZ' or similar.\n\n"
+                "You have the user's scheduling preferences below. Use them to write the snippet, "
+                "but follow these privacy rules strictly:\n"
+                "- Never reference specific meeting names, attendee names, or calendar details.\n"
+                "- You can mention general scheduling patterns but never specific events or people.\n"
+                "- A stranger reading these sentences should learn nothing about the user's "
+                "specific calendar, contacts, or habits.\n\n"
+                f"## User's Scheduling Preferences\n{scheduling_prefs}\n\n"
+                "Respond with ONLY the 1-2 sentences, nothing else. No quotes, no JSON, no preamble."
+            )
+            resp = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=256,
+                temperature=0.7,
+                system=snippet_system,
+                messages=[{"role": "user", "content": f"Write a personalized snippet for {user.email}."}],
+            )
+            snippet = _extract_text(resp)
+        except Exception:
+            logger.exception("lifecycle_bot: failed to generate snippet for user=%s", user_id)
+            snippet = "We'll learn your scheduling preferences over time as you use Scheduled."
+    else:
+        snippet = "We'll learn your scheduling preferences over time as you use Scheduled."
+
+    body = BOT_WELCOME_TEMPLATE.format(personalized_snippet=html_mod.escape(snippet))
+
+    # Send via Postmark
+    if not config.postmark_server_token:
+        logger.info("lifecycle_bot: no POSTMARK_SERVER_TOKEN, skipping send for user=%s", user_id)
+        return
+
+    try:
+        pm_resp = httpx.post(
+            POSTMARK_SEND_URL,
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "X-Postmark-Server-Token": config.postmark_server_token,
+            },
+            json={
+                "From": config.postmark_from_email,
+                "To": user.email,
+                "Subject": WELCOME_SUBJECT,
+                "HtmlBody": body,
+            },
+            timeout=15,
+        )
+        pm_resp.raise_for_status()
+        logger.info("lifecycle_bot: welcome email sent to %s", user.email)
+    except Exception:
+        logger.exception("lifecycle_bot: failed to send Postmark email for user=%s", user_id)

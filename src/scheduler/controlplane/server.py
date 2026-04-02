@@ -1340,6 +1340,13 @@ def _run_bot_mode_onboarding(user_id: str):
         update_system_enabled(user_id, True)
         update_onboarding_status(user_id, "done")
 
+        # Send bot-mode welcome email (non-blocking)
+        try:
+            from scheduler.lifecycle.welcome import send_bot_lifecycle_email
+            send_bot_lifecycle_email(user_id)
+        except Exception:
+            logger.exception("bot_mode_onboarding: lifecycle email failed for user=%s", user_id)
+
         with _onboarding_lock:
             _onboarding_status.pop(user_id, None)
 
