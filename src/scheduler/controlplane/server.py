@@ -589,6 +589,11 @@ elif "://" in _url:
     scheme, rest = _url.split("://", 1)
     _cors_origins.append(f"{scheme}://www.{rest}")
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -754,9 +759,16 @@ def get_authenticated_user(request: Request) -> dict:
     # Try Auth0 JWT first when Auth0 mode is enabled
     if _is_auth0_mode():
         try:
+            t0 = time.monotonic()
             payload = _validate_auth0_jwt(token)
+            t1 = time.monotonic()
             from scheduler.db import get_user_by_auth0_sub
             user = get_user_by_auth0_sub(payload["sub"])
+            t2 = time.monotonic()
+            logger.info(
+                "auth_timing: jwt_validate=%.1fms db_lookup=%.1fms total=%.1fms",
+                (t1 - t0) * 1000, (t2 - t1) * 1000, (t2 - t0) * 1000,
+            )
             if not user:
                 raise HTTPException(status_code=401, detail="User not found")
             return {"user_id": str(user.id), "email": user.email}
@@ -1619,7 +1631,9 @@ def auth_me(session: dict = Depends(get_authenticated_user)):
     user_id = session["user_id"]
     # Check if user has failed onboarding (likely missing scopes)
     from scheduler.db import get_user_by_id as _get_user_me
+    t0 = time.monotonic()
     db_user = _get_user_me(user_id)
+    logger.info("auth_me_timing: db_lookup=%.1fms", (time.monotonic() - t0) * 1000)
     needs_reauth = db_user is not None and db_user.onboarding_status == "failed"
     return {
         "user_id": user_id,
